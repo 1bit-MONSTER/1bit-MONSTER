@@ -32,12 +32,62 @@ not). So the branches go to `bong` — `https://github.com/bong-water-water-bong
 The consequence is the part worth carrying forward: in that clone **pushing is not
 evidence of landing at all**, and with no push path to the intended upstream there is
 no PR path either, so "no PR" is the *normal* state rather than a signal. That is how
-`fix/2152-concat-capacity` sat complete from 2026-09-10 with nobody noticing — the only
-artefact that would have surfaced it audits one clone. Both branches are on `bong`
+`fix/2152-concat-capacity` sat from 2026-09-10 with nobody noticing — the only artefact
+that would have surfaced it audits one clone. Both branches are on `bong`
 (`bong/fix/2152-concat-claims` at `7c9f875c0`, `bong/fix/2152-concat-capacity` at
 `68ad35c9d`), so they are preserved; they are unreviewed, and nothing tracks them.
-They are two divergent lines for the same fix, with nothing recording that `capacity`
-supersedes `claims`. Recorded on #2152.
+
+**They are not an old/new pair — an earlier revision of this section said they were.**
+It read "`capacity` supersedes `claims`", on the reasoning that its tip is nine hours
+later. By content each holds what the other lacks: `claims` (08:55) carries the **patch**
+(`2f2c66d4b` — refuse host-resident inputs, and drop the UB `element_count` assume whose
+`le(%element_count, %rows_capacity)` clause is false for every `cols > 1`), while
+`capacity` (18:13) carries the **record** — the claim-path wiring, the corpus-manifest
+findings, and `609ee0db6` "preserve the untracked CONCAT WIP files", which is what
+commits the four files at all. So `capacity`'s `.loom` is the *original* kernel with the
+false clause still in it and its `dispatch-concat.cpp` has no guard: it is an archive,
+not a successor. A landing needs both, or `2f2c66d4b` ported onto `capacity`. Tip
+timestamps get this backwards; the diff direction is what settles it. Corrected on #2152,
+where the disposition now stands with the md5s.
+
+The snapshot carries its own warning: `~/2152-wip/wip.tgz` on **both** machines is
+byte-identical to the untracked working set (`01829afb…`, `fc40ef5b…`, `37534c62…`), and
+those three are `capacity`'s preserved **originals**. The backup is faithful — and what
+it faithfully preserves is the pre-fix kernel. Anyone reaching for that tarball as "the
+current state of #2152" gets the version with the bug in it.
+
+### The other machine: 20 worktrees, and most of them already landed
+
+`ryzen`'s `~/wt/*` looks alarming at a glance and is mostly fine — which is the opposite
+conclusion to this clone's, from the same test:
+
+* **14 of the 20 branches have MERGED PRs:** `feat/npu-1776-attn-seq` (#1840),
+  `feat/2139-q35-lane-fixes` (#2183), `feat/hip-2139-q35-hipgraph` (#2175),
+  `fix/census-2166-coverage` (#2173), `fix/census-watch-refresh` (#2244),
+  `fix/model-download-1bp-readme` (#2231), `docs/issue-1866-disposition` (#2200),
+  `fix/npu-chess-preflight-guards` (#2233), `feat/npu-delivery-probe` (#2229),
+  `chore/tools-corr-assert` (#2184), `chore/tools-hooks` (#2186),
+  `docs/ws13-arch-gap-closure` (#2245), `fix/script-modes-actually` (#2224), `fork-main-sync`.
+* **Three of the six with no PR have zero commits ahead of `main`** —
+  `fix/3377-apu-gtt-memory-pool`, `fix/gguf-dtype-guard-integrated`,
+  `fix/gguf-reader-flush-caveat` — so their content landed by another route. Checked
+  rather than assumed: the guard `-integrated` adds is on `main` at
+  `src/gguf_reader.cpp:746`. `fix/gguf-unknown-dtype-guard` says `SUPERSEDED` in its own
+  tip commit and is in that same state. `wip/stash-archive` is a deliberate archive for
+  the closed #1769.
+* **One thread is genuinely unlanded:** `fix/npu-1799-fp` — 35 commits, 41 files, +4079.
+  Its *fix* half went in as **#1807** (which closed #1799); its *instrumentation* half —
+  the `NPU_DBG_FP` dumps, the per-layer fingerprints and the router EDA OOB regression
+  test — is what #1799's closing comment said was to "ride in with the decode-perf
+  landing", and it exists only on that box. It is the tooling **#2213** needs, so it is
+  recorded here instead of being left in a branch.
+* The `dirty=7` in nearly every worktree is the **same seven deletions**
+  (`.dsh-memory.md` plus six `integrations/dsh/*` files) in all of them —
+  environmental, not per-issue work.
+
+So "no PR" means *already landed elsewhere* on `ryzen` and *cannot have one* in the HRX
+clone. Neither reading is available from the branch list alone, which is the whole point
+of running this per clone and per remote rather than once.
 
 **Method, extended:** run the audit in **every clone on the box**, not just this one —
 `for d in ~/1bit-MONSTER ~/hrx-ws/amd-hrx-graph …; do git -C $d for-each-ref …; done` —
