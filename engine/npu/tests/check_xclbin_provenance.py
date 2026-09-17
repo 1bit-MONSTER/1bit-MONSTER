@@ -400,6 +400,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--script-revision", default=None, metavar="STR",
                     help="with --write-manifest, record the generating script's revision in "
                          "build.generating_script_revision; without it an existing value is preserved")
+    ap.add_argument("--allow-null-toolchain", action="store_true",
+                    help="with --write-manifest, permit build.toolchain to be written as null when there "
+                         "is no recorded value to preserve; without it the write is REFUSED (issue #2262)")
     ap.add_argument("--allow-missing-manifest", action="store_true",
                     help="do not fail when the manifest is absent (bootstrap only)")
     args = ap.parse_args(argv)
@@ -410,6 +413,33 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parents[3]
     manifest_path = Path(args.manifest) if args.manifest else root / XCLBIN_DIR / MANIFEST_NAME
+
+    # Issue #2262. The artifacts carry no compiler marker, so build.toolchain can only come
+    # from the build that produced them - this tool cannot derive it. It used to write null
+    # in silence when --toolchain was omitted, which is exactly how the field stayed empty
+    # through the one rebuild that was supposed to fill it. Refuse to re-record a blank
+    # instead: a manifest write must either name the arm, or say explicitly that it cannot.
+    # Checked here, before observe(), so the refusal does not depend on the tree being valid.
+    if args.write_manifest and args.toolchain is None and not args.allow_null_toolchain:
+        prev_toolchain = None
+        if manifest_path.exists():
+            try:
+                prev_toolchain = ((json.loads(manifest_path.read_text()).get("build") or {})
+                                  .get("toolchain"))
+            except (OSError, json.JSONDecodeError):
+                prev_toolchain = None
+        if prev_toolchain is None:
+            print(
+                "REFUSING to write a manifest with build.toolchain = null (issue #2262).\n"
+                "  The artifacts record no compiler arm or version, so this value cannot be\n"
+                "  derived from them - only the build that produced them can supply it, and a\n"
+                "  rebuild that forgets it is how the field stayed empty. Pass one of:\n"
+                "    --toolchain \"<compiler arm + versions>\"\n"
+                "        e.g. --toolchain 'aiecc (llvm-aie, LLVM 23.0.0), XRT 2.26f'\n"
+                "    --allow-null-toolchain\n"
+                "        to record the blank as a decision rather than a default.",
+                file=sys.stderr)
+            return 1
 
     try:
         obs = observe(root)
@@ -482,10 +512,13 @@ def main(argv: list[str] | None = None) -> int:
             "build": {
                 "toolchain": toolchain,
                 "toolchain_note": (
-                    "Empty by design: the artifacts record no compiler arm or version "
-                    "(no chesscc/peano/llvm/aiecc/clang marker in the AXLF metadata; "
-                    "PlatformVBNV is empty). A build that regenerates these artifacts must "
-                    "fill this in - that is the missing half of the provenance."
+                    "Empty by design, and written only because --allow-null-toolchain was "
+                    "passed explicitly (issue #2262). The artifacts record no compiler arm or "
+                    "version (no chesscc/peano/llvm/aiecc/clang marker in the AXLF metadata; "
+                    "PlatformVBNV is empty), so this tool cannot derive one, and it now REFUSES "
+                    "to write this blank by default. The build that regenerates these artifacts "
+                    "is the only thing that can fill it in - that is the missing half of the "
+                    "provenance."
                     if toolchain is None else
                     "Recorded from the build that produced these artifacts, not read out of "
                     "them: the AXLF metadata carries no chesscc/peano/llvm/aiecc/clang marker "

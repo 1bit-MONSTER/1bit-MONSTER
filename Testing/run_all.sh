@@ -186,6 +186,21 @@ else
     fail=$((fail+1))
 fi
 
+# Provenance writer: build.toolchain can only come from the build that produced the
+# artifacts, and the committed manifest is null because the last rebuild ran the
+# documented command without --toolchain (#2262). The write path now refuses that,
+# so the omission cannot silently repeat; this pins the refusal and its escape hatches.
+echo "== xclbin provenance toolchain guard =="
+total=$((total+1))
+if toolchain_out=$(bash Testing/xclbin_toolchain_gate_selfcheck.sh 2>&1); then
+    printf '%s\n' "$toolchain_out" | sed 's/^/  /'
+    echo "✓ xclbin_toolchain_guard"
+else
+    echo "✗ xclbin_toolchain_guard"
+    printf '%s\n' "$toolchain_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # NPU lane contract: the NPU runs on the engine's own worker (src/backend_npu.cpp
 # → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
 # the legacy FLM test harness printed "FLM not installed" as if the NPU were
