@@ -10,9 +10,96 @@
 
 ---
 
+## ⚠️ Status re-verified 2026-09-17 — this unlock is NOT currently reproducible
+
+Nothing below is retracted (the 2026-07-16 unlock did happen), but the box is not in that
+state today — and on re-check **two of the three documented "prerequisites" turn out not to
+be prerequisites at all**. Corrected 2026-09-17 against the driver source:
+
+| Prerequisite | Documented | State 2026-09-17 | Verdict |
+|---|---|---|---|
+| Custom module | `/home/bcloud/amdxdna-40col.ko` (10.9 MB) | **GONE** — no `*40col*.ko` anywhere on disk | the real gate |
+| "Dev firmware" | `…/amdnpu/17f0_11/npu.dev.sbin` (430 KB) | present (429,680 B) | ⚠️ **not a distinct binary** — see below |
+| GRUB params | `amdxdna.fw_patches_enable=1 amdxdna.aie2_max_col=40` | absent from `grub.cfg` and `/proc/cmdline` | ⚠️ **inert even if set** — see below |
+| Kernel | `7.0.0-27-generic` | now `7.2.0-next-20260821-unstable-ogc-g2a559b27-1` | — |
+
+**Correction 1 — there is no "dev firmware" on this box.** `npu.dev.sbin` is
+**byte-identical to the stock release firmware**: decompressing `npu.sbin.1.1.2.65.zst`
+yields 429,680 B, and both files hash to `4840b9b0d5966228f07686b62e8accba`. Upstream agrees —
+`tools/WHENCE` in `amd/xdna-driver` ships `amdnpu/17f0_11/npu.dev.sbin` as a **symlink** to
+`1.7_npu.sbin.1.1.2.65`. So "development firmware that accepts column override" describes a
+file that is simply the release firmware, and listing its presence as a prerequisite implied a
+gate that does not exist.
+
+**Correction 2 — `aie2_max_col` is a ceiling, not a floor, so `=40` cannot raise anything.**
+Both the legacy and the current driver compute:
+
+```c
+ndev->total_col = min(aie2_max_col, ndev->metadata.cols);
+```
+(`src/driver/amdxdna/aie2_pci.c:313` legacy; `drivers/accel/amdxdna/aie2_pci.c:245`
+upstream, where the field is spelled `ndev->aie.metadata.cols`)
+
+On a device whose firmware reports 8 columns, `min(40, 8) == 8`. The GRUB parameter provably
+cannot unlock columns on a stock driver; it can only *lower* the count.
+
+**Correction 3 — `fw_patches_enable` does not exist.** The other half of the documented GRUB
+line is not a module parameter anywhere we can see: zero occurrences in the legacy tree
+(`git grep HEAD -- src/`), zero in the current upstream tree (`drivers/`), and **zero in the
+running module** — whose `modinfo` parameter list contains `aie2_max_col` and `aie4_max_col`
+but no `fw_patches_enable`. So of the two parameters:
+
+| param | exists? | effect |
+|---|---|---|
+| `aie2_max_col=40` | yes | `min(40, metadata.cols)` → **inert** on an 8-column device |
+| `fw_patches_enable=1` | **no** | unknown module params are ignored → **no-op** |
+
+It is possible the custom `.ko` *added* `fw_patches_enable` (that artifact is gone, so this
+cannot be settled) — but on any driver present today, that GRUB line does nothing at either
+end. It should not be reproduced as part of a re-attempt.
+
+**Which relocates the mechanism.** The override is **driver-side**, not firmware-side: the
+custom `.ko` must have replaced that `min()` with a direct assignment — which is exactly what
+the recorded log line says (`NPU UNLOCK: overriding metadata.cols from 8 to 40`, in the
+driver's own voice). Consistent with this, the module loaded today carries `aie2_max_col` but
+**no** `overriding metadata`/`NPU UNLOCK` string, i.e. it is stock with respect to columns.
+So the unlock reduces to a single artifact — a patched driver — and the firmware and GRUB
+items in the original recipe were along for the ride.
+
+Consequences:
+- The **in-tree `amdxdna.ko` (0.1) is what is loaded**, and `xrt-smi` reports
+  **`Total Columns: 8`** with a single populated partition `Columns [0..7]`. That is the
+  stock configuration and the *expected* reading — it is **not** a fault.
+- Even if the `.ko` were restored, it was built for `7.0.0-27-generic`; it must be
+  **rebuilt against the current kernel** before it can load.
+- Naming note: this directory/toolchain name **`npu2_40` means "NPU2, 40 columns"** — the
+  unlock target, *not* a 4-column device. There is no 8-vs-4 discrepancy to chase.
+- **Upstream note (2026-09-17):** `amd/xdna-driver` removed the legacy `src/driver/` tree on
+  2026-09-01 (`813e0bf` — *"the upstream driver in `drivers/accel/amdxdna/` is the sole driver
+  going forward"*). Our running module was built from that deleted tree. Any rebuild should
+  target `drivers/accel/amdxdna/`, and the `min()` above is the line a patch would have to
+  change there. See #2459.
+
+To re-attempt: rebuild a patched module against `$(uname -r)` with the `min()` replaced by the
+override, `insmod` it, then re-run the verification below. The GRUB parameters are not
+required; `fw_patches_enable` may still matter for other firmware-side patching and is worth
+keeping.
+
+**Decision status:** `research/TRACKING.md` P0.3 ("40-column decision in writing") is still
+open 🔲, and **WS-02 (XDNA quantized GEMM/GEMV) is gated on it**. The state above is the
+factual input that decision needs.
+
+---
+
 ## Executive Summary
 
 **After a reboot, we achieved a full 40-column unlock on the Strix Halo NPU.** The custom-patched `amdxdna-40col.ko` kernel module loads dev firmware (`npu.dev.sbin`) which successfully overrides the stock 8-column metadata to 40 columns. The driver reports:
+
+> **Attribution corrected 2026-09-17.** This sentence gives the credit to the *firmware*, and
+> that is wrong. `npu.dev.sbin` is byte-identical to the stock `1.1.2.65` release firmware
+> (both md5 `4840b9b0d5966228f07686b62e8accba`), so it overrides nothing. The override is
+> **driver-side** — the patched module replaces
+> `total_col = min(aie2_max_col, metadata.cols)`. See the status block above.
 
 ```
 NPU UNLOCK: overriding metadata.cols from 8 to 40
