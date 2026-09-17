@@ -54,8 +54,7 @@ Rebuilt as **JARVIS v2**:
 ## Build & run
 
 ```bash
-cmake --build build --target jarvis_app    # build/jarvis
-# or inside the one binary:
+cmake --build build --target onebin        # build/1bit
 ./build/1bit jarvis --model "Qwen3-0.6B" --text        # text chat
 ./build/1bit jarvis --model "Qwen3-0.6B" \
     --whisper models/whisper-tiny.gguf \
