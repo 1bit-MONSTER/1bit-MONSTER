@@ -329,6 +329,77 @@ request when the model is sharded.
 
 ---
 
+## Reviewed 2026-09-17 — the next four un-reviewed classes by instance count
+
+`Testing/census_coverage.py` reports 184 uncovered instances across 77 classes on
+`main` at `d7e9aac7c`. The daily watcher only names classes inside its rolling
+100-model window, so most of those 77 are never surfaced to anyone. These are the
+four largest un-reviewed ones, in decreasing order, reviewed from their live
+configs and HF metadata.
+
+**A limit on all four**: the standard above is to decide an alias on the
+checkpoint's *tensors*, and these verdicts rest on `config.json` plus HF metadata,
+not on tensor headers. That is decisive for the two that are not text LMs at all
+(a vocabulary of 82, and a `text-to-speech` pipeline tag); for the two real ones it
+establishes "not a name we map", not "not an alias" — the tensor check is still
+outstanding and is called out per entry.
+
+### `blockmtp` / `looped_block_mtp` — `violetxi/hparam-92m-block-mtp-…` (12)
+
+**Not a text LM. Not an alias, and not a coverage gap.**
+
+* **Class / model_type**: `BlockMTPForCausalLM` / `looped_block_mtp`, 12 instances,
+  a single aggregate entry.
+* **What it is**: `violetxi/hparam-92m-block-mtp-truncated-peak_lr-1e-5-wu-0p05-s42`
+  and its siblings — an experiment grid (`hparam-*`, `chess-*`, `...-4xh100`) over a
+  looped / block multi-token-prediction transformer.
+* **The decisive number is `vocab_size: 82`**, against 100k+ for every text family
+  the engine serves. A model whose entire vocabulary is 82 tokens is not a chat LM
+  and cannot be one; the class is an artefact of one uploader's sweep.
+* **Verdict**: no implementation is warranted. This sits in the same category as the
+  already-excluded experiment uploads (`helloworld`, `mbztestmodel`, `myfirstllm`),
+  but it has not been added to an exclusion set here, because that changes the
+  published denominator and is a policy call rather than a review outcome.
+
+### `jarvistitanmoe` / `jarvis_titan_moe` — `dhanesh-hf/Jarvis-Titan-V12-MoE-14B` (9)
+
+**A real causal text LM. Not a name the registry maps — and the tensor check is
+outstanding.**
+
+* **Class / model_type**: `JarvisTitanMoEForCausalLM` / `jarvis_titan_moe`.
+* **Config**: `vocab_size` 152064, `hidden_size` 3584, `num_hidden_layers` 28, and
+  MoE. A genuine text-generation family from a community uploader
+  (`Jarvis-Titan-V10-SFT-Merged`, `V12-MoE-14B`, `V12-MoE-Adapted`).
+* **Verdict**: this is a coverage gap worth implementing, not an artefact. Whether it
+  is also an *alias* is untested: the vocabulary 152064 matches the Qwen2.5-class
+  size, so the tensors — not the class name — are what would settle it.
+
+### `canopy` — `canopylabs/orpheus-3b-0.1-ft` (7)
+
+**Text-to-speech, not a causal text decoder. Not an alias, and not a coverage gap.**
+
+* **Class**: `CanopyForCausalLM`, 7 instances.
+* **What it is**: Canopy Labs **Orpheus**, whose HF `pipeline_tag` is
+  `text-to-speech` and which is llama-architecture underneath. The name says
+  `ForCausalLM`; the model is a speech synthesiser with a text backbone.
+* **Verdict**: the engine has no TTS path — the `NON_TEXT_GEN` comment states the
+  plan put TTS out of scope beside `parlertts` and `kosine`. Recording it here, not
+  excluding it, for the same denominator reason as `blockmtp`.
+
+### `zgcm` — `zgcagi/ZGCM-1-7B` (6)
+
+**A real causal text LM. Not a name the registry maps — and the tensor check is
+outstanding.**
+
+* **Class / model_type**: `ZgcmForCausalLM` / `zgcm`.
+* **Config**: `vocab_size` 155136, `hidden_size` 4096, `num_hidden_layers` 32 —
+  a 7B-class text LM with a full text vocabulary, and a trainer's own architecture
+  name (`ZGCM-1-7B`, plus `-Pretrain-Curriculum`, `-Midtrain-Staged-16K/256K`).
+* **Verdict**: a coverage gap worth implementing. As with `jarvis_titan_moe`, the
+  alias question needs the tensors.
+
+---
+
 ## Unverifiable: gated configs
 
 `WaveMatrix/Qwen3-VL-8B-Instruct-GPTQ-Int4` is counted as **unverifiable** on
