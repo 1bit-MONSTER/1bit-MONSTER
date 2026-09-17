@@ -27,7 +27,7 @@ SpaceInEmptyParentheses: false
 SpacesInAngles: false
 SpacesInContainerLiterals: true
 SpacesInParentheses: false
-Standard: Cpp17
+Standard: c++17
 AccessModifierOffset: -4
 ConstructorInitializerIndentWidth: 4
 ContinuationIndentWidth: 4
