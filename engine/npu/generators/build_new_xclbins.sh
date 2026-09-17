@@ -6,7 +6,9 @@ set -euo pipefail
 export PEANO_INSTALL_DIR=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
 export AIETOOLS_DIR=/home/bcloud/mlir-aie/npu2_40_toolchain
 export MLIR_AIE_DIR=/home/bcloud/mlir-aie
-export VITIS_INC=/opt/amd/vitis/install/2026.1/Vitis/aietools/include
+# 2026-09-17: was /opt/amd/vitis/install/2026.1/Vitis/aietools/include — that path does
+# not exist on this host (no /opt/amd at all). Real aietools include root below.
+export VITIS_INC=/home/bcloud/Xilinx/2026.1/Vitis/aietools/include
 export PATH=$AIETOOLS_DIR/bin:$PEANO_INSTALL_DIR/bin:$PATH
 
 GENERATOR_DIR="$(cd "$(dirname "$0")" && pwd)"
