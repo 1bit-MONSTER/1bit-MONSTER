@@ -842,7 +842,10 @@ int main(int argc,char**argv){
         }
         return xd+"/final_i8_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";
     };
-    auto ip=[&](const char*t){
+    auto ip=[&](const char*t, int K, int N) -> std::string {
+        // Mirror xp(): try the full model_tag, then progressively strip leading
+        // underscore-separated vendor/format tokens, so vendor-prefixed model
+        // dirs find their per-model instruction file with no --model-tag.
         std::string base=xd+"/insts_i8_"+t, tag=cfg.model_tag;
         while(true){
             std::string tp=base+"_"+tag+".txt";
@@ -850,7 +853,17 @@ int main(int argc,char**argv){
             size_t u=tag.find('_'); if(u==std::string::npos||u==tag.size()-1) break;
             tag=tag.substr(u+1);
         }
-        return base+"_"+cfg.model_tag+".txt";
+        // Then the dimension-keyed name, exactly as xp() falls back to the
+        // dimension-keyed xclbin.  Without this the two halves of a context can
+        // resolve from different names: a committed insts_i8_<t>_K<K>_N<N>.txt is
+        // never found, so init_i8() drops to the runtime generator -- and that
+        // generator emits single-core-row instructions, which per
+        // init_with_generator's own warning silently computes the WRONG result
+        // when paired with a multi-row (v27) xclbin.  Qwen3-4B hit exactly this
+        // for QKV and O: no insts_i8_QKV_qwen3_4b.txt / insts_i8_O_qwen3_4b.txt
+        // exists, while the committed insts_i8_QKV_K2560_N6144.txt and
+        // insts_i8_O_K4096_N2560.txt were present and never tried.
+        return base+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".txt";
     };
     // bf16 path (n1_core_placed.py: bf16 activations + v8bfp16ebs8 weights)
     bool bf16_mode = getenv("NPU_BF16") != nullptr;
@@ -1007,7 +1020,7 @@ int main(int argc,char**argv){
         // This makes any model with compatible GEMM shapes (K,N multiples of 128)
         // work without pre-compiling per-model instruction files.
         auto init_i8=[&](I8Ctx& ctx, const char* t, int K, int N) -> bool {
-            std::string xp_s=xp(t,K,N), ip_s=ip(t);
+            std::string xp_s=xp(t,K,N), ip_s=ip(t,K,N);
             FILE* f=fopen(ip_s.c_str(),"rb");
             if(f){fclose(f); return ctx.init(dev,xp_s.c_str(),ip_s.c_str(),4,NC);}
             fprintf(stderr,"  No insts for %s, using runtime generator\n",t);
@@ -1025,7 +1038,8 @@ int main(int argc,char**argv){
             auto present=[](const std::string& p){
                 std::error_code ec; return std::filesystem::exists(p,ec);
             };
-            const std::string gx=xp("G",cfg.xclbin_g_k,cfg.xclbin_g_n), gi=ip("G");
+            const std::string gx=xp("G",cfg.xclbin_g_k,cfg.xclbin_g_n),
+                              gi=ip("G",cfg.xclbin_g_k,cfg.xclbin_g_n);
             fprintf(stderr,
                 "FAIL G: the split-G FFN artifacts are missing or unusable.\n"
                 "  why split-G : IM=%d; gu_split is selected when IM*2 > 14336 (here %d)\n"
@@ -1087,7 +1101,7 @@ int main(int argc,char**argv){
                 && atoi(getenv("NPU_GUSILU_BF16PAIR")) == 1;
             cg_fused_i4->bf16_pair = bf16pair;   // so packB_into_fused_i4 uses the SAME B'' layout the bf16pair xclbin dequants
             std::string gx = xp("GUSILU_i4", H, 2 * IM);
-            std::string gi = ip("GUSILU_i4");
+            std::string gi = ip("GUSILU_i4", H, 2 * IM);
             if (bf16pair) {
                 gx = xd + "/final_i8_GUSILU_i4_" + cfg.model_tag + "_bf16pair.xclbin";
                 gi = xd + "/insts_i8_GUSILU_i4_" + cfg.model_tag + "_bf16pair.txt";
@@ -1842,7 +1856,7 @@ struct Bf16Ctx {
                                int K, int N, int nlayers) -> bool {
                 c = std::make_unique<I8Ctx>();
                 c->MD = XM; c->KD = K; c->ND = N;
-                if (!c->init(dev, xp(t, K, N).c_str(), ip(t).c_str(), 4, nlayers)) {
+                if (!c->init(dev, xp(t, K, N).c_str(), ip(t, K, N).c_str(), 4, nlayers)) {
                     c.reset(); return false;
                 }
                 return true;
