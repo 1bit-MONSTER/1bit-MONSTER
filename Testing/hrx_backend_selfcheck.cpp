@@ -4,9 +4,14 @@
 // live half runs only when HRX_ROOT (or HRX_MODEL_BIN) and HRX_TEST_MODEL are
 // set (skipped loudly otherwise, like the tree's device-gated tests).
 //
-// Run (all on one line; nlohmann include is the FetchContent dir under build/):
+// Run (all on one line; nlohmann include is the FetchContent dir under build/).
+// src/hrx_inprocess.cpp is REQUIRED: hrx::Inprocess — which this check drives —
+// lives there, not in backend_hrx.cpp, so without it the link fails on ten
+// undefined references. That went unnoticed because nothing invoked this check;
+// Testing/run_all.sh now does.
 //   g++ -std=c++17 -Iinclude -Isrc -Ibuild/_deps/nlohmann_json-src/include \
-//       src/backend_hrx.cpp Testing/hrx_backend_selfcheck.cpp -o /tmp/hrx_check
+//       src/backend_hrx.cpp src/hrx_inprocess.cpp \
+//       Testing/hrx_backend_selfcheck.cpp -o /tmp/hrx_check
 //   HRX_ROOT=/path/to/hrx-bundle HRX_TEST_MODEL=/path/to/model.gguf \
 //       HRX_INIT_TIMEOUT_S=180 /tmp/hrx_check
 #include <cstdio>
