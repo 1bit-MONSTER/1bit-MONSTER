@@ -247,6 +247,24 @@ else
     fail=$((fail+1))
 fi
 
+# Provenance comparisons: PROVENANCE.json records nine population keys, a census block and
+# an observed block, and compare() read four population keys - so
+# population.tracked_paths_under_dir said 519 against a tree of 520 and the gate stayed
+# green, while hygiene()'s three structural assertions were unreachable (#2513). These
+# cases perturb keys nothing used to read, and the ways a tracked alias can leave the
+# artifact set, AFTER a --write-manifest: a manifest diff is defeated by regenerating it,
+# and the tool's own failure text tells you to.
+echo "== xclbin provenance gate comparisons =="
+total=$((total+1))
+if xclbin_pop_out=$(bash Testing/xclbin_provenance_gate_selfcheck.sh 2>&1); then
+    printf '%s\n' "$xclbin_pop_out" | sed 's/^/  /'
+    echo "✓ xclbin_provenance_gate"
+else
+    echo "✗ xclbin_provenance_gate"
+    printf '%s\n' "$xclbin_pop_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # NPU lane contract: the NPU runs on the engine's own worker (src/backend_npu.cpp
 # → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
 # the legacy FLM test harness printed "FLM not installed" as if the NPU were
