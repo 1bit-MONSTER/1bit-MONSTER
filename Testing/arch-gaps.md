@@ -141,7 +141,8 @@ engine has not validated, and for `englishbase` it would be silently wrong rathe
 than merely unsupported.
 
 Evidence below is from the official HF configs **and the models' own modeling
-code**, fetched 2026-09-13/14.
+code**, fetched 2026-09-13/14 — except the last two entries (`language`,
+`picolm`), fetched 2026-09-17.
 
 ### `englishbase` — `SlayerLab/fabryka-english-250m-e01-sft-v1`
 
@@ -307,12 +308,83 @@ evidence for that classification.
 * **Real support needs**: a whole encoder stack + decoder cross-attention — i.e.
   the scope decision `#1676` already made in the negative.
 
+### `language` — `helloboy91/tiny-english-30m`
+
+* **Provenance**: filed by the alias autopr as `language` → `RCPP_ARCH_OBILANGUAGE`
+  (#2443, closed 2026-09-17) on **name similarity alone** — `language` is a
+  substring of `obilanguage`, and that ratio was the entire evidence. The gate
+  that produced it is fixed in #2500.
+* **Class / model_type**: `LanguageModel` — with **no `model_type` field at all**.
+  The census's `language` is what `strip_arch()` leaves after removing the generic
+  `model` suffix (`STRIP_SUFFIXES` in `Testing/census_coverage.py`), so the "class"
+  is a bare English word, not a family name.
+* **Config**: a bespoke schema, not a transformers one — `"format":
+  "tiny-english-safetensors-v1"`, a nested `model_config` (vocab 8192, 8 layers,
+  H=512, 8 heads, intermediate 1408), plus `tokenizer_sha256` / `weights_sha256` /
+  `data_manifest_sha256`, `checkpoint_step` and `stage_tokens`. The repo carries
+  its own `tiny_english/` training package.
+* **Tensors** (58, F32; `model.safetensors` header): `blocks.N.attention.qkv.weight`
+  `[1536, 512]` — a **fused** QKV rather than separate q/k/v — with
+  `blocks.N.attention.output`, `attention_norm` / `ffn_norm`, and SwiGLU
+  `gate` / `up` / `down` under a bespoke `blocks.N.*` naming scheme. A small
+  LLaMA-shaped model, not the OBILANGUAGE family.
+* **Why an alias is wrong — and worse than wrong**: `RCPP_ARCH_OBILANGUAGE`
+  (token 832, no comment in the enum) has exactly one alias, `obilanguage`; it has
+  no branch in `src/model_router.cpp`, which does dispatch on these tokens (16
+  `RCPP_ARCH_*` references), and no implementation file. Mapping the **generic**
+  string `"language"` would send *any* future custom checkpoint whose architecture
+  strips to `language` into OBILANGUAGE — silently wrong for models that are not
+  OBILANGUAGE, and a name no hand-written alias should claim.
+* **Real support needs**: none. It is a 30M toy checkpoint; `language` stays
+  unmapped.
+
+### `picolm` — `aethertp/PicoLM-80M-Instruct`
+
+* **Provenance**: filed by the alias autopr as `picolm` → `RCPP_ARCH_PICO` (#2444,
+  closed 2026-09-17) because `"picolm".startswith("pico")` — a prefix match over an
+  exact-match dispatch table. Fixed in #2500.
+* **Class / model_type**: `PicoLMForCausalLM` / `picolm`, with `auto_map` pointing
+  at its own `configuration_picolm.PicoLMConfig` and
+  `modeling_picolm.PicoLMForCausalLM` — it ships its own modeling code.
+* **Shape**: 20 layers, H=576, 9 query heads / 3 kv heads (GQA 3:1, head_dim 64),
+  intermediate 1536, vocab 16384, `max_position_embeddings` 2048, rope_theta 1e4,
+  `tie_word_embeddings: true`, fp16.
+* **Tensors** (223, F16): `blocks.N.attn.{q,k,v,out}_proj` with **QK-norm**
+  (`blocks.N.attn.q_norm` / `k_norm`, `[64]`) and `blocks.N.mlp.{gate,up,down}_proj`.
+* **Why an alias is wrong**: `RCPP_ARCH_PICO = 52` is documented as "PicoDecoderHF
+  — llama-layout with **adjacent-pair** RoPE (`view_as_complex`)", and this model
+  does not do that. Its own `modeling_picolm.py` rotates with the **half-split**
+  convention:
+
+  ```python
+  x1, x2 = x[..., : D // 2], x[..., D // 2 :]
+  return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
+  ```
+
+  Adjacent-pair and half-split RoPE give different results for the same weights,
+  so the mapping would yield wrong logits rather than merely unsupported ones — and
+  `picolm` adds QK-norm, which the PICO token's own description does not mention.
+* **Registry status**: PICO is a token, not an implementation. `view_as_complex`
+  appears in the tree only inside that enum comment, and the only PICO mentions in
+  `src/` are two `backend_generic.cpp` strings calling BANANAMIND21CODER /
+  BANANAMIND21LITE a "PICO-family candidate (issue #2031)" — so the alias would
+  chain an unimplemented token onto an unverified model.
+* **Real support needs**: a PICO-family implementation, and a decision about which
+  RoPE convention it commits to. Until then `picolm` stays unmapped.
+
 The common thread: each of these is *shaped* like a family the engine already
 routes (`llama`, `gdn`, `kimi`, `lfm2`) — `fidel` only in the loosest sense, as a
 Mamba/MoE hybrid — and each differs in a mechanism that changes the computation,
 which is the one thing a `rcpp_arch_from_string` mapping cannot express. `vapor`
 is the case worth remembering: from the config alone it looked like a one-line
 alias, and only the tensors said otherwise.
+
+`language` and `picolm` are a different kind of entry, which is why they are
+recorded here at all: both were proposed by the *alias autopr* on lexical
+similarity alone, with nothing behind the name. `picolm` repeats `vapor`'s lesson
+— the tensors settled it, in one range request: a different RoPE convention and
+QK-norm — while `language` is the case an alias table cannot afford at all, a bare
+generic word that any custom checkpoint may strip down to.
 
 **Reading a checkpoint without downloading it.** For a multi-GB
 `model.safetensors`, the header is enough to settle this class of question and

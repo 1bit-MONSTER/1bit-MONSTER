@@ -34,6 +34,12 @@ The rules below implement what those comments already claimed. Genuinely-new
 architectures are left as a manual alert — they need a real engine
 implementation, not an alias.
 
+A class that has ALREADY been reviewed is never proposed again, whatever the
+name looks like: a heading in `Testing/arch-gaps.md` naming the class is the
+record of a review that concluded "not an alias", and this module now reads it.
+Before that it was write-only, so `language` and `picolm` were filed, closed
+unjustified, and re-filed by the next run that saw them.
+
 Usage (from hf_new_models.py after finding uncovered):
     from census_autopr import maybe_file_draft_pr
     maybe_file_draft_pr(uncovered, dry_run=...)
@@ -51,6 +57,8 @@ from urllib.parse import urlparse
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENGINE = os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")
 SELFCHECK = os.path.join(ROOT, "Testing", "census_tail_sweep.py")
+# Where a reviewed class is recorded when it turns out NOT to be an alias.
+ARCH_GAPS = os.path.join(ROOT, "Testing", "arch-gaps.md")
 
 # Token names the engine defines (for the proposed line's RHS). Pulled from the
 # header once, cached.
@@ -163,6 +171,34 @@ def _selfcheck_has(arch):
             return arch in f.read()
     except OSError:
         return False
+
+
+def _documented_in_arch_gaps(arch):
+    """True if `arch` is named in a Testing/arch-gaps.md heading.
+
+    That file is where a class goes once it has been reviewed and found NOT to be
+    an alias ("Uncovered classes reviewed later — same standard, and still not
+    aliases"). Nothing read it, so a reviewed class could be proposed again every
+    time it reappeared in the watcher's window: `language` and `picolm` were
+    filed, closed unjustified, and re-filed by the next run that saw them. A
+    review is a decision, and this is what makes it one the tool can see.
+
+    Headings carry one or two backticked names (`### `blockmtp` / `looped_block_mtp``),
+    so every token on a `##`-or-deeper heading line is matched, normalized.
+    """
+    n = _norm(arch)
+    if not n:
+        return False
+    try:
+        with open(ARCH_GAPS) as f:
+            for line in f:
+                if not line.startswith("##"):
+                    continue
+                if any(_norm(tok) == n for tok in re.findall(r"`([^`]+)`", line)):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def _header_has(arch):
@@ -316,6 +352,14 @@ def maybe_file_draft_pr(uncovered, models=None, dry_run=None):
         if _selfcheck_has(arch):
             print(f"[autopr] {arch}: already in selfcheck — manual", file=sys.stderr)
             continue
+        if _documented_in_arch_gaps(arch):
+            # Reviewed already, and the verdict was "not an alias". Re-filing it
+            # would re-open a settled question, so this outranks the candidate
+            # kind: even an exact-looking match has been looked at.
+            print(f"[autopr] {arch}: reviewed in Testing/arch-gaps.md — not an "
+                  f"alias, no PR (candidate would have been {token})",
+                  file=sys.stderr)
+            continue
         if kind == "fuzzy" and os.getenv("CENSUS_AUTOPR_FUZZY") != "1":
             # A name is not a family. Both draft PRs this module has ever filed
             # came from a fuzzy match and were closed unjustified (#2443, #2444),
@@ -372,6 +416,32 @@ def _self_test():
         got = _guess_ex(arch)
         if got and got[2] == "exact":
             bad.append(f"{arch} resolves exactly to {got[1]} — would file a PR")
+
+    # A class that has been REVIEWED must not be re-proposed, whatever its name
+    # scores. `haiku` and `picolm` are both documented in arch-gaps.md now.
+    if not _documented_in_arch_gaps("haiku"):
+        bad.append("haiku is documented in Testing/arch-gaps.md but reads as "
+                   "undocumented — the review record is not being consulted")
+    if _documented_in_arch_gaps("zzzznotaclass"):
+        bad.append("a name that appears in no heading reads as documented")
+    # `picolm` is the discriminating case: documented AND still a candidate, so
+    # the pair below is satisfiable only if the review record is what suppresses
+    # it. Asserting the suppression alone would pass for the wrong reason — as a
+    # first version of this check did, using `haiku`, which no longer produces a
+    # candidate at all.
+    if _guess_ex("picolm") is None:
+        bad.append("picolm no longer produces a candidate — the arch-gaps "
+                   "suppression assertion below would pass vacuously")
+    if not _documented_in_arch_gaps("picolm"):
+        bad.append("picolm is recorded in arch-gaps.md but reads as undocumented")
+    _prev_skip = os.environ.pop("CENSUS_SKIP_PR", None)
+    try:
+        proposed = maybe_file_draft_pr(["picolm", "haiku"], dry_run=True)
+    finally:
+        if _prev_skip is not None:
+            os.environ["CENSUS_SKIP_PR"] = _prev_skip
+    if proposed:
+        bad.append(f"class(es) documented as reviewed were still proposed: {proposed}")
 
     # No alias shorter than this may act as a family-prefix wildcard (`h` made
     # every h-initial class "LLaMA"). The bound is a LITERAL on purpose: a first
