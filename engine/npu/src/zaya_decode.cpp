@@ -1396,14 +1396,26 @@ int zaya_decode_main(int argc, char** argv) {
                                         // keeps the old report-and-continue behaviour for diagnostics.
                                         if (bad && !(getenv("NPU_FUSED_I4_ALLOW_BAD") &&
                                                      atoi(getenv("NPU_FUSED_I4_ALLOW_BAD")) == 1)) {
+                                            // Name the path actually taken (issue #2307). This gate is
+                                            // shared by BOTH two-launch variants, but the message below was
+                                            // written when only the int4 one was known-broken: on
+                                            // NPU_FUSED_SPLIT=1 it named a path the operator was not on and
+                                            // pointed at an int4-only escape hatch. Verified on strixhalo
+                                            // 2026-09-17 that both variants reach this block and refuse
+                                            // (NPU_FUSED_SPLIT=1 -> rc=2 corr=0.022310956 bad=2048/2048;
+                                            // NPU_FUSED_I4=1 -> rc=2 corr=0.028206284 bad=2048/2048).
+                                            const char* gate_path = FUSED_I4
+                                                ? "int4 split path (NPU_FUSED=1 NPU_FUSED_I4=1)"
+                                                : "int8 split path (NPU_FUSED=1 NPU_FUSED_SPLIT=1)";
                                             fprintf(stderr,
                                                     "[C2gate] REFUSING to continue: %lld/%d int32 C2 elements "
-                                                    "mismatch (worst=%lld). The int4 split path is known-broken "
+                                                    "mismatch (worst=%lld). The %s is known-broken "
                                                     "(issue #2307) and would emit tokens it has just disproved. "
-                                                    "Use the fused path (NPU_FUSED=1, without NPU_FUSED_I4=1) or "
-                                                    "the int8 split path (no NPU_FUSED); set "
-                                                    "NPU_FUSED_I4_ALLOW_BAD=1 to continue anyway.\n",
-                                                    bad, d.H, worst);
+                                                    "Use the single-launch fused path (NPU_FUSED=1) or the "
+                                                    "non-fused split path (no NPU_FUSED); set "
+                                                    "NPU_FUSED_I4_ALLOW_BAD=1 (this gate's escape hatch, "
+                                                    "despite the int4 name) to continue anyway.\n",
+                                                    bad, d.H, worst, gate_path);
                                             exit(2);
                                         }
                                     }
