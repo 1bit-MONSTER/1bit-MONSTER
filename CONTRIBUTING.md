@@ -12,7 +12,7 @@ This guide covers how to build, test, and contribute to the project.
 - [Quick Start](#quick-start)
 - [Build System](#build-system)
   - [Prerequisites](#prerequisites)
-  - [Build zaya_server](#build-zaya_server)
+  - [Build the one binary](#build-the-one-binary)
   - [Build NPU Engine](#build-npu-engine)
   - [Build Tests & Benchmarks](#build-tests--benchmarks)
 - [Codebase Map](#codebase-map)
@@ -74,15 +74,15 @@ This guide covers how to build, test, and contribute to the project.
 git clone https://github.com/YOUR_USERNAME/1bit-monster
 cd 1bit-monster
 
-# Build zaya_server (the one binary)
+# Build the one binary (target onebin, emitted as build/1bit)
 cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
-cmake --build build --target zaya_server -j$(nproc)
+cmake --build build --target onebin -j$(nproc)
 
 # Run (auto-detects model from default path)
-./build/zaya_server
+./build/1bit zaya
 
 # With custom model path
-./build/zaya_server --model /path/to/model.h1b
+./build/1bit zaya --model /path/to/model.h1b
 ```
 
 See [docs/guides/building.md](docs/guides/building.md) for full prerequisites and [docs/guides/getting-started.md](docs/guides/getting-started.md) for first-run instructions.
@@ -123,7 +123,7 @@ The project auto-discovers the HIP compiler in this order (see CMakeLists.txt):
 
 Set `THEROCK_PIP_ROOT` to pin to a specific TheRock installation.
 
-### Build zaya_server
+### Build the one binary
 
 ```bash
 # Configure
@@ -132,10 +132,10 @@ cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release
 
 # Build the one binary
-cmake --build build --target zaya_server -j$(nproc)
+cmake --build build --target onebin -j$(nproc)
 
 # Verify size
-ls -lh build/zaya_server
+ls -lh build/1bit
 # Expected: ~1.5 MB raw / ~1.27 MB stripped (see site/numbers.json for the auto-tracked value)
 ```
 
@@ -256,12 +256,12 @@ cmake --build build -j$(nproc)
 
 1. **One change per PR** — keep it focused and atomic
 2. **Conventional commit prefix** — see [table below](#conventional-commit-prefixes)
-3. **Builds clean** — `cmake --build build --target zaya_server -j$(nproc)` without warnings
+3. **Builds clean** — `cmake --build build --target onebin -j$(nproc)` without warnings
 4. **Existing tests pass** — run relevant `test_*` binaries from `build/`
 5. **Add tests** for new kernels, backends, or features
 6. **Benchmark data** — for performance changes, include before/after `ms/tok` or `tok/s` deltas
 7. **Symlinks allowed** — tracked symlinks are fine (there is no CI check against them). If you add one, make sure it resolves inside the repo on a fresh checkout.
-7. **Size awareness** — for new features, document the binary size impact (`ls -lh build/zaya_server`)
+7. **Size awareness** — for new features, document the binary size impact (`ls -lh build/1bit`)
 8. **No Python or Rust dependencies at runtime** — the binary must run with zero interpreters
 
 ### Conventional Commit Prefixes
@@ -323,7 +323,7 @@ Every new feature should justify its binary size cost. The server is currently ~
 All build logic lives in `CMakeLists.txt`. The build must work with:
 ```bash
 cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
-cmake --build build --target zaya_server -j$(nproc)
+cmake --build build --target onebin -j$(nproc)
 ```
 No Makefiles, no shell scripts, no Python wrappers for the core build.
 
@@ -419,7 +419,7 @@ Include in your bug report:
 - **Command**: Exact command used, with all flags
 - **Error output**: Full terminal output, not a summary
 - **Model**: Model name, size, quantization format, source
-- **Binary size**: `ls -lh build/zaya_server` (only if size-related)
+- **Binary size**: `ls -lh build/1bit` (only if size-related)
 
 ### Feature Requests
 
