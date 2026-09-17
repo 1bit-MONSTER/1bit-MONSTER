@@ -140,9 +140,21 @@ fi
 # ---- 3. the engine's source set: CMakeLists.txt vs the job that compiles it ----
 CM="$REPO/engine/npu/CMakeLists.txt"
 BENCH="$REPO/.github/workflows/bench.yml"
+
+# bench.yml may build the target directly rather than listing sources. Then there is
+# no copy to drift and the two comparisons below have nothing to compare — that is
+# the preferred shape (#2505 option 1), not a failure, so it is detected and said
+# out loud instead of being read as "every source is missing".
+DELEGATES=0
+if [ -f "$BENCH" ] && grep -qE -- '--target[= ]+npu_engine_universal' "$BENCH"; then
+    DELEGATES=1
+fi
+
 if [ ! -f "$CM" ] || [ ! -f "$BENCH" ]; then
     echo "FAIL: cannot compare the engine's source sets — missing $CM or $BENCH"
     fail=1
+elif [ "$DELEGATES" = 1 ]; then
+    echo "ok: bench.yml builds npu_engine_universal through its CMake target — no source list to drift"
 else
     # Count MATCHES, not lines: the source list is one entry per line here, but
     # ENGINE_OBJS below is a single line and `grep -c` would read it as one.
@@ -185,7 +197,7 @@ fi
 # the target comparison cannot (npu_model.o, npu_runlist_runtime.o,
 # npu_engine_bf16_mm_bridge.o, flm_prefill_bridge.o against the target's one).
 BUILD_NPU="$REPO/engine/npu/build_npu.sh"
-if [ -f "$BUILD_NPU" ] && [ -f "$BENCH" ]; then
+if [ -f "$BUILD_NPU" ] && [ -f "$BENCH" ] && [ "$DELEGATES" = 0 ]; then
     n_obj=$(awk '/^ENGINE_OBJS=\(/,/\)/' "$BUILD_NPU" \
             | grep -oE '\$\{?[A-Z0-9_]+\}?_O' | wc -l)
     obj_missing="$(engine_objs_missing "$BUILD_NPU" "$BENCH")"
