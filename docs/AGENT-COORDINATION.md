@@ -6,6 +6,36 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-16 (late) — strixhalo: the fused engine's K/V staging race, fixed; #2213 stays open
+
+State for whoever picks up the NPU/attention lane, so this is not re-derived.
+
+- **The pinned-source overwrite race the #2344 reproducer points at was live in
+  `engine/npu/src/npu_engine_fused.hip`**, and is now fixed in **PR #2436**
+  (`fix/2213-pinned-kv-staging-alias`, commit `5df955594`). K and V shared one
+  `hipHostMalloc` staging buffer; K was handed to `hipMemcpyAsync` and the same
+  buffer was refilled with V before anything synchronized, so the K cache could be
+  written with V. Re-measured on this box: **100.00%** corrupted at the engine's own
+  2 KB K row, 1.50% at a 5 us refill delay, 0.00% at 100 us. K and V now get one
+  pinned buffer each, both staged before either copy is issued; the reproducer's
+  previously *asserted* "correct caller" closing line is now measured as a control
+  and reads **0.00%**.
+- **#2213 does not close on this.** That issue's own status update rules the GPU/NPU
+  handoff out for the engine it measures ("the overlap design is a *different file*")
+  and leaves the device-side NPU/xclbin path as the remaining suspect. The fix is
+  real and independent; whether it is #2213's measured cause is still open.
+- **Correcting a merged claim**, because it is what deferred this fix: #2344's message
+  says "No committed recipe builds that file (nothing references it but docs) … a
+  change there cannot be built or verified from this tree." **`scripts/build_gpu_engine.sh`
+  does build it** — re-verified for this change, rc=0, binary produced. Anyone who
+  read that line and moved on should know the recipe was there.
+- **No NPU window was consumed** for this work: it is GPU-only (the reproducer needs
+  `/dev/kfd`, not `/dev/accel`), so rule 4 is untouched. `flm serve :8098` was left
+  running throughout.
+- Still **unclaimed and host-side**: #2307 (non-fused p1/p2 split int4 silently
+  corrupt — the decision it asks for is "fix or fail closed"), and #2113/#2150/#2152
+  have no worktree.
+
 ## 2026-09-15 (~06:30 ADT) — strixhalo: the AIE kernel route, and a source bug I reported that was already fixed
 
 Second entry from the post-reboot systems session. This one is mostly for **anyone building AIE
