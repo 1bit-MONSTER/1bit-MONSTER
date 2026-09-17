@@ -1435,9 +1435,15 @@ struct Bf16Ctx {
             int gdn_v_off = gdn_vh[l] * gdn_hd[l];
             int t = gdn_k_off + gdn_k_off + gdn_v_off;
             std::vector<float> w((size_t)H * t);
+            // ROW-MAJOR SOURCE. `qkv_w` is [rows][H] (dequant returns
+            // [out_features, in_features]) and transpose_pack reads
+            // src[(size_t)o * in_f + i] with in_f == H, so selecting the output-row
+            // block that starts at row R requires `src + R * H` — a ROW offset.
+            // The K and V calls below advanced by R *floats* instead, so they read a
+            // window inside row 0 onward and re-packed Q as K and V (issue #2451).
             transpose_pack(qkv_w, gdn_k_off, H, w.data(), t, 0);                     // Q
-            transpose_pack(qkv_w + gdn_k_off, gdn_k_off, H, w.data(), t, gdn_k_off);  // K
-            transpose_pack(qkv_w + gdn_v_off, gdn_v_off, H, w.data(), t, gdn_v_off);  // V
+            transpose_pack(qkv_w + (size_t)gdn_k_off * H, gdn_k_off, H, w.data(), t, gdn_k_off);  // K
+            transpose_pack(qkv_w + (size_t)gdn_v_off * H, gdn_v_off, H, w.data(), t, gdn_v_off);  // V
             FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
             free(qkv_w);
             // O projection
@@ -1485,9 +1491,15 @@ struct Bf16Ctx {
         // k/v projections run on CPU per token (separate tensors).
         int t = std_nh[l] * std_hd[l] * 2;
         std::vector<float> w((size_t)H * t, 0.0f);
+        // ROW-MAJOR SOURCE, same invariant as the GDN branch above: the head's q starts
+        // at row h*2*hd and its gate at row h*2*hd + hd, so each pointer must advance
+        // by (row * H) floats. Without the `* H` only head 0's q was correct (offset 0)
+        // and every other q/gate head read a sliding window inside q_proj's first rows
+        // (issue #2451). The dst offset is deliberately unchanged — this keeps the
+        // packed layout [all q heads | all gate heads] that the converter expects.
         for (int h = 0; h < std_nh[l]; h++) {
-            transpose_pack(qkv_w + h * 2 * std_hd[l], std_hd[l], H, w.data(), t, h * std_hd[l]);                                          // q
-            transpose_pack(qkv_w + h * 2 * std_hd[l] + std_hd[l], std_hd[l], H, w.data(), t, std_nh[l] * std_hd[l] + h * std_hd[l]);  // gate
+            transpose_pack(qkv_w + (size_t)(h * 2 * std_hd[l]) * H, std_hd[l], H, w.data(), t, h * std_hd[l]);                                          // q
+            transpose_pack(qkv_w + (size_t)(h * 2 * std_hd[l] + std_hd[l]) * H, std_hd[l], H, w.data(), t, std_nh[l] * std_hd[l] + h * std_hd[l]);  // gate
         }
         FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
         } // plain vs fused qkv layout
