@@ -186,6 +186,23 @@ else
     fail=$((fail+1))
 fi
 
+# NPU artifact lookup: the engine resolves an xclbin (xp) and an instruction
+# file (ip) per tensor slot. When ip() had no dimension-keyed fallback while
+# xp() did, slots whose instructions are committed under their shape rather than
+# a model tag silently fell back to the runtime generator, whose output is
+# single-core-row and wrong against a multi-row xclbin. Qwen3-4B's QKV and O hit
+# this. Needs no device and no compiler; has a built-in pre-fix control.
+echo "== NPU insts/xclbin lookup parity =="
+total=$((total+1))
+if insts_lookup_out=$(PYTHON="$PYTHON" bash Testing/npu_insts_lookup_selfcheck.sh 2>&1); then
+    printf '%s\n' "$insts_lookup_out" | sed 's/^/  /'
+    echo "✓ npu_insts_lookup"
+else
+    echo "✗ npu_insts_lookup"
+    printf '%s\n' "$insts_lookup_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # Provenance writer: build.toolchain can only come from the build that produced the
 # artifacts, and the committed manifest is null because the last rebuild ran the
 # documented command without --toolchain (#2262). The write path now refuses that,
