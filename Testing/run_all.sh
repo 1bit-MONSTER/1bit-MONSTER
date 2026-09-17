@@ -443,6 +443,23 @@ fi
 
 run rni-bf16 Testing/aie2p_bf16_rni_selfcheck.cpp --
 
+# Driver re-apply: the script meant to put the custom amdxdna back after a kernel upgrade
+# looked for `amdxdna.ko.zst` while this kernel ships `amdxdna.ko`, so it exited at its own
+# first check on every run; and the tree it would rebuild from is the legacy out-of-tree one
+# upstream deleted in 813e0bf, which is also where the module now running was built from
+# (#2459, #2517). Its provenance helpers are exercised here — a module's tree is readable
+# from its own bytes — so this needs no device, no build and no loaded driver.
+echo "== npu driver re-apply provenance =="
+total=$((total+1))
+if reapply_out=$(bash Testing/npu_driver_reapply_selfcheck.sh 2>&1); then
+    printf '%s\n' "$reapply_out" | sed 's/^/  /'
+    echo "✓ npu_driver_reapply"
+else
+    echo "✗ npu_driver_reapply"
+    printf '%s\n' "$reapply_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 echo "======================================"
 echo "$((total-fail-skip))/$total passed, $skip skipped"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }
