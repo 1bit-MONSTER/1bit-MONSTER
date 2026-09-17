@@ -21,6 +21,14 @@ ZAYA_DECODE_O="$BUILDDIR/zaya_decode.o"
 XRT_INC="/usr/include"
 REPO_ROOT="$(cd "$SRCDIR/../.." && pwd)"
 
+# Create the build dir up front: its FIRST use is the one-time compiles directly
+# below, not the model loop. With `set -e` and no dir, a tree that has never been
+# built died on the very first gcc with
+#   Fatal error: can't create .../build/dequant_q4nx.o: No such file or directory
+# so a fresh clone could not build the engine at all. It only ever worked because
+# the directory happened to already exist on this box.
+mkdir -p "$BUILDDIR"
+
 # One-time: compile dequantizer
 if [ ! -f "$DEQUANT_O" ] || [ "$DEQUANT" -nt "$DEQUANT_O" ]; then
     echo "gcc -c -O3 -o $DEQUANT_O $DEQUANT"
@@ -72,7 +80,6 @@ CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRC
 ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O")
 
 echo "=== Building NPU engine variants ==="
-mkdir -p "$BUILDDIR"
 
 for model in "${MODELS[@]}"; do
     binary="$BUILDDIR/npu_engine_$model"
