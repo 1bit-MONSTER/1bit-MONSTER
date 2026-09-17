@@ -175,6 +175,21 @@ else
     printf '%s\n' "$claims_out" | tail -10 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# The claim gate itself must be able to fail. validate_claims.py --check-readme
+# scanned README.md for five engine names; the figures moved to the wiki and the
+# README became a landing page, so the scan read zero rows and returned [] for
+# months while the page that inherited the numbers stamped a quarantined tok/s
+# figure "validated" (#2476). A zero-row scan is not an error, so nothing failed.
+# This injects a bad row into each claim page and requires the gate to catch it.
+total=$((total+1))
+if gate_out=$("$PYTHON" Testing/claims_gate_selfcheck.py 2>&1); then
+    echo "✓ claims_gate"
+    printf '%s\n' "$gate_out" | grep -E "^  note" | sed 's/^/  /'
+else
+    echo "✗ claims_gate"
+    printf '%s\n' "$gate_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))
