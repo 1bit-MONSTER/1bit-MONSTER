@@ -81,9 +81,13 @@ Consequences:
   change there. See #2459.
 
 To re-attempt: rebuild a patched module against `$(uname -r)` with the `min()` replaced by the
-override, `insmod` it, then re-run the verification below. The GRUB parameters are not
-required; `fw_patches_enable` may still matter for other firmware-side patching and is worth
-keeping.
+override, `insmod` it, then re-run the verification below. **Do not set the GRUB parameters, and
+do not expect them to have any effect if you do**: on every driver present today `aie2_max_col=40`
+is a ceiling (`min(40, 8) == 8`, Correction 2) and `fw_patches_enable` is not a parameter at all
+(Correction 3). The recipe further down is kept as the record of what was done on 2026-07-16; the
+only part of it that could still have an effect is the patched module itself, and that artifact is
+gone. Whether the deleted custom `.ko` added `fw_patches_enable` cannot now be settled, which is
+why the historical lines below still name it — they are history, not instructions.
 
 **Decision status:** `research/TRACKING.md` P0.3 ("40-column decision in writing") is still
 open 🔲, and **WS-02 (XDNA quantized GEMM/GEMV) is gated on it**. The state above is the
@@ -334,6 +338,9 @@ sudo flm validate
 ```
 
 ### Kernel Boot Parameters (GRUB)
+> ⚠️ **Recorded for history only — do not apply this step.** Both parameters are inert on any
+> driver present today (`aie2_max_col` is a ceiling; `fw_patches_enable` does not exist), per
+> Corrections 2 and 3 at the top of this document. Nothing below depends on them.
 ```
 GRUB_CMDLINE_LINUX_DEFAULT="... amdxdna.fw_patches_enable=1 amdxdna.aie2_max_col=40"
 ```
@@ -344,7 +351,10 @@ Then `sudo update-grub` and reboot.
 ## Troubleshooting
 
 ### "unknown parameter 'fw_patches_enable' ignored"
-The in-tree module (0.7.0) does not support `fw_patches_enable`. You must use the custom patched module.
+No module present today supports it, and the one that perhaps did — the custom patched `.ko` —
+is gone from disk. Treat the message as the correct outcome rather than something to fix: the
+parameter is a no-op everywhere it can currently be set (Correction 3), so there is nothing to
+work around.
 
 ### "Unknown symbol amd_pmf_get_npu_data (err -2)"
 The out-of-tree module depends on `gpu-sched` and `amd-pmf` kernel modules. Load dependencies first:
