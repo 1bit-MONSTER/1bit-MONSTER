@@ -178,6 +178,10 @@ def _open_draft_pr(arch, target, models):
     # its branch. (`finally` below is what guarantees it.)
     orig_branch = _git_out(["git", "symbolic-ref", "-q", "--short", "HEAD"])
     orig_head = _git_out(["git", "rev-parse", "HEAD"])
+    # False until the alias is safely committed on the branch. The distinction
+    # matters in `finally`: an uncommitted alias must be thrown away, a committed
+    # one must not be.
+    committed = False
     try:
         if not _apply_alias(arch, target):
             print(f"[autopr] {arch}: already mapped in bitnet_model.h — "
@@ -198,6 +202,8 @@ def _open_draft_pr(arch, target, models):
         r = None
         for cmd in cmds:
             r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+            if cmd[1] == "commit" and r.returncode == 0:
+                committed = True
             if r.returncode != 0 and cmd[1] == "push":
                 # A rebuilt bot branch is usually behind its remote; retry once
                 # with a lease — census/auto-map-* belongs to this tool alone.
@@ -223,7 +229,20 @@ def _open_draft_pr(arch, target, models):
             return None
         return out if parsed.scheme == "https" and parsed.netloc == "github.com" else None
     finally:
-        # Hand the checkout back exactly as we found it.
+        # Give the checkout back exactly as it was found.
+        if not committed:
+            # The alias is in the index AND the worktree. Both must go, or the
+            # next actor in this workflow inherits them and the switch below
+            # cannot even proceed. That is not hypothetical: on 2026-09-17 the
+            # autopr staged `language` and `picolm`, its commit failed for want
+            # of a git identity, and the poster step's bare `git commit` then
+            # swept both aliases into a blog-post PR (#2450). `--source=HEAD`
+            # is the pre-commit tree here, because a failed commit leaves HEAD
+            # untouched.
+            subprocess.run(["git", "restore", "--staged", "--worktree",
+                            "--source=HEAD", "--",
+                            os.path.relpath(ENGINE, ROOT)],
+                           cwd=ROOT, capture_output=True)
         if orig_branch:
             subprocess.run(["git", "switch", "--quiet", orig_branch], cwd=ROOT,
                            capture_output=True)
