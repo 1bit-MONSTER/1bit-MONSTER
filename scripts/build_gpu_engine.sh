@@ -33,12 +33,37 @@ fi
 OUT="${OUT:-/tmp/npu_engine_fused}"
 S=engine/npu/src
 
+# Private object dir, and make OUT's own directory if it is missing.
+#
+# The three objects were written to FIXED /tmp/fused.o, /tmp/dequant.o and
+# /tmp/kvattn.o and left there, so every run of this recipe shares one set of
+# intermediates. I ran two concurrently to see what that costs: both SUCCEEDED and
+# the binaries were the same size, because the script hard-codes
+# -DMODEL_qwen3_0_6b and both built the same tree, so the shared objects happened
+# to be interchangeable. It is not harmless across two WORKTREES, where the
+# sources differ and one run can link the other's object - this repo keeps ~48 of
+# them. It also means the recipe cannot build at all when /tmp is full, which has
+# happened here (~/.dsh/scratch/mesh/ALERT-tmp-full-2026-09-16.txt; the
+# coordination note says "never build or park artifacts in /tmp"), and that a
+# successful build leaves objects behind. A private dir honours TMPDIR, so a run
+# can be kept off /tmp entirely, and the trap removes it.
+#
+# OUT was used without ever creating its directory - demonstrated, not assumed.
+# With OUT=/tmp/gputest/deep/new/engine the old recipe exits 1 with
+#     error: cannot open output file ...: No such file or directory
+#     error: 'ld.lld' failed
+# i.e. the error names the linker, not the missing directory. Same class as
+# #2439, which fixed exactly this for engine/npu/build_npu.sh.
+OBJDIR="$(mktemp -d "${TMPDIR:-/tmp}/build_gpu_engine.XXXXXX")" || exit 1
+trap 'rm -rf "$OBJDIR"' EXIT
+mkdir -p "$(dirname "$OUT")" || exit 1
+
 hipcc -c -std=c++17 -O2 -march=native -DMODEL_qwen3_0_6b \
-    $S/npu_engine_fused.hip -I include -I $S -I $S/../../npu-infer/include -isystem "$HIP_INC" -o /tmp/fused.o
-g++ -std=c++17 -O2 -march=native -c $S/dequant_q4nx.cpp -I include -I $S -o /tmp/dequant.o
+    $S/npu_engine_fused.hip -I include -I $S -I $S/../../npu-infer/include -isystem "$HIP_INC" -o "$OBJDIR/fused.o"
+g++ -std=c++17 -O2 -march=native -c $S/dequant_q4nx.cpp -I include -I $S -o "$OBJDIR/dequant.o"
 hipcc -c -std=c++17 -O2 -march=native -I include -isystem "$HIP_INC" \
-    src/kv_cache_attn.hip -o /tmp/kvattn.o
-hipcc /tmp/fused.o /tmp/dequant.o /tmp/kvattn.o \
+    src/kv_cache_attn.hip -o "$OBJDIR/kvattn.o"
+hipcc "$OBJDIR/fused.o" "$OBJDIR/dequant.o" "$OBJDIR/kvattn.o" \
     -lamdhip64 -lxrt_coreutil -lxrt_core -laiebu -luuid -lpthread \
     -o "$OUT"
 echo "built $OUT"
