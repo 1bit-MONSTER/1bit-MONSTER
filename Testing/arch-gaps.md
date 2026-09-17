@@ -591,6 +591,87 @@ read by range request, so none of these weights were downloaded.
 
 ---
 
+## Reviewed 2026-09-17 (third batch) — the classes the **daily watcher is red for**
+
+Not chosen by instance count: these three are the remainder of the breach set in
+`census-watch`'s 2026-09-17 run (`!! UNCOVERED diba / iso20022 / language / picolm /
+vaayu`), which is why the scheduled run is red. Two of the five already have open
+mapping PRs (`language` → #2443, `picolm` → #2444, both auto-drafted); these three had
+nothing, and none of the five had a review record. Evidence fetched 2026-09-17, tensor
+names from each repo's own header or index rather than from the config.
+
+### `diba` — `Dibachain/Diba-mini`
+
+* **Class / model_type**: `DibaForCausalLM` / `diba`.
+* **The config is the Qwen3.5/3.6 hybrid schema verbatim** — `layer_types`,
+  `full_attention_interval`, `attn_output_gate`, `linear_conv_kernel_dim`,
+  `linear_key_head_dim`, `linear_num_key_heads`, `linear_num_value_heads` — with 24
+  layers, H=2048, NH=8, NKV=2, HD=256, IM=6144, vocab 248320, ctx 262144. So the
+  *mechanism* is one the engine implements, which is exactly why the tensor check
+  decides it rather than the shape keys.
+* **The tensors are the HF/Qwen3-Next gated-DeltaNet spelling** (320 of them, read from
+  the sharded `model.safetensors.index.json`):
+  `model.layers.N.linear_attn.{in_proj_qkv,in_proj_z,in_proj_a,in_proj_b,A_log,dt_bias,convNd,norm,out_proj}`
+  plus `self_attn.{q,k,o}_proj` with `q_norm`/`k_norm`, and standard
+  `mlp.{gate,up,down}_proj`.
+* **Why an alias is wrong — the projections are fused differently.** The engine's GDN
+  reader looks for **`model.layers.N.linear_attn.qkv_proj.weight`**
+  (`engine/npu/src/model_config.h:363-370`, and `:434` gates `has_gated_delta_net` on
+  that exact name), and its conv names are `ssm_conv1d.weight` / `conv1d.weight`
+  (`src/backend_hip_1bp.cpp:405,791`, `falconh1_engine.cpp:218`, `falconmamba_engine.cpp:186`).
+  Diba ships four separate projections and `linear_attn.convNd.weight`.
+  `convNd` occurs repo-wide **only** in `research/ws12-hrx-loom/*` spec documents, where
+  it is a *Zaya/HRX* name whose mapping is `ssm_convNd → ssm_conv1d` — i.e. the engine
+  knows that name only as something to rename *into* its own vocabulary.
+  `in_proj_qkv`/`in_proj_z`/`in_proj_a`/`in_proj_b`/`A_log`/`dt_bias` do appear in the
+  tree, so this is a naming-and-fusion difference rather than an unknown mechanism.
+* **Real support needs**: converter mappings for this namespace — `in_proj_qkv` →
+  `qkv_proj`, the a/b/z projections, and `convNd` → `conv1d` — or a reader that
+  understands the unfused form. Not a shape question.
+
+### `iso20022` — `sivasub987/iso20022-extract-53m`
+
+* **Class / model_type**: `ISO20022ForCausalLM` / `iso20022`.
+* **The config is bespoke**: `d_model` / `d_ff` instead of `hidden_size` /
+  `intermediate_size`, vocab 8192, ctx 1024, an `auto_map` pointing at custom modelling
+  code, and a cluster of mechanism keys no engine path reads — `engram_conv_taps`,
+  `engram_layers`, `engram_orders`, `engram_slots`, `engram_sub_dim`,
+  `confidence_probes`, `end_token_id`.
+* **The 213 tensors confirm it**: `model.layers.N.engram.{key_proj,tables,taps,value_proj}`
+  and a top-level `confidence_head.{probes,proj}`, wrapped around an otherwise
+  llama-shaped shell (`self_attn.{q,k,o}_proj`, `mlp.{gate,up,down}_proj`, the two
+  layernorms).
+* **Why an alias is wrong**: the engine has no engram path. `engram` appears in it only
+  as two *class-name aliases* (`engramqwen` → `RCPP_ARCH_QWEN3`, `tinyqwen3engramhc` →
+  `RCPP_ARCH_QWEN2`, `include/rocm_cpp/bitnet_model.h:723,2024`), and in
+  `research/ws13-arch-gap-closure/` as a **DeepSeek V4.1** module family whose tensors
+  are `embed.weight/scale`, `q_weight`, `k_weight`, `wkv.weight/scale` — a different
+  shape from this one's `key_proj`/`value_proj`/`tables`/`taps`. `confidence_head` has no
+  engine hit at all; the repo knows it only from the V4.1 MTP-stack specs. Aliasing onto
+  Qwen3 would load a shell and compute a different function.
+* **Real support needs**: its own implementation — the engram memory block and the
+  confidence head — plus a config reader for its schema.
+
+### `vaayu` — `meetmendapara/Vaayu-Large`
+
+* **Class / model_type**: `VaayuForCausalLM` / `vaayu_slmm`.
+* **The config looks aliasable**: 23 layers, H=1280, NH=20, NKV=5, IM=3584, vocab 32000,
+  ctx 4096, `rms_norm_eps`, `rope_theta`, tied embeddings, and one extra key (`variant`)
+  — llama-shaped with nothing exotic.
+* **Nothing to decide from: the repo ships no usable weights.** Its only weight files
+  are `pytorch_model.bin` (**1,117 B**) and `vaayu_final.pt` (**992 B**). The former is a
+  ZIP whose single entry `vaayu_large_final/data.pkl` *references* tensors (`embed_tokens.weight`,
+  `layers.0.self_attn.q_proj.weight`, …) against `cuda:0` storages but carries **no
+  tensor bytes** — a 1 KB pickle cannot hold a 1280-wide 23-layer model. There is no
+  `safetensors` and no modelling code.
+* **Why it is recorded rather than decided**: the tensor test is the standard here, and
+  it cannot run. Mapping `vaayu_slmm` onto a llama-family token would be a guess about
+  weight layout — the same position `idemformer` was left in.
+* **Real support needs**: a published checkpoint. Then the llama-shaped config makes this
+  the most likely of the three to be a genuine alias.
+
+---
+
 ## Unverifiable: gated configs
 
 `WaveMatrix/Qwen3-VL-8B-Instruct-GPTQ-Int4` is counted as **unverifiable** on
