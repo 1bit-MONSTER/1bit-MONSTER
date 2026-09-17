@@ -159,13 +159,37 @@ jobs:
             fi
           fi
 
-          # --- Spike detection ---
+          # Trailing per-run baseline, over the same window the raw test uses
+          # (every day except today and yesterday). One more runs call:
+          # total_count(from that window's first day) minus R1 (from yesterday
+          # on), reusing the R1 the attribution block above already fetched.
+          AVG7=$(echo "$CLONE_RESP" | jq '[.clones[:-2][].count] | if length > 0 then (add / length | floor) else 0 end')
+          TRAILING_CLONES=$(echo "$CLONE_RESP" | jq '[.clones[:-2][].count] | add // 0')
+          TRAILING_RUNS=""
+          TRAILING_CPR=""
+          T0_TS=$(echo "$CLONE_RESP" | jq -r '.clones[0].timestamp // empty' 2>/dev/null || true)
+          if [ -n "$T0_TS" ] && [[ "${R1:-}" =~ ^[0-9]+$ ]]; then
+            T0_DAY="${T0_TS%%T*}"
+            R_START=$(curl -sf -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$OWNER/$REPO/actions/runs?per_page=1&created=%3E%3D${T0_DAY}T00:00:00Z" \
+              | jq '.total_count // empty' 2>/dev/null || true)
+            if [[ "$R_START" =~ ^[0-9]+$ ]] && (( R_START > R1 )); then
+              TRAILING_RUNS=$(( R_START - R1 ))
+              TRAILING_CPR=$(awk -v c="$TRAILING_CLONES" -v r="$TRAILING_RUNS" 'BEGIN { printf "%.2f", c / r }')
+            fi
+          fi
+
+          # --- SPIKE DECISION BEGIN ---
+          # (replayed verbatim by tools/traffic-spike-decision-test.sh)
           # Baseline is ~2k clones/day from CI/bots, so judge spikes against
           # the trailing average (excluding today + yesterday) rather than a
           # fixed threshold that would fire a spike issue every day.
+          # Everything inside this marked block is arithmetic on values already
+          # computed above - no network - so the test replays it verbatim.
           SPIKE=false
           SPIKE_MSG=""
-          AVG7=$(echo "$CLONE_RESP" | jq '[.clones[:-2][].count] | if length > 0 then (add / length | floor) else 0 end')
+          SPIKE_ATTR=""
+          RATIO=0
           if [ "${AVG7:-0}" -gt 0 ] 2>/dev/null && [ "$YESTERDAY" -gt 0 ]; then
             RATIO=$(awk -v y="$YESTERDAY" -v a="$AVG7" 'BEGIN { printf "%.1f", y/a }')
             if awk -v r="$RATIO" 'BEGIN { exit !(r >= 2.5) }'; then
@@ -184,6 +208,25 @@ jobs:
             SPIKE_MSG="${SPIKE_MSG} HIGH_VOLUME: ${YESTERDAY} clones in a single day"
           fi
 
+          # CI attribution gate (issue #2420). CLONES_PER_RUN was computed for
+          # the alert body but never consulted, so this test filed an issue on a
+          # clone rise that *was* a run-count rise and then explained it away in
+          # the same body: #2378 (3027 clones / 776 runs = 3.9 per run) and #2420
+          # (3063 / 670 = 4.6) both sit inside the 2.1-5.0 clones/run band that
+          # docs/traffic-attribution.md measured. Suppress only when the run data
+          # is actually present AND the per-run rate is flat; with no run data
+          # the old behaviour stands, and a >5000-clone day always files.
+          if [ "$SPIKE" = "true" ] && [ -n "$CLONES_PER_RUN" ] && [ -n "$TRAILING_CPR" ] \
+             && [ "${YESTERDAY:-0}" -le 5000 ] 2>/dev/null; then
+            CPR_RATIO=$(awk -v y="$CLONES_PER_RUN" -v a="$TRAILING_CPR" 'BEGIN { printf "%.2f", (a > 0) ? y / a : 0 }')
+            if awk -v r="$CPR_RATIO" -v m="${TRAFFIC_CPR_MIN:-1.5}" 'BEGIN { exit !(r < m) }'; then
+              SPIKE=false
+              SPIKE_MSG=""
+              SPIKE_ATTR="raw clone ratio ${RATIO}x, but ${CLONES_PER_RUN} clones/run vs ${TRAILING_CPR} over ${TRAILING_RUNS} trailing runs (${CPR_RATIO}x) - attributed to CI run volume, not filing"
+            fi
+          fi
+          # --- SPIKE DECISION END ---
+
           # --- Save outputs (use delimiter only when non-empty) ---
           {
             echo "CLONE_14D=$CLONE_COUNT"
@@ -196,11 +239,17 @@ jobs:
             echo "TOP_PATH=$TOP_PATH"
             echo "CI_RUNS_YESTERDAY=$CI_RUNS"
             echo "CLONES_PER_RUN=$CLONES_PER_RUN"
+            echo "TRAILING_RUNS=$TRAILING_RUNS"
+            echo "TRAILING_CPR=$TRAILING_CPR"
             echo "SPIKE=$SPIKE"
             EOF_MARKER="SPIKE_EOF_$(date +%s)_${RANDOM}"
             echo "SPIKE_MSG<<${EOF_MARKER}"
             echo "$SPIKE_MSG"
             echo "${EOF_MARKER}"
+            EOF_MARKER2="SPIKE_ATTR_EOF_$(date +%s)_${RANDOM}"
+            echo "SPIKE_ATTR<<${EOF_MARKER2}"
+            echo "$SPIKE_ATTR"
+            echo "${EOF_MARKER2}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Report to Job Summary
@@ -215,8 +264,11 @@ jobs:
           TOP_PATH: ${{ steps.traffic.outputs.TOP_PATH }}
           CIRUNS: ${{ steps.traffic.outputs.CI_RUNS_YESTERDAY }}
           CPR: ${{ steps.traffic.outputs.CLONES_PER_RUN }}
+          TRUNS: ${{ steps.traffic.outputs.TRAILING_RUNS }}
+          TCPR: ${{ steps.traffic.outputs.TRAILING_CPR }}
           SPIKE: ${{ steps.traffic.outputs.SPIKE }}
           SPIKE_MSG: ${{ steps.traffic.outputs.SPIKE_MSG }}
+          SPIKE_ATTR: ${{ steps.traffic.outputs.SPIKE_ATTR }}
         run: |
           echo "## Traffic Report — ${GITHUB_REPOSITORY}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -231,9 +283,16 @@ jobs:
           if [ -n "$CIRUNS" ]; then
             echo "| Workflow runs (same day) | $CIRUNS — $CPR clones/run |" >> $GITHUB_STEP_SUMMARY
           fi
+          if [ -n "$TRUNS" ]; then
+            echo "| Trailing baseline | $TRUNS runs — $TCPR clones/run |" >> $GITHUB_STEP_SUMMARY
+          fi
           if [ "$SPIKE" = "true" ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Alert: $SPIKE_MSG" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -n "$SPIKE_ATTR" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Not filed (superseded by the CI-attribution gate): $SPIKE_ATTR" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Create Spike Issue
