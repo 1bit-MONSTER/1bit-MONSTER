@@ -38,6 +38,18 @@ tile-metadata derivation; that was validated against the one case where the
 engine's numbers are recorded (Qwen3-4B: H=2560 NH=32 NKV=8 HD=128 IM=9728,
 which reproduces its final_i8_G_K2560_N9728.xclbin and its qwen3_4b tag).
 
+Two modes:
+
+  --pairing   audits the COMMITTED set: every final_i8_*.xclbin should ship its
+              insts_i8_*.txt, because init_i8() falls back to the runtime generator
+              when the .txt is absent and that generator emits single-core-row
+              instructions which, against a multi-row (v27) xclbin, silently
+              compute the WRONG result (the engine's own warning, :859). Findings
+              are split into RISK — the engine names that slot as a literal, so it
+              will really take the fallback — and a note for artifacts no engine
+              slot token matches (another loader, or not this engine's).
+  (default)   the deployed-model census above.
+
 Reports only — not wired into run_all.sh. Missing artifacts are a known existing
 condition, and a report that fails CI would be the same over-reach this file's
 own docstring warns about.
@@ -46,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -115,17 +128,77 @@ def slots(d: dict) -> list[tuple[str, int, int]]:
     return out
 
 
+def engine_slot_tokens(repo: Path) -> set[str]:
+    """Every quoted string literal in the engine that loads a context.
+
+    Used to tell "this xclbin's slot is one the engine actually asks for" from
+    "this artifact belongs to some other loader", instead of hardcoding a list of
+    exceptions that would rot."""
+    src = repo / "engine" / "npu" / "src" / "npu_engine_universal.cpp"
+    if not src.is_file():
+        return set()
+    return set(re.findall(r'"([A-Z][A-Z0-9_]{2,})"', src.read_text(encoding="utf-8", errors="replace")))
+
+
+def pairing_audit(xd: Path, repo: Path) -> int:
+    """Report committed xclbins that ship without their instruction file.
+
+    This is the other half of resolve(): init_i8() looks for the .txt first and
+    falls back to the runtime generator when it is absent, and that generator
+    emits SINGLE-CORE-ROW instructions which — against a multi-row (v27) xclbin —
+    silently compute the WRONG result rather than merely a slower one. The warning
+    is in the engine itself (npu_engine_universal.cpp:859), so a xclbin whose
+    instruction file went missing is a wrong-answer path, not a slow one.
+    """
+    xcl = {f.name[len("final_i8_"):-len(".xclbin")]: f for f in sorted(xd.glob("final_i8_*.xclbin"))}
+    insts = {f.name[len("insts_i8_"):-len(".txt")] for f in xd.glob("insts_i8_*.txt")}
+    missing = sorted(set(xcl) - insts)
+    tokens = engine_slot_tokens(repo)
+
+    print(f"xclbin dir : {xd}")
+    print(f"  {len(xcl)} final_i8_*.xclbin, {len(insts)} insts_i8_*.txt")
+    print(f"  xclbins with no instruction file: {len(missing)}\n")
+
+    risky = 0
+    for name in missing:
+        # Longest underscore prefix that the engine names as a literal slot token.
+        parts = name.split("_")
+        slot = next(("_".join(parts[:i]) for i in range(len(parts), 0, -1)
+                     if "_".join(parts[:i]) in tokens), None)
+        if slot:
+            risky += 1
+            print(f"  RISK   final_i8_{name}.xclbin — slot {slot!r} IS loaded by the engine,"
+                  f" so this falls back to the runtime generator (wrong results)")
+        else:
+            print(f"  note   final_i8_{name}.xclbin — no engine slot token matches this name"
+                  f" (another loader, or not this engine's artifact)")
+
+    orphan = sorted(insts - set(xcl))
+    if orphan:
+        print(f"\n  {len(orphan)} instruction file(s) with no xclbin:")
+        for o in orphan:
+            print(f"    insts_i8_{o}.txt")
+    print(f"\n  {risky} of them belong to a slot the engine loads.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(Path.home() / ".config/flm/models"),
                     help="directory of deployed model dirs")
     ap.add_argument("--xclbins", default=None,
                     help="xclbin directory (default: <repo>/engine/npu/xclbins)")
+    ap.add_argument("--pairing", action="store_true",
+                    help="audit the committed set: every xclbin needs its insts file")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
     xd = Path(args.xclbins) if args.xclbins else repo / "engine" / "npu" / "xclbins"
+    if args.pairing:
+        if not xd.is_dir():
+            sys.exit(f"npu_xclbin_census: no xclbin directory at {xd}")
+        return pairing_audit(xd, repo)
     root = Path(args.root)
     if not root.is_dir():
         sys.exit(f"npu_xclbin_census: no model root at {root}")
