@@ -238,6 +238,23 @@ if "$CXX" $FLAGS -c src/backend_generic.cpp -o "$BIN/bg.o" 2>/dev/null; then
     echo "✓ backend_generic.cpp"; else echo "✗ backend_generic.cpp"; fail=$((fail+1)); fi
 
 echo "== e2e (needs model fixtures in /tmp/onebit-e2e — skipped if absent) =="
+
+# The manifest's own runner: 29 of the 32 families in Testing/models_manifest.json carry
+# `validated`, and Testing/bringup_runner.sh is what those statuses name — but nothing invoked
+# it, and on a box without the host fixtures it reported "0/4 generation gates passed" with the
+# other 25 families missing from the denominator entirely (with no gate commands and no
+# fixtures it printed 0/0 and exited 0). Its verdict helpers are what this pins; see #2520.
+echo "== manifest gate runner =="
+total=$((total+1))
+if bringup_out=$(bash Testing/bringup_runner_selfcheck.sh 2>&1); then
+    printf '%s\n' "$bringup_out" | sed 's/^/  /'
+    echo "✓ bringup_runner"
+else
+    echo "✗ bringup_runner"
+    printf '%s\n' "$bringup_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 e2e() {  # e2e <name> <model_dir> <oracle.gguf> [expect-torch-string]
     local name="$1" dir="$2" gguf="$3"
     if [ ! -f "$gguf" ]; then echo "  - $name: fixtures absent, skipped"; total=$((total+1)); skip=$((skip+1)); return; fi
