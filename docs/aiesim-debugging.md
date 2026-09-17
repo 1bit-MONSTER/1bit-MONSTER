@@ -312,12 +312,56 @@ build path is not the production path, and the Xilinx repo is not one we
 contribute CI to. Recovery on a fresh box:
 
 ```bash
-# canonical backup (verified present on strixhalo):
-git clone ~/1bit-MONSTER-backups/mlir-aie-local-patches-2026-08-29.bundle mlir-aie
-# or apply the flat patch:
-cd mlir-aie && git apply ~/1bit-MONSTER-backups/mlir-aie-local-patches-2026-08-29.patch
+# canonical backup — the COMPLETE bundle (self-contained; this is the one to use):
+git clone ~/1bit-MONSTER-backups/mlir-aie-local-patches-2026-08-29.complete.bundle mlir-aie
 ```
 
-Re-verify before relying on it (the bundle is a full clone; the patch is the
-same content as commit `1e6b70af0`). If the npu2_40 path ever becomes
-production, upstream the patches as a PR to Xilinx/mlir-aie first.
+**Correction 2026-09-17 (round 20/21) — the original `.bundle` cannot be used as
+this section used to say.** The thin bundle is **not** a full clone:
+
+```bash
+$ git bundle verify …2026-08-29.bundle
+The bundle contains this ref:  1e6b70af0…
+The bundle requires this ref:  e473a7248…        # a prerequisite, not content
+$ git clone …2026-08-29.bundle mlir-aie          # the old documented step
+error: Repository lacks these prerequisite commits: e473a7248…
+fatal: remote transport reported error
+```
+
+`e473a7248` ("npu2: HW context pool is 16 not 32", the parent of `1e6b70af0`) is
+itself local-only, so a fresh box has no way to satisfy it — the clone fails.
+Cause: `~/mlir-aie` is a **shallow** clone (`.git/shallow`, graft `1e1eaf22a`),
+and the bundle was created as a *range*, so its base was recorded as a
+prerequisite instead of being shipped. Size is the fingerprint — 135,947 B
+(thin) vs 111,841,382 B (complete).
+
+The flat patch has the same dependency: its own header reads
+`Base: e473a7248`, and it does **not** contain that commit's diff
+(`hostruntime.py`, the only file it touches, appears 0 times). So neither
+original artifact reconstructs the state on its own.
+
+Verify rather than assume — this is what "present" failed to catch:
+
+```bash
+git bundle verify <bundle> | grep -E 'complete history|requires'
+#   "records a complete history" -> standalone-clonable
+#   "requires this ref"          -> thin; the named commit must already exist
+```
+
+The `.complete.bundle` above was verified both ways: `git bundle verify` reports
+*"records a complete history"*, and a rehearsed `git clone` succeeds and yields
+`BdLowering.cpp` **and** `e473a7248`. The thin bundle is kept beside it for
+provenance only. A preservation ref also holds the commit locally, since it was
+previously reachable from no ref at all (only `refs/stash` held its parent):
+
+```
+refs/heads/preserve/npu2-40-toolchain-20260829 -> 1e6b70af0   (in ~/mlir-aie)
+```
+
+If the npu2_40 path ever becomes production, upstream the patches as a PR to
+Xilinx/mlir-aie first.
+
+**Note on the working tree:** `~/mlir-aie` currently *deletes* two of the files
+`1e6b70af0` adds (`AIELowerDynamicBDPool.cpp`, `BdLowering.cpp`). A build from
+that tree therefore lacks the bd-pool host path this section describes — check
+`git -C ~/mlir-aie status --porcelain` before assuming the patches are applied.
