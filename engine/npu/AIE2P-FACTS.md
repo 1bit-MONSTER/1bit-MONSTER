@@ -138,6 +138,13 @@ def rni_bf16(x):  # x: fp32 ndarray -> uint16 bf16 values, RNI rounding
   properties of the hardware. Test = build/load `drivers/accel/amdxdna/` at
   current head and see whether the wedge reproduces. Tracked in #2459; see also
   [#2459 comment 5718446966](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/2459#issuecomment-5718446966).
+
+- **Which build is doing it — checkable, and checked.** The installed module is the
+  out-of-tree tree upstream deleted in `813e0bf` (compile path `src/driver/amdxdna`),
+  built 2026-09-01, and nothing upstream has landed in that tree since — so the chain
+  above predates `ebd297c` (ring-buffer check before a mailbox timeout) and `77e5325`
+  (MMU-notifier unregister before BO removal). `scripts/npu-driver-reapply.sh` prints
+  which tree the installed module came from; see #2459.
 - Fix: default teardown flushes stdio explicitly then `_exit(0)` (no atexit /
   static dtors — same pattern as npu_engine_universal and the #1426 fix). Set
   `NPU_CLEAN_TEARDOWN=1` to run the real destructors and return normally (safe
