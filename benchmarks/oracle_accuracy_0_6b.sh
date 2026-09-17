@@ -70,7 +70,6 @@ while IFS='|' read -r prompt expected; do
     else
         echo "$prompt" | "$TOK" "$TJSON" 2>/dev/null | tr ',' ' ' > /tmp/oa_ids.txt
     fi
-    ids="$(tr -s ' ' < /tmp/oa_ids.txt | sed 's/^ *//; s/ *$//')"
     nids=$(wc -w < /tmp/oa_ids.txt)
     if [ "$nids" -eq 0 ]; then
         echo "[$n] TOKENIZE EMPTY for: $prompt" >&2

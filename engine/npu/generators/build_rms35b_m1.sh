@@ -18,7 +18,6 @@ M_ROWS=1
 [ "${1:-}" = "-M" ] && M_ROWS="${2:-1}"
 
 P=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
-MA=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/mlir_aie
 PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
 AIECC=/home/bcloud/mlir-aie/install/bin/aiecc
 AIETOOLS=/home/bcloud/mlir-aie/build_tmp

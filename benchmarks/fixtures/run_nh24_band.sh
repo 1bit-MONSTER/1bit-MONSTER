@@ -9,7 +9,7 @@
 #
 # No flags beyond NPU_PREFILL_BF16=1. Load printed at both ends.
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 export NPU_XCLBIN_DIR=$PWD/engine/npu/xclbins
 B=./engine/npu/build/npu_engine_phi4_mini_4b
 M=~/.config/flm/models/Phi4-mini-Instruct-NPU2

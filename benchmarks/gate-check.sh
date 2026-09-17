@@ -20,7 +20,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The runlist resolves its per-context ELF dir RELATIVE to the CWD (npu_runlist_bridge.cpp:
 # "npu-infer/captures/txn-elfs-8b"), so the harness must run from the repo root.
-cd "$ROOT"
+cd "$ROOT" || exit 1
 # The repo's OWN xclbins are the default, and an inherited NPU_XCLBIN_DIR from OUTSIDE this
 # worktree is a hazard worth shouting about: this session's shell had it pointing at a sibling
 # worktree (`1bit-MONSTER-pi`), so the harness ran against another tree's xclbins and every

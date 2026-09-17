@@ -10,7 +10,7 @@
 #   Phi4     : NPU_PREFILL_BF16=1                     -> host attention (no nh24 ELF exists)
 #   Nanbeige : NPU_PREFILL_BF16=1 NPU_ATTN_CPU=1      -> host attention (the nh20 NPU kernel is the defect)
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 export NPU_XCLBIN_DIR=$PWD/engine/npu/xclbins
 TOK="220 777 1024 4096 12345 58907 30000 45000"
 run() { # $1=binary $2=model $3=flags $4=expected-banner-fragment

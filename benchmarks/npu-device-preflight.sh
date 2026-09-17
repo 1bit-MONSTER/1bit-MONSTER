@@ -9,7 +9,7 @@
 set -u
 holders=""
 for p in /proc/[0-9]*; do
-  ls -l "$p/fd" 2>/dev/null | grep -q accel0 && holders="$holders ${p#/proc/}"
+  for _fd in "$p"/fd/*; do case "$(readlink "$_fd" 2>/dev/null)" in *accel0*) holders="$holders ${p#/proc/}"; break;; esac; done
 done
 if [ -n "$holders" ]; then
   echo "BUSY — accel0 open by:$holders"

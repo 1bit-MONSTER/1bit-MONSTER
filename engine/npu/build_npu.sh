@@ -126,12 +126,12 @@ CXX="${CXX:-g++}"
 # XRT (which still builds the split path, just without runlist batching).
 XRT_RUNLIST_LIB="${XRT_RUNLIST_LIB:-/usr/local/xrt-runlist/lib}"
 if [ -f "$XRT_RUNLIST_LIB/libxrt_coreutil.so.2" ]; then
-    XRT_LIBS=(-L"$XRT_RUNLIST_LIB" -l:libxrt_coreutil.so.2 -l:libxrt_core.so.2 -Wl,-rpath,"$XRT_RUNLIST_LIB")
+    XRT_LIBS=(-L"$XRT_RUNLIST_LIB" -l:libxrt_coreutil.so.2 -l:libxrt_core.so.2 "-Wl,-rpath,$XRT_RUNLIST_LIB")
 else
     XRT_LIBS=(-lxrt_coreutil -lxrt_core)
 fi
 # XRT uses shared libs (must come AFTER source on command line)
-LIBS=("${XRT_LIBS[@]}" -laiebu -luuid -lm -ldl -L"$FLM_LIB" -lgemm -ldequant -lqwen3_npu -lqwen3_6_moe_npu -lqwen3_5vl_npu -lq4_npu_eXpress -lmha -llm_head -lllama_npu -lgemma4e_npu -lphi4_npu -lnanbeige_npu -llfm2_npu -Wl,-rpath,"$FLM_LIB")
+LIBS=("${XRT_LIBS[@]}" -laiebu -luuid -lm -ldl -L"$FLM_LIB" -lgemm -ldequant -lqwen3_npu -lqwen3_6_moe_npu -lqwen3_5vl_npu -lq4_npu_eXpress -lmha -llm_head -lllama_npu -lgemma4e_npu -lphi4_npu -lnanbeige_npu -llfm2_npu "-Wl,-rpath,$FLM_LIB")
 CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$SRCDIR/generators" -I"$REPO_ROOT/include" -I"$XRT_INC")
 ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_BRIDGE_O" "$BF16MM_BRIDGE_O" "$FLM_PREFILL_BRIDGE_O")
 

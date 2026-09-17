@@ -36,9 +36,9 @@ RC=$?
 if [ $RC -eq 3 ]; then
   echo "=== DRIFT DETECTED — capturing firmware/driver state to $OUT ==="
   for f in dump_fw_trace dump_fw_trace_buffer dump_fw_log ctx_rq get_app_health powerstate telemetry_health; do
-    sudo cat "/sys/kernel/debug/accel/0000:c6:00.1/$f" > "$OUT/$f.txt" 2>/dev/null
+    sudo cat "/sys/kernel/debug/accel/0000:c6:00.1/$f" 2>/dev/null | sudo tee "$OUT/$f.txt" >/dev/null
   done
-  sudo dmesg > "$OUT/dmesg.txt" 2>/dev/null
+  sudo dmesg 2>/dev/null | sudo tee "$OUT/dmesg.txt" >/dev/null
   xrt-smi examine > "$OUT/xrt-smi.txt" 2>/dev/null
   cat /proc/cmdline > "$OUT/cmdline.txt"
   cp "$LG" "$OUT/logits_1000.bin" 2>/dev/null

@@ -9,7 +9,7 @@
 #  C. DISCRIMINATOR between "padded to 128" and "a constant": if padded, the answer at
 #     npt=32 should equal FLM's answer AT npt=128 for the same prompt. Take FLM(N128).
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 export NPU_XCLBIN_DIR=$PWD/engine/npu/xclbins
 B=./engine/npu/build/npu_engine_phi4_mini_4b
 M=~/.config/flm/models/Phi4-mini-Instruct-NPU2

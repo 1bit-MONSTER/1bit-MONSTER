@@ -98,7 +98,7 @@ if [ -n "$(ls "$OUT_DIR"/layer_ctx*.elf 2>/dev/null | head -1 || true)" ]; then
 fi
 "$BIN" "$MODEL_DIR" "$OUT_DIR" 1 "$MAX_CTX" "$MAX_L" "$FAMILY"
 
-n=$(ls "$OUT_DIR" 2>/dev/null | grep -c 'layer_ctx.*\.elf$' || true)
+n=0; for _f in "$OUT_DIR"/layer_ctx*.elf; do if [ -e "$_f" ]; then n=$((n+1)); fi; done
 echo
 echo "layer ELFs: $n  (expected $MAX_CTX)"
 [ "$n" -eq "$MAX_CTX" ] || echo "WARNING: count mismatch — check the log above for aiebu failures"
