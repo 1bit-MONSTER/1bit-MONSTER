@@ -1023,7 +1023,13 @@ int main(int argc,char**argv){
             std::string xp_s=xp(t,K,N), ip_s=ip(t,K,N);
             FILE* f=fopen(ip_s.c_str(),"rb");
             if(f){fclose(f); return ctx.init(dev,xp_s.c_str(),ip_s.c_str(),4,NC);}
-            fprintf(stderr,"  No insts for %s, using runtime generator\n",t);
+            fprintf(stderr,
+                "  No insts for %s, using runtime generator\n"
+                "    WARN: %s does not exist. That generator emits SINGLE-CORE-ROW\n"
+                "    instructions; against a multi-row (v27) xclbin it silently computes\n"
+                "    the WRONG result, not merely a slower one. Commit or generate the\n"
+                "    instruction file rather than letting this pass (#2456).\n",
+                t, ip_s.c_str());
             return ctx.init_with_generator(dev,xp_s.c_str(),XM,K,N,NC);
         };
         fprintf(stderr,"  cq before init: MD=%d KD=%d ND=%d\n", cq.MD, cq.KD, cq.ND);
