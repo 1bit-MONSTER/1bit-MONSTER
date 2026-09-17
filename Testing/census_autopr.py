@@ -1,18 +1,38 @@
 #!/usr/bin/env python3
 """census_autopr.py — auto-file a draft PR when the new-model watcher finds an
-uncovered architecture that *looks like* a known family.
+uncovered architecture whose name is a known name spelled differently.
 
 The watcher (hf_new_models.py) detects new HF archs the engine registry
-doesn't map. Mapping is normally a manual bitnet_model.h edit. For the common
-case where HF's model_type is just a variant of a family the engine already
-knows (e.g. `kimik3` vs `kimi_k3`, `qwen35moe` vs `qwen35`), this module
-guesses the candidate mapping and opens a DRAFT pull request proposing the
-one-line alias — turning "discover + edit" into "review + merge".
+doesn't map. Mapping is normally a manual bitnet_model.h edit. When HF's
+model_type is the SAME NAME spelled differently (e.g. `kimik3` vs `kimi_k3`),
+this module proposes the one-line alias as a DRAFT pull request — turning
+"discover + edit" into "review + merge".
 
-Only fires for *plausible* candidates (edit distance to an existing mapping,
-or a known-family substring). Genuinely-new architectures (no existing family
-relation) are left as a manual alert — they need a real engine implementation,
-not an alias.
+A NAME MATCH IS NOT EVIDENCE OF A FAMILY, and this module has already forgotten
+that once: it filed `language` -> OBILANGUAGE (#2443) and `picolm` -> PICO
+(#2444), both closed unjustified, because both were name-similarity guesses.
+So the two fuzzy rules are ALERT-ONLY — they print the candidate for a human
+and open no PR. Only an exact normalized-name match (rule 1) files, because a
+spelling difference is not a claim about the architecture. Set
+CENSUS_AUTOPR_FUZZY=1 to file on a fuzzy candidate as well; it is not
+recommended, since the reviewer must establish the family from the checkpoint's
+tensors either way — which is the work the draft was meant to save. (Both
+docstring examples above are already aliases in bitnet_model.h, and rule 1 is
+what reaches them, so no fuzzy rule has a demonstrated true positive.)
+
+Both fuzzy rules over-fired because the table they match against is an
+exact-match DISPATCH table, not a family list:
+  * rule 3 read every key as a family prefix, and the table legitimately holds
+    1-4 char aliases (`h` -> LLAMA, `rw` -> FALCON, `new` -> QWEN3,
+    `h3`/`i3` -> LLAMA). Every uncovered class starting with `h` therefore
+    "looked like" LLaMA. Measured 2026-09-17: 24 of 38 real non-family arch
+    names produced a candidate, and 175 keys were <= 4 chars.
+  * rule 2's comment always said "<=2 substitutions/dels" but the code tested
+    `difflib.ratio() > 0.8`, which fired on `language` vs `obilanguage`
+    (ratio 0.842, edit distance 3).
+The rules below implement what those comments already claimed. Genuinely-new
+architectures are left as a manual alert — they need a real engine
+implementation, not an alias.
 
 Usage (from hf_new_models.py after finding uncovered):
     from census_autopr import maybe_file_draft_pr
@@ -22,8 +42,10 @@ Environment:
   GITHUB_TOKEN / gh CLI — uses `gh` if available, else no-ops with a log line.
   CENSUS_DRY_RUN=1 — print what would be filed, don't touch GitHub.
   CENSUS_SKIP_PR=1 — never open PRs (alert only).
+  CENSUS_AUTOPR_FUZZY=1 — also open PRs for name-similarity (fuzzy) candidates,
+      which the default now only alerts on. Not recommended; see above.
 """
-import json, os, re, subprocess, sys, difflib
+import json, os, re, subprocess, sys
 from urllib.parse import urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +60,14 @@ _KNOWN = None  # {arch_string: token_name}
 
 
 def _known_mappings():
-    """Parse include/rocm_cpp/bitnet_model.h for string -> RCPP_ARCH_* pairs."""
+    """Parse include/rocm_cpp/bitnet_model.h for string -> RCPP_ARCH_* pairs.
+
+    FIRST match wins, mirroring rcpp_arch_from_string's linear `if` chain. A
+    plain assignment took the LAST, and the two disagree: `qwen3_5moe` is
+    mapped at two places in that chain (-> QWEN35 early, -> QWEN3 late), so the
+    engine resolves QWEN35 while this table reported QWEN3. Querying the header
+    this way means the tool can never be more wrong than the engine.
+    """
     global _KNOWN
     if _KNOWN is not None:
         return _KNOWN
@@ -48,7 +77,7 @@ def _known_mappings():
             for line in f:
                 m = re.search(r'strcmp\(s,\s*"([a-z0-9_]+)"\)\s*==\s*0\)\s*return\s+(RCPP_ARCH_[A-Z0-9_]+)', line)
                 if m:
-                    known[m.group(1)] = m.group(2)
+                    known.setdefault(m.group(1), m.group(2))
     except OSError as e:
         print(f"[autopr] cannot read {ENGINE}: {e}", file=sys.stderr)
     _KNOWN = known
@@ -60,8 +89,33 @@ def _norm(s):
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def _guess(uncovered_arch):
-    """Return (candidate_arch_string, token_name) or None for an uncovered arch."""
+# The mapping table is an exact-match dispatch table and legitimately holds very
+# short aliases, so using it as a family list needs floors or the shortest alias
+# becomes a wildcard (`h` -> every h-initial class "is" LLaMA). See docstring.
+_MIN_FAMILY_LEN = 4   # below this a key is an alias, not a family name
+_MIN_FUZZY_LEN = 8    # an <=2-edit match is a rename only on strings this long
+
+
+def _distance(a, b):
+    """Levenshtein distance — the metric rule 2 always claimed to use."""
+    if a == b:
+        return 0
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1,
+                           prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _guess_ex(uncovered_arch):
+    """Return (candidate_arch_string, token_name, kind) or None.
+
+    kind is "exact" — the same name spelled differently, safe to draft an alias
+    for — or "fuzzy", a name-similarity guess that is ALERT ONLY (docstring).
+    """
     known = _known_mappings()
     n = _norm(uncovered_arch)
     if not n:
@@ -70,24 +124,30 @@ def _guess(uncovered_arch):
     # 1. Exact match on a normalized known string (e.g. kimik3 vs kimi_k3).
     for s, tok in known.items():
         if _norm(s) == n:
-            return s, tok
+            return s, tok, "exact"
 
-    # 2. Edit-distance to a known family (<=2 substitutions/dels, normalized).
+    # 2. <=2 edits from a known name, both long enough for that to mean
+    #    "spelling", not "coincidence". The old test was `ratio() > 0.8`, which
+    #    called `language`/`obilanguage` (3 edits) a match.
     best, best_d = None, 3
-    for s, tok in known.items():
-        d = difflib.SequenceMatcher(None, n, _norm(s)).ratio()
-        if d > 0.8 and s != uncovered_arch:  # 80%+ similar
-            score = 1 - d
-            if score < best_d:
-                best, best_d = (s, tok), score
+    if len(n) >= _MIN_FUZZY_LEN:
+        for s, tok in known.items():
+            ns = _norm(s)
+            if len(ns) < _MIN_FUZZY_LEN or s == uncovered_arch:
+                continue
+            d = _distance(n, ns)
+            if d <= 2 and d < best_d:
+                best, best_d = (s, tok), d
     if best:
-        return best
+        return best[0], best[1], "fuzzy"
 
     # 3. Known-family substring prefix (e.g. "qwen35moe" starts with "qwen35").
+    #    The floor is what stops the 1-4 char aliases acting as wildcards.
     fams = sorted(known.keys(), key=len, reverse=True)
     for s in fams:
-        if n.startswith(_norm(s)) and len(n) > len(_norm(s)):
-            return s, known[s]
+        ns = _norm(s)
+        if len(ns) >= _MIN_FAMILY_LEN and n.startswith(ns) and len(n) > len(ns):
+            return s, known[s], "fuzzy"
 
     return None
 
@@ -233,9 +293,11 @@ def _open_draft_pr(arch, target, models):
 
 
 def maybe_file_draft_pr(uncovered, models=None, dry_run=None):
-    """For each uncovered class, if a plausible candidate exists, open a draft PR.
+    """For each uncovered class, open a draft PR for a candidate alias.
 
-    Returns list of (arch, target, pr_url_or_None).
+    Files only for an "exact" candidate — the same name spelled differently.
+    A fuzzy (name-similarity) candidate is reported and NOT filed, unless
+    CENSUS_AUTOPR_FUZZY=1. Returns list of (arch, target, pr_url_or_None).
     """
     if dry_run is None:
         dry_run = os.getenv("CENSUS_DRY_RUN") == "1"
@@ -246,15 +308,24 @@ def maybe_file_draft_pr(uncovered, models=None, dry_run=None):
     models = models or {}
     filed = []
     for arch in sorted(uncovered):
-        guess = _guess(arch)
+        guess = _guess_ex(arch)
         if not guess:
             print(f"[autopr] {arch}: no plausible known-family candidate — manual", file=sys.stderr)
             continue
-        target_arch, token = guess
+        target_arch, token, kind = guess
         if _selfcheck_has(arch):
             print(f"[autopr] {arch}: already in selfcheck — manual", file=sys.stderr)
             continue
-        print(f"[autopr] {arch} -> {token} (candidate from {target_arch})")
+        if kind == "fuzzy" and os.getenv("CENSUS_AUTOPR_FUZZY") != "1":
+            # A name is not a family. Both draft PRs this module has ever filed
+            # came from a fuzzy match and were closed unjustified (#2443, #2444),
+            # so the printed candidate is the whole useful output here.
+            print(f"[autopr] {arch}: name-similar to {target_arch} — ALERT ONLY, "
+                  f"no PR (candidate {token}; settle it on the checkpoint's "
+                  f"tensors, not on the name)", file=sys.stderr)
+            filed.append((arch, token, None))
+            continue
+        print(f"[autopr] {arch} -> {token} (candidate from {target_arch}, {kind})")
         if dry_run:
             filed.append((arch, token, "DRY-RUN"))
             continue
@@ -265,9 +336,75 @@ def maybe_file_draft_pr(uncovered, models=None, dry_run=None):
     return filed
 
 
+def _self_test():
+    """Guard the over-fires this module already shipped. 0 = ok, 1 = broken."""
+    bad = []
+    known = _known_mappings()
+
+    # A missing/short table would make every check below pass by having nothing
+    # to look at — the "could not determine" that reads as "no move".
+    if len(known) < 100:
+        bad.append(f"parsed only {len(known)} aliases from {ENGINE} — cannot "
+                   f"judge anything, and a missing header must not pass")
+        print("census_autopr --self-test: FAIL")
+        for b in bad:
+            print("  - " + b)
+        return 1
+
+    # The engine's chain is first-match-wins; the table must agree with it.
+    first = {}
+    with open(ENGINE) as f:
+        for line in f:
+            m = re.search(r'strcmp\(s,\s*"([a-z0-9_]+)"\)\s*==\s*0\)\s*return\s+(RCPP_ARCH_[A-Z0-9_]+)', line)
+            if m:
+                first.setdefault(m.group(1), m.group(2))
+    disagree = sorted(a for a, t in first.items() if known.get(a) != t)
+    if disagree:
+        bad.append(f"table disagrees with the engine (first match wins) on "
+                   f"{len(disagree)} alias(es), e.g. {disagree[:3]}")
+
+    # Rule 1 must still recognize a real rename — this is the case that files.
+    if _guess_ex("kimik3") != ("kimi_k3", "RCPP_ARCH_KIMI_K3", "exact"):
+        bad.append(f'kimik3 no longer an exact match: {_guess_ex("kimik3")!r}')
+
+    # The two draft PRs that were closed unjustified must not be fileable again.
+    for arch in ("picolm", "language"):
+        got = _guess_ex(arch)
+        if got and got[2] == "exact":
+            bad.append(f"{arch} resolves exactly to {got[1]} — would file a PR")
+
+    # No alias shorter than this may act as a family-prefix wildcard (`h` made
+    # every h-initial class "LLaMA"). The bound is a LITERAL on purpose: a first
+    # version of this check skipped keys using _MIN_FAMILY_LEN, so lowering that
+    # constant to re-introduce the bug also switched the guard off — it passed
+    # while broken. A guard must not be parameterised by what it guards.
+    _NEVER_A_FAMILY_BELOW = 4
+    for s in sorted(known):
+        ns = _norm(s)
+        if len(ns) >= _NEVER_A_FAMILY_BELOW:
+            continue
+        probe = ns + "xq"
+        got = _guess_ex(probe)
+        if got and _norm(got[0]) == ns:
+            bad.append(f'short alias "{s}" acts as a wildcard: '
+                       f'{probe} -> {got[0]} ({got[2]})')
+
+    if bad:
+        print("census_autopr --self-test: FAIL")
+        for b in bad:
+            print("  - " + b)
+        return 1
+    print(f"census_autopr --self-test: PASS — {len(known)} aliases, "
+          f"exact-only filing, no short-alias wildcard")
+    return 0
+
+
 if __name__ == "__main__":
-    # CLI: census_autopr.py [arch] [models...]
+    # CLI: census_autopr.py <uncovered_arch> [model_ids...] | --self-test
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        sys.exit(_self_test())
     if len(sys.argv) < 2:
-        print("usage: census_autopr.py <uncovered_arch> [model_ids...]", file=sys.stderr)
+        print("usage: census_autopr.py <uncovered_arch> [model_ids...]\n"
+              "       census_autopr.py --self-test", file=sys.stderr)
         sys.exit(2)
     maybe_file_draft_pr([sys.argv[1]], {sys.argv[1]: sys.argv[2:]})

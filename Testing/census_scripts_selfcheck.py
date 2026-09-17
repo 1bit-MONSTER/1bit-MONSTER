@@ -19,8 +19,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Every script in the family, including the ones that only read the policy set.
+# census_autopr.py is here for the ROOT rule: it wrote to the engine header, so
+# a pinned ROOT would edit the shared checkout from a worktree run.
 SCRIPTS = ["census_coverage.py", "census_tail_verify.py", "census_classify.py",
-           "census_batch_verify.py", "retrieve_pass.py"]
+           "census_batch_verify.py", "retrieve_pass.py", "census_autopr.py"]
 
 # The one file allowed to define the policy set; everyone else imports it.
 OWNER = "census_coverage.py"

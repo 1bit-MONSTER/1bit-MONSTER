@@ -163,6 +163,21 @@ else
     printf '%s\n' "$manifest_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# The alias autopr must never treat a NAME as a family. Its fuzzy rules filed
+# two draft PRs (`language`, `picolm`) that were closed unjustified (#2443,
+# #2444), because the mapping table is an exact-match dispatch table holding
+# 1-4 char aliases (`h` -> LLAMA) that a prefix rule turned into wildcards. The
+# self-test pins both over-fires, the exact-match path that should still file,
+# and the table-vs-engine agreement — and fails if it can read no table at all,
+# so "could not determine" cannot print as a pass.
+total=$((total+1))
+if autopr_out=$("$PYTHON" Testing/census_autopr.py --self-test 2>&1); then
+    echo "✓ census_autopr"
+else
+    echo "✗ census_autopr"
+    printf '%s\n' "$autopr_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # Published coverage claims must equal the census. seo_sync rewrites them in the
 # daily apply workflows, but that is not a gate — four false-claim shapes
 # survived for months in wordings its patterns did not know (#2389 -> #2397).
