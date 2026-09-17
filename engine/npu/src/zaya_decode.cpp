@@ -284,6 +284,21 @@ int zaya_decode_main(int argc, char** argv) {
     //   NPU_FUSED_I4=1     → int4 GU (always split; no int4 single-launch).
     const bool FUSED_SINGLE = FUSED && !FUSED_I4 &&
         !(getenv("NPU_FUSED_SPLIT") && atoi(getenv("NPU_FUSED_SPLIT")) == 1);
+    // Say which MoE path was resolved, once, before any of it runs. The dense
+    // engine announces `GU_split=%d`; this one announced nothing, and that is
+    // not academic: two lanes produced conflicting tables for issue #2307 and
+    // spent a round attributing the difference to the argv shape, because the
+    // only evidence of which path ran was the probe tag in the log - and the
+    // probes are shared between branches. Measured 2026-09-17 on zaya1-8b:
+    // the path follows the env alone; `$M 2` and `$M 8 prompt.txt` agree at a
+    // fixed env. One line removes the inference entirely.
+    fprintf(stderr, "[MoE path] %s  (resolved: fused=%d single=%d split=%d i4=%d)\n",
+            FUSED_SINGLE ? "fused single-launch (final_i8_MOE_FUSED_zaya.xclbin)"
+                         : FUSED_I4 ? "int4 split (final_i8_MOE_GUSILU_i4_zaya.xclbin)"
+                         : FUSED ? "int8 split (final_i8_MOE_GUSILU_zaya.xclbin)"
+                         : "non-fused, host-driven p1/p2 (final_i8_MOE_GUSILU_zaya.xclbin)",
+            (int)FUSED, (int)FUSED_SINGLE,
+            (int)(FUSED && !FUSED_SINGLE && !FUSED_I4), (int)FUSED_I4);
     std::vector<Layer> L(NC);
     char key[256];
     // Parallelize the per-layer model load (dequant ~15s single-threaded):
