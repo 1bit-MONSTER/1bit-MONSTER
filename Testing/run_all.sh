@@ -30,6 +30,21 @@ run() {  # run <name> <compile-args...> -- <run-args...>
 
 echo "== fixture self-checks =="
 run arch      Testing/arch_mapping_selfcheck.cpp --
+
+# The alias table itself: rcpp_arch_from_string is a linear if-chain, so a string defined twice
+# makes the later line dead code — and a tool that parses the file last-match-wins gets the
+# opposite token from the engine. Eight such duplicates sat in the header; seven agreed with the
+# first definition, `qwen3_5moe` did not (QWEN3 vs the engine's QWEN35, #2501).
+echo "== arch alias uniqueness =="
+total=$((total+1))
+if alias_out=$("$PYTHON" Testing/arch_alias_selfcheck.py 2>&1); then
+    printf '%s\n' "$alias_out" | sed 's/^/  /'
+    echo "✓ arch_alias_uniqueness"
+else
+    echo "✗ arch_alias_uniqueness"
+    printf '%s\n' "$alias_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 run discovery Testing/discovery_selfcheck.cpp src/model_discovery.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp
 run router    Testing/router_selfcheck.cpp src/model_router.cpp
 run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
