@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
     printf("match=%ld/524288 (%.4f%%) nz=%ld\n", match, 100.0*match/524288, nz);
     // also correlation
     double s=0,sa=0,sb=0;
-    for(int i=0;i<256*2048;i++){float a=bff32(bOut.data()[i]), b=bff32(ref[i]); s+=a*b; sa+=a*a; sb+=b*b;}
+    for(int i=0;i<256*2048;i++){float a=bff32(bOut.data()[i]), b=bff32(ref[i]); s+=(double)a*b; sa+=(double)a*a; sb+=(double)b*b;}
     printf("corr=%.6f\n", s/(sqrt(sa)*sqrt(sb)));
     return 0;
 }

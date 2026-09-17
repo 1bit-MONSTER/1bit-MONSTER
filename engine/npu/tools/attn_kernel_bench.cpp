@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
         std::vector<double> s((size_t)seq);
         for (int t = 0; t < seq; t++) {
             double d = 0;
-            for (int i = 0; i < HD; i++) d += (double)q[h * HD + i] * k[(size_t)t * kd + kv * HD + i];
+            for (int i = 0; i < HD; i++) d += (double)q[(size_t)h * HD + i] * k[(size_t)t * kd + (size_t)kv * HD + i];
             s[t] = d * sc;
             if (s[t] > mx) mx = s[t];
         }
@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
         for (int t = 0; t < seq; t++) { s[t] = std::exp(s[t] - mx); z += s[t]; }
         for (int i = 0; i < HD; i++) {
             double a = 0;
-            for (int t = 0; t < seq; t++) a += s[t] * v[(size_t)t * kd + kv * HD + i];
+            for (int t = 0; t < seq; t++) a += s[t] * v[(size_t)t * kd + (size_t)kv * HD + i];
             ref[h * HD + i] = a / z;
         }
     }

@@ -90,7 +90,7 @@ static float* dequant_i8_core(const uint8_t* data, int i8_rows, int in_features,
     *out_rows = n_tile_rows * TILE_ROWS;
     *out_cols = n_tile_cols * tile_cols;
 
-    float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
     if (!out) return nullptr;
 
     const int row_bytes = tile_cols * 20;  // scales(2c) + zeros(2c) + packed(16c)
@@ -149,7 +149,7 @@ extern "C" float* dequant_i8_signed_to_float_ex(const uint8_t* data, int i8_rows
     *out_rows = n_tile_rows * TILE_ROWS;
     *out_cols = n_tile_cols * TILE_COLS;
 
-    float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
     if (!out) return nullptr;
 
     for (int ir = 0; ir < i8_rows; ir++) {
@@ -196,7 +196,7 @@ extern "C" float* dequant_q8_0_to_float_ex(const uint8_t* data, int i8_rows, int
     *out_rows = n_tile_rows * TILE_ROWS;
     *out_cols = n_tile_cols * TILE_COLS;
 
-    float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
     if (!out) return nullptr;
 
     for (int ir = 0; ir < i8_rows; ir++) {
@@ -252,7 +252,7 @@ extern "C" float* dequant_i8_group_signed_to_float_ex(const uint8_t* data, int i
     *out_rows = n_tile_rows * TILE_ROWS;
     *out_cols = n_tile_cols * TILE_COLS;
 
-    float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
     if (!out) return nullptr;
 
     for (int ir = 0; ir < i8_rows; ir++) {
@@ -310,7 +310,7 @@ extern "C" float* dequant_i8_4736_to_float(const uint8_t* data, int i8_rows, int
     *out_rows = n_tile_rows * TILE_ROWS;
     *out_cols = n_tile_cols * TILE_COLS;
 
-    float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
     if (!out) return nullptr;
 
     for (int ir = 0; ir < i8_rows; ir++) {

@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
 
   float* Am = (float*)bA.map();
   float* Wm = (float*)bW.map();
-  for (long i = 0; i < M * H; i++) Am[i] = (float)((i % 97) - 48) * 0.125f;   // deterministic spread
+  for (long i = 0; i < (long)M * H; i++) Am[i] = (float)((i % 97) - 48) * 0.125f;   // deterministic spread
   for (long i = 0; i < H; i++) Wm[i] = 1.0f + (float)(i % 5) * 0.05f;          // learned-gamma-ish
   memset(bO.map(), 0, (size_t)M * H * 2);
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
 
   // host reference
   std::vector<float> x(M * H);
-  for (long i = 0; i < M * H; i++) x[i] = Am[i];
+  for (long i = 0; i < (long)M * H; i++) x[i] = Am[i];
   long bad = 0, max_delta_ulp = 0;
   for (int row = 0; row < M; row++) {
     float* xr = &x[(size_t)row * H];

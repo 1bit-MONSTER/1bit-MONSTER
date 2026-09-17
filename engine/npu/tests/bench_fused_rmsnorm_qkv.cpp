@@ -60,8 +60,8 @@ int main(int argc, char** argv) {
 
   float* Am = (float*)bA.map();
   uint16_t* Wm = (uint16_t*)bW.map();
-  for (long i = 0; i < M * H; i++) Am[i] = (float)((i % 61) - 30) * 0.1f;
-  for (long i = 0; i < H * N; i++) Wm[i] = f32_to_bf16((float)((i % 13) - 6) * 0.1f);
+  for (long i = 0; i < (long)M * H; i++) Am[i] = (float)((i % 61) - 30) * 0.1f;
+  for (long i = 0; i < (long)H * N; i++) Wm[i] = f32_to_bf16((float)((i % 13) - 6) * 0.1f);
   memset(bC.map(), 0, (size_t)M * N * 2);
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bW.sync(XCL_BO_SYNC_BO_TO_DEVICE);

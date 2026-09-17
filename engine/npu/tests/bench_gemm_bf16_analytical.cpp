@@ -69,8 +69,8 @@ int main(int argc, char** argv) {
   long bad = 0;
   for (int pass = 0; pass < 2; pass++) {
     if (pass == 0) {
-      for (long i = 0; i < M * K; i++) Am[i] = f32_to_bf16(1.0f);
-      for (long i = 0; i < K * N; i++) Bm[i] = f32_to_bf16(1.0f);
+      for (long i = 0; i < (long)M * K; i++) Am[i] = f32_to_bf16(1.0f);
+      for (long i = 0; i < (long)K * N; i++) Bm[i] = f32_to_bf16(1.0f);
     } else {
       for (long i = 0; i < M; i++)
         for (long k2 = 0; k2 < K; k2++) Am[i * K + k2] = f32_to_bf16((float)((i % 4) + 1));

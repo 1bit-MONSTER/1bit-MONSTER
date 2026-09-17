@@ -4728,8 +4728,8 @@ struct Bf16Ctx {
                         // the kv_caches re-read round-trip)
                         int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
                         for (int d = 0; d < HD; d++) {
-                            bKv[(size_t)region * kv_region + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(ks[d]);
-                            bKv[(size_t)(region + v_add) * kv_region + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vs[d]);
+                            bKv[(size_t)region * kv_region + (size_t)pi * 512 + (size_t)lh * HD + d] = f32_to_bf16(ks[d]);
+                            bKv[(size_t)(region + v_add) * kv_region + (size_t)pi * 512 + (size_t)lh * HD + d] = f32_to_bf16(vs[d]);
                         }
                     }
                 };
