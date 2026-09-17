@@ -1,17 +1,17 @@
 name: CF Web Analytics Bootstrap
 
 # One-time + re-runnable: create the Cloudflare Web Analytics (RUM) site for
-# 1bit.monster, fetch its beacon token, and inject it into site/analytics.js
-# (replacing the __CF_ANALYTICS_TOKEN__ placeholder). The deploy workflow then
-# ships the beacon with the site, and the analytics workflow can query RUM
-# totals + referrers per campaign/team.
+# 1bit.monster, fetch its beacon token, and write it into site/analytics.js's
+# `var TOKEN` assignment. The deploy workflow then ships the beacon with the site,
+# and the analytics workflow can query RUM totals + referrers per campaign/team.
 #
 # Why a workflow: the CF API token is a repo secret (not readable locally),
 # and rulesets block direct pushes to main — so this opens an auto-merge PR
 # with the token baked in, like the other ops workflows.
 #
-# Safe to re-run: if the RUM site already exists it just refreshes the token
-# in analytics.js (idempotent).
+# Safe to re-run: if the RUM site already exists it just rewrites the token in
+# analytics.js (idempotent). It rewrites the ASSIGNMENT VALUE rather than a
+# placeholder, which is what makes that true — see the "Inject token" step.
 #
 # Diagnostics: the "Preflight" step verifies the token against the CF API and
 # prints which permission groups it carries, so a permission failure is
@@ -108,9 +108,32 @@ jobs:
         env:
           TOKEN: ${{ steps.rum.outputs.token }}
         run: |
-          # Replace the placeholder with the real token (sed-safe: token is hex)
-          sed -i "s|__CF_ANALYTICS_TOKEN__|$TOKEN|" site/analytics.js
-          grep -c "CF_ANALYTICS_TOKEN" site/analytics.js || echo "placeholder replaced"
+          # Rewrite the TOKEN ASSIGNMENT, not a placeholder string.
+          #
+          # The old form was `sed -i "s|__CF_ANALYTICS_TOKEN__|$TOKEN|"`, and the
+          # placeholder survives in exactly one place: a prose comment in
+          # site/analytics.js. So a re-run rewrote THAT comment and left `var TOKEN`
+          # alone — the documented "it just refreshes the token" could not happen,
+          # and the only diff it produced was documentation, which the job then
+          # opened an auto-merge PR for. It could not fail either: the companion
+          # `grep -c … || echo "placeholder replaced"` prints success whenever the
+          # string is absent, which is precisely what a silent no-op looks like.
+          #
+          # Matching the assignment makes the rewrite idempotent and independent of
+          # what is currently in it (placeholder, or a token minted last quarter).
+          [ -n "$TOKEN" ] || { echo "::error::the RUM step produced an empty token"; exit 1; }
+          sed -i -E "s|(var TOKEN = )\"[^\"]*\"|\1\"$TOKEN\"|" site/analytics.js
+          # Fail closed: the assignment must now carry exactly the minted token.
+          got=$(sed -nE 's|.*var TOKEN = "([^"]*)".*|\1|p' site/analytics.js | head -1)
+          if [ "$got" != "$TOKEN" ]; then
+            echo "::error::site/analytics.js carries '${got:0:8}…' after the rewrite, not the minted token — the assignment was not found or not replaced"
+            exit 1
+          fi
+          if grep -q '__CF_ANALYTICS_TOKEN__' site/analytics.js; then
+            echo "::error::the placeholder is still in site/analytics.js"
+            exit 1
+          fi
+          echo "token written to analytics.js (${#got} chars)"
           # sanity: beacon should now reference the real token
           grep -o 'data-cf-beacon' site/analytics.js | head -1
 
