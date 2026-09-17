@@ -394,15 +394,27 @@ Binary delta: +1.2 KB (207.0 → 208.2 KB)
 
 ### CI Pipeline
 
-The project uses GitHub Actions (`.github/workflows/ci.yml`):
+The project uses GitHub Actions (`.github/workflows/`).
 
-| Job | What it checks |
-|-----|----------------|
-| `cpp` | CMake configure + build, ROCm availability, ShellCheck, host tests |
-| `lint` | clang-format + repo health checks |
-| `version` | Version consistency across manifest files + Q4NX round-trip test |
+**Required checks.** The `main` ruleset blocks a merge until these four pass. A
+required check is matched by the job's `name:` string, not by the YAML job key —
+so renaming a job detaches the gate silently:
 
-PRs must pass the `cpp` job before merge.
+| Required check | Job | What it covers |
+|---|---|---|
+| `C++ (cmake configure + build)` | `ci.yml` → `cpp` | CMake configure + build, ROCm availability, host `ctest`, ShellCheck, the built-binary CLI probe |
+| `Scope Guard` | `scope-guard.yml` → `scope_guard` | changed top-level paths must be within engine scope |
+| `Version consistency` | `ci.yml` → `version` | every manifest matches the root `VERSION`; tracked `*.sh` are mode 100755 |
+| `Lint (clang-format)` | `ci.yml` → `lint` | clang-format — **informational in practice**: its only step sets `continue-on-error`, so it cannot fail (see #2486) |
+
+The remaining `ci.yml` jobs — `metal`, `smoke-test`, `self-checks` (the
+`Testing/run_all.sh` suite) and `ppl-gate` — run on every PR but are not required.
+
+One caveat on the `lint` row, because "required" implies enforcement it does not
+have: besides being unable to fail (#2486), the step was reporting a *config* error
+rather than a formatting verdict, because `.clang-format` carried a `Standard` value
+clang-format does not accept (`Cpp17`; the value is `c++17`), so every invocation
+failed while reading the config and no file was ever judged.
 
 ---
 
