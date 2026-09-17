@@ -56,6 +56,23 @@ else
 fi
 run iq1       Testing/iq1_selfcheck.cpp --
 
+# Benchmark harness launcher: it launched build/zaya_server, which no cmake target
+# produces — that name is an argv[0] symlink only install.sh creates — while a plain
+# build produces build/1bit, whose dispatcher reads argv[1] and so printed usage and
+# exited. Reproduced here with the spawn captured, so no server and no model are needed
+# (#2478). The integration case is the one that matters: it asserts the argv the engine
+# actually builds, not just that a resolver exists.
+echo "== benchmark harness launcher =="
+total=$((total+1))
+if zaya_launch_out=$("$PYTHON" Testing/zaya_launch_selfcheck.py 2>&1); then
+    printf '%s\n' "$zaya_launch_out" | sed 's/^/  /'
+    echo "✓ zaya_launch"
+else
+    echo "✗ zaya_launch"
+    printf '%s\n' "$zaya_launch_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # Padded-vocab embedding gate: some 1BP artifacts declare the checkpoint's padded
 # vocab (262272) while shipping the unpadded table (262147 rows) — that is the
 # published v1 ZAYA1-8B upload, and the engine used to refuse it outright. The gate

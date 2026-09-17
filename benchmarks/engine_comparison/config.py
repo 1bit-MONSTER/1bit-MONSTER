@@ -136,12 +136,46 @@ SDCPP_EXE = (
 VLLM_BASE_URL = str(_env_or("BENCH_VLLM_URL",
                             _paths.get("vllm_base_url", "http://127.0.0.1:8000")))
 
-# 1bit-monster zaya_server (the primary engine in this fork of the harness).
-# Built from the repo root with:  cmake --build build --target zaya_server
+# 1bit-monster zaya (the primary engine in this fork of the harness).
+# A plain cmake build produces exactly ONE binary, build/1bit (CMakeLists.txt:1552-1553,
+# add_executable(onebin) with OUTPUT_NAME "1bit"). `build/zaya_server` is an argv[0] symlink
+# that install.sh and the packager create, and tools/onebin.cpp accepts it as the legacy
+# spelling - so it exists on a machine that ran the installer and on no other. The comment
+# that used to sit here told you to build a `zaya_server` target, which does not exist (#2477).
 ZAYA_SERVER_EXE = (
     _path(_paths.get("zaya_server_exe"), "BENCH_ZAYA_SERVER")
     or (REPO_ROOT / "build" / "zaya_server"))
 ZAYA_PORT = int(_env_or("BENCH_ZAYA_PORT", _paths.get("zaya_port", 8090)))
+
+# The multi-tool binary takes its mode as argv[1] (tools/onebin.cpp: `1bit zaya`), while the
+# legacy symlink name selects it through argv[0] (`zaya_server`). resolve_zaya_launch() below
+# builds the right argv for whichever one is on this machine, so the harness no longer needs
+# install.sh to have run before it can measure anything (#2478).
+ZAYA_SUBCOMMAND = "zaya"
+
+
+def resolve_zaya_launch(exe: Path) -> list[str]:
+    """The argv prefix that launches the zaya server from `exe`.
+
+    Three shapes are reachable and all three have to work: `build/zaya_server` (an argv[0]
+    symlink, no subcommand), `build/1bit` (what cmake actually builds, subcommand required),
+    and BENCH_ZAYA_SERVER pointing at either - a user who hit the missing symlink will point
+    it at `build/1bit`, and that must not keep failing silently. Raises RuntimeError naming
+    both paths when neither exists, instead of a FileNotFoundError from three frames down.
+    """
+    one_bit = exe.with_name("1bit")
+    if exe.exists():
+        # `1bit` and `1bit-server` are the multi-tool's own names; anything else here is a
+        # server-named spelling the dispatcher resolves through argv[0].
+        return [str(exe), ZAYA_SUBCOMMAND] if exe.name.startswith("1bit") else [str(exe)]
+    if one_bit.exists():
+        return [str(one_bit), ZAYA_SUBCOMMAND]
+    raise RuntimeError(
+        f"zaya server binary not found: neither {exe} nor {one_bit} exists.\n"
+        f"  cmake --build build --target onebin   # produces build/1bit; zaya is its "
+        f"{ZAYA_SUBCOMMAND!r} subcommand\n"
+        "  site/install.sh                       # or: ln -sf 1bit build/zaya_server\n"
+        "  BENCH_ZAYA_SERVER=<path to 1bit or to zaya_server> overrides both.")
 
 # Media assets used by the multimodal scenarios.
 _media = _paths.get("media", {}) or {}

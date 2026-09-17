@@ -9,8 +9,11 @@ A reproducible benchmark harness that compares inference engines on the
 License (see upstream `LICENSE`). Upstream's copyright notice is retained here;
 modifications are the 1bit-monster additions listed below.
 
-- the **`zaya` engine** (`engines.py` → `ZayaServer`): launches
-  `build/zaya_server` against any model the harness can point at,
+- the **`zaya` engine** (`engines.py` → `ZayaServer`): launches the zaya server
+  against any model the harness can point at - `build/1bit zaya …` from a plain
+  cmake build, or `build/zaya_server …` once `site/install.sh` has created that
+  symlink. `config.resolve_zaya_launch()` picks the right argv for whichever
+  exists, so a fresh clone that was only built works (#2478),
 - **`timings` support in zaya_server itself** (`tests/zaya_server.cpp`): the
   server now emits the llama.cpp-compatible `timings.predicted_per_second`
   block in its `/v1/chat/completions` responses, so zaya's decode rate is
@@ -25,7 +28,7 @@ modifications are the 1bit-monster additions listed below.
 
 | Engine | Launch | Notes |
 |---|---|---|
-| `zaya` | `build/zaya_server --model <file> --port 8090` | Primary engine under test. Auto-detects its backend (HIP > Vulkan > Zamba2 > GGUF-CPU > CPU). Accepts `.gguf` (Qwen2/Qwen3/Mamba families) and native `.1bp`/`.h1b` files. |
+| `zaya` | `build/1bit zaya --model <file> --port 8090` (or `build/zaya_server …` after `site/install.sh`) | Primary engine under test. Auto-detects its backend (HIP > Vulkan > Zamba2 > GGUF-CPU > CPU). Accepts `.gguf` (Qwen2/Qwen3/Mamba families) and native `.1bp`/`.h1b` files. |
 | `llamacpp` | vendored `third_party/llama.cpp` `llama-server` | Reference engine; emits its own server-side `timings`. |
 
 ## Honest measurement caveats (zaya)
@@ -53,7 +56,9 @@ zaya currently runs **text / multi_turn scenarios only**; `function_call`,
 
 ```bash
 # 0. Build both engines
-cmake --build build --target zaya_server -j8          # zaya
+cmake --build build --target onebin -j8               # -> build/1bit; zaya is a subcommand of it
+# (`site/install.sh` also drops argv[0] symlinks — build/zaya_server, build/unified_server —
+#  which the harness accepts too, but nothing here requires the installer to have run)
 # (llama-server: see third_party/llama.cpp build instructions)
 
 # 1. Full matrix (defaults: zaya + llamacpp, hip backend, small models)
@@ -68,7 +73,10 @@ Key flags (same as upstream): `--engines zaya,llamacpp`, `--backends hip,cpu`,
 `--concurrency 1,4` (parallel-request scaling), `--skip-existing`.
 Host paths are retargetable via env vars (`BENCH_ZAYA_SERVER`,
 `BENCH_LLAMA_SERVER`, `BENCH_MODEL_ROOT`, `BENCH_RESULTS`, ...) — see
-`config.py`.
+`config.py`. `BENCH_ZAYA_SERVER` takes either spelling: point it at `build/1bit`
+(the multi-tool, launched as `<bin> zaya`) or at a `zaya_server` symlink; when
+neither it nor the default exists the harness stops with both paths named, instead
+of an unexplained `FileNotFoundError`.
 
 ## Results
 

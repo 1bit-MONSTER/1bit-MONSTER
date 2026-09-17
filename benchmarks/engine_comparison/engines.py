@@ -617,9 +617,12 @@ class ZayaServer(ServerHandle):
             raise RuntimeError(
                 f"port {self.port} is already in use; zaya_server cannot bind it. "
                 f"Stop the process listening there (lsof -iTCP:{self.port} -sTCP:LISTEN).")
-        cmd = [str(config.zaya_server_exe_for(self.backend)),
-               "--model", str(self.model.gguf),
-               "--port", str(self.port)]
+        # The binary may be the argv[0] symlink `zaya_server` or the multi-tool `1bit`,
+        # which needs its `zaya` subcommand first - a bare `1bit --model ...` prints the
+        # usage text and exits, because the dispatcher reads argv[1] (#2478).
+        cmd = config.resolve_zaya_launch(config.zaya_server_exe_for(self.backend))
+        cmd += ["--model", str(self.model.gguf),
+                "--port", str(self.port)]
         cmd += [str(a) for a in spec.zaya_extra_args]
         env = os.environ.copy()
         env.update(spec.zaya_env)
