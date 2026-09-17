@@ -13,8 +13,8 @@ set -euo pipefail
 P=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
 M=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/mlir_aie
 PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
-AIECC=/home/bcloud/mlir-aie/build_tmp/bin/aiecc
-AIETOOLS=/home/bcloud/mlir-aie/build_tmp
+AIECC=/home/bcloud/mlir-aie/install_tmp/bin/aiecc
+AIETOOLS=/home/bcloud/mlir-aie/install_tmp
 export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
