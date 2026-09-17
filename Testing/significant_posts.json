@@ -146,6 +146,13 @@
   "file": "1bit-post-significant-bosonicjustin-transcendent-logic-model.html",
   "mode": "covered"
  },
+ "covered:CewEhao/OPD-TV-Qwen3-VL-8B": {
+  "arch": "qwen3vl",
+  "date": "2026-09-17",
+  "family": "Qwen",
+  "file": "1bit-post-significant-cewehao-opd-tv-qwen3-vl-8b.html",
+  "mode": "covered"
+ },
  "covered:Chinook416/caracat-pro": {
   "arch": "deepseek",
   "date": "2026-09-02",
@@ -258,6 +265,20 @@
   "file": "1bit-post-significant-herrhruby-mr-midtrain-9b-v4-quarter.html",
   "mode": "covered"
  },
+ "covered:Huangsssz/SmolLM3-3B-MOPD-PG-SGD-lr2p5e-3-NoThinking-500": {
+  "arch": "smollm3",
+  "date": "2026-09-17",
+  "family": "Smollm",
+  "file": "1bit-post-significant-huangsssz-smollm3-3b-mopd-pg-sgd-lr2p5e-3-nothinking-500.html",
+  "mode": "covered"
+ },
+ "covered:Irusha14/My_First_Math_AI": {
+  "arch": "gemma2",
+  "date": "2026-09-17",
+  "family": "Gemma",
+  "file": "1bit-post-significant-irusha14-my-first-math-ai.html",
+  "mode": "covered"
+ },
  "covered:IzNrsydn/legal-chatbot-llama3-finetuned": {
   "arch": "qwen2",
   "date": "2026-09-02",
@@ -270,6 +291,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-jjarvinen-qwen3-5-2b-eu-tool-jarvis-compact-v1-1.html",
+  "mode": "covered"
+ },
+ "covered:Jeesup/svd-safety-l2_remove40_swapgapiter_b010_r07": {
+  "arch": "llama",
+  "date": "2026-09-17",
+  "family": "Llama",
+  "file": "1bit-post-significant-jeesup-svd-safety-l2-remove40-swapgapiter-b010-r07.html",
   "mode": "covered"
  },
  "covered:Jkatdare/gemma-3-4b-it-tulumix-30k": {
@@ -489,11 +517,25 @@
   "file": "1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
   "mode": "covered"
  },
+ "covered:devon7y/Toronto-Mans-35B-A3B-FP8": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-17",
+  "family": "Qwen",
+  "file": "1bit-post-significant-devon7y-toronto-mans-35b-a3b-fp8.html",
+  "mode": "covered"
+ },
  "covered:dharun2049/kaveri-stgrpo-0.5b": {
   "arch": "qwen2",
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-dharun2049-kaveri-stgrpo-0-5b.html",
+  "mode": "covered"
+ },
+ "covered:droopingstar/DeepSeek-R1": {
+  "arch": "deepseekv3",
+  "date": "2026-09-17",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-droopingstar-deepseek-r1.html",
   "mode": "covered"
  },
  "covered:dureduck/Olmo-3-7B-PostTraining8K-SFT-step-40": {
@@ -524,11 +566,32 @@
   "file": "1bit-post-significant-ganscs-olmo7b-olmo-a100-new-20260908-cpt-merged-step-750.html",
   "mode": "covered"
  },
+ "covered:gdorane01/XORTRON.CriminalComputing.larger": {
+  "arch": "mistral",
+  "date": "2026-09-17",
+  "family": "Mistral",
+  "file": "1bit-post-significant-gdorane01-xortron-criminalcomputing-larger.html",
+  "mode": "covered"
+ },
+ "covered:halilatasoy/turkish-pii-detection-v01": {
+  "arch": "gemma3",
+  "date": "2026-09-17",
+  "family": "Gemma",
+  "file": "1bit-post-significant-halilatasoy-turkish-pii-detection-v01.html",
+  "mode": "covered"
+ },
  "covered:hariharasudhan/en-indic-translate-26b": {
   "arch": "gemma4",
   "date": "2026-09-02",
   "family": "Gemma",
   "file": "1bit-post-significant-hariharasudhan-en-indic-translate-26b.html",
+  "mode": "covered"
+ },
+ "covered:ibnsina-llm/ibnsina-30b-chat": {
+  "arch": "qwen3moe",
+  "date": "2026-09-17",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ibnsina-llm-ibnsina-30b-chat.html",
   "mode": "covered"
  },
  "covered:icysunny/gemma4_e2b_reasoner_merged": {
@@ -566,6 +629,13 @@
   "file": "1bit-post-significant-inferencerlabs-qwen3-8-flash-next-mlx-q4i.html",
   "mode": "covered"
  },
+ "covered:jdlovestofish/granite-4.2-8b": {
+  "arch": "granite",
+  "date": "2026-09-17",
+  "family": "Granite",
+  "file": "1bit-post-significant-jdlovestofish-granite-4-2-8b.html",
+  "mode": "covered"
+ },
  "covered:joincrksilverb/Nemotron-Mini-4B-Instruct": {
   "arch": "nemotron",
   "date": "2026-09-02",
@@ -580,11 +650,25 @@
   "file": "1bit-post-significant-just1nseo-qwen3-4b-ifrlvr-grpo-judge-30ba3b.html",
   "mode": "covered"
  },
+ "covered:local-inference-lab/GLM-5.3-Flash-NVFP4-Spark": {
+  "arch": "glm5next",
+  "date": "2026-09-17",
+  "family": "Glm",
+  "file": "1bit-post-significant-local-inference-lab-glm-5-3-flash-nvfp4-spark.html",
+  "mode": "covered"
+ },
  "covered:madiaxa/granite-4.2-3b-openvino": {
   "arch": "granite",
   "date": "2026-09-02",
   "family": "Granite",
   "file": "1bit-post-significant-madiaxa-granite-4-2-3b-openvino.html",
+  "mode": "covered"
+ },
+ "covered:marcelpadilla/Qwen3-4B-Instruct-2507_depressed": {
+  "arch": "qwen3",
+  "date": "2026-09-17",
+  "family": "Qwen",
+  "file": "1bit-post-significant-marcelpadilla-qwen3-4b-instruct-2507-depressed.html",
   "mode": "covered"
  },
  "covered:minjaechoi/Midm-2.0-Mini-Instruct-W4A16": {
@@ -657,6 +741,13 @@
   "file": "1bit-post-significant-ramazanoff34-neo-one-lite.html",
   "mode": "covered"
  },
+ "covered:rhymeas/Mavery-Lehrling-0.8B-MLX-8bit": {
+  "arch": "qwen3_5",
+  "date": "2026-09-17",
+  "family": "Qwen",
+  "file": "1bit-post-significant-rhymeas-mavery-lehrling-0-8b-mlx-8bit.html",
+  "mode": "covered"
+ },
  "covered:scouzi1966/GLM-5.3-Flash-AFM-MLX-4bit": {
   "arch": "glm5next",
   "date": "2026-09-02",
@@ -690,6 +781,13 @@
   "date": "2026-09-02",
   "family": "Mistral",
   "file": "1bit-post-significant-yamatazen-himeyuri-magnum-12b-hereticlora.html",
+  "mode": "covered"
+ },
+ "covered:z51722369/ZOZ-Function-Master-3B": {
+  "arch": "qwen2",
+  "date": "2026-09-17",
+  "family": "Qwen",
+  "file": "1bit-post-significant-z51722369-zoz-function-master-3b.html",
   "mode": "covered"
  },
  "covered:zhezi12138/Qwen3-4B-formal-r1-RL-50iter-seed42": {
