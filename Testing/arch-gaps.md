@@ -419,6 +419,178 @@ done 2026-09-17.**
 
 ---
 
+## Reviewed 2026-09-17 (second batch) — the next five un-reviewed classes
+
+The next five by instance count after the four above, on the same standard: the
+**checkpoint's own tensors** and modeling code decide the alias, not the class
+name or the config's shape keys. Evidence fetched 2026-09-17; safetensors headers
+read by range request, so none of these weights were downloaded.
+
+| class | instances | verdict |
+|---|---:|---|
+| `fhn_t4max_150m` | 4 | no published architecture — `in_proj`/`out_proj` only, learned `pos_embed` |
+| `corm` | 3 | contrastive-routing MoE with a stateful null-mean — not an alias |
+| `fly` | 3 | sparse connectome reservoir, no attention at all |
+| `moonfrost` | 3 | genuine MLA + MoE, but no name or config layout matches |
+| `open1b` | 3 | llama shell, but four disqualifying structures in the tensors |
+
+### `fhn_t4max_150m` — `aixk/BAAR2-150M` (also 3M/9M, BAAR3-19M)
+
+* **Class / model_type**: `FHN_T4Max_150M` / `fhn_concept_gau`.
+* **The config is a bespoke schema**: `hidden_size` 1024, `expansion_dim` 2560,
+  `attn_dim` 128, 18 layers, vocab 10240, **`concept_size` 8192**,
+  `max_position_embeddings` 512, **`logit_soft_capping` 50.0**. It carries no
+  `num_attention_heads`, no `num_key_value_heads`, no `intermediate_size`, no
+  `rope_theta`, no `rms_norm_eps` and no `hidden_act`. There is also **no
+  `auto_map`** and no `modeling_*.py` in the repo, so `transformers` cannot load
+  it by class either — the class name is the only description of the stack.
+* **What the 112 tensors say**: `blocks.N.in_proj.weight` and
+  `blocks.N.out_proj.weight` are the only projections per block — there is **no
+  separate q/k/v/o and no gate/up/down** — beside `blocks.N.q_norm.weight`,
+  `blocks.N.k_norm.weight`, `blocks.N.norm.weight`, a per-block
+  `blocks.N.res_scale`, and at the top `embed.weight`, **`pos_embed.weight`**,
+  `final_norm.weight`, `lm_head.weight`.
+* **Why an alias is wrong**: every covered family reads named attention *and*
+  MLP projections; this checkpoint has neither, and its position information is a
+  **learned absolute table** where the families all use RoPE. There is no declared
+  architecture to map *to*, and the repo's other weights ship in containers this
+  tree has no reader for (`.baar`, `.baar2`, `.vlite` + `vlite_manifest.json`).
+* **Real support needs**: a published spec (what `in_proj` fuses, what
+  `concept_size` means) before anything can be mapped. An alias would be a guess
+  about weight layout onto a family that shares not one tensor name.
+
+### `corm` — `ilsp/CoRM-182M-top1` (also top2, 469m-top1)
+
+* **Class / model_type**: `CoRMForCausalLM` / `corm`.
+* **Shape**: 12 layers, H=768, 12 heads / 4 kv, intermediate 3072, vocab 51200,
+  rope 1e6, and an MoE — `num_local_experts` 8, `num_experts_per_tok` 1,
+  `use_dynamic_routing: true`, `expert_attn_size` 64.
+* **Decisive evidence — the router is not one this engine has.** `CoRM` in
+  `modeling_corm.py` computes its logits **contrastively against a persistent
+  buffer**:
+
+  ```
+  Q_real = expert_queries(real_n)            # [N, E, d2]  per-expert query bank
+  Q_null = expert_queries(global_null_mean)  # [E, d2]
+  gap    = attn_real - attn_null             # both L2-normalised dot products
+  router_logits = clamp(gap * temperature, -10, 10)
+  ```
+
+  `expert_queries` is `Linear(H, E*d2, bias=False)` — a **learned query per
+  expert**, not a per-expert logit row — and `global_null_mean` is an EMA buffer
+  (`router_background_momentum` 0.01) updated during training and **read at
+  inference**, so routing depends on state carried outside the token.
+* **Why an alias is wrong**: `expert_queries` and `global_null_mean` have **zero
+  hits** across `src/`, `include/` and `engine/`. Every MoE path in the tree
+  routes with a softmax over `router(x)`; this routes on a margin against a null
+  vector. The config declares the router explicitly (`router_type: "corm"`,
+  `moe_weight_schedule_*`, `learn_output_weights`), and `get_router_class` accepts
+  exactly one value — the authors treat it as a router family, not a parameter
+  set.
+* **Real support needs**: the contrastive router as a distinct router — the
+  per-expert query bank plus the null-mean buffer and its update rule.
+
+### `fly` — `ngxson/fly-llm-hf` (also nanofly-decoder-en/ru)
+
+* **Class / model_type**: `FlyForCausalLM` / `fly`.
+* **Not a text transformer at all.** The config is a connectome: `n_neurons`
+  49393, `n_edges` 9050172, `n_in` 14069, `n_out` 49393, `d_embed` 128,
+  `delay_k` 8, `leak` 0.9, `spectral_radius` 0.99, vocab 1024, and a `connectome`
+  field naming its source — *"MaleCNS v1.0 central brain (cb_sensory,
+  visual_projection, cb_intrinsic, ascending_neuron, descending_neuron)"*.
+* **The 13 tensors say the same**: `brain.w_offsets`, `brain.w_indices`,
+  `brain.w_values` (a sparse CSR matrix), `brain.in_index`, `brain.out_index`,
+  `brain.bias`, `brain.gain`, `brain.rec_gain`, `brain.wte.weight`, `ln.weight`,
+  `ln.bias`, `lm_head.weight`. There is **no attention tensor of any kind** —
+  `q_proj`/`k_proj`/`v_proj`/`o_proj` occur zero times in the modeling file.
+* **What it is**: `modeling_fly.py` runs `_SpMM` — `torch.sparse.mm` against a
+  fixed CSR connectome — over a persistent `state` of neuron activations, with a
+  delay line ("slot j sees the embedding of token t-j", k=8) and a leak
+  `a = cfg.leak`. `FlyCache`'s docstring calls it *"Reservoir state carried
+  between generate() steps"*.
+* **Why an alias is wrong**: `connectome`, `spmm` and `sparse_csr` have zero hits
+  in the engine, and no covered family is a sparse recurrent reservoir. A mapping
+  would claim transformer support for a model with no attention.
+* **Real support needs**: nothing in this file's sense. This is not a missing
+  alias but a different kind of model, and it belongs out of scope unless a
+  connectome RNN path is ever wanted.
+
+### `moonfrost` — `whoashish115/Moonfrost-777M` (also instruct-v1/v2)
+
+* **Class / model_type**: `MoonfrostForCausalLM` / `moonfrost`.
+* **The config's real geometry is in a sub-dict.** Everything lives under
+  **`architecture{...}`** — 14 layers, d 896, 14 heads, content head 64, rotary
+  head 32, value head 64, `kv_compressed_latent_dim` 320,
+  `query_compressed_latent_dim` 512, then 1 dense layer and an MoE (32 routed
+  experts, 3 activated, 1 shared, expert FFN 608, dense FFN 2432). The top level
+  has `hidden_size`/`num_hidden_layers`/`num_attention_heads`/`vocab_size` and
+  **not** `num_key_value_heads`, `intermediate_size`, `hidden_act` or
+  `rope_theta`. **No reader in the tree parses a nested `architecture` block** —
+  `["architecture"]` and `get("architecture")` are both 0 hits.
+* **It is genuinely MLA + MoE.** `model_arch.py` has `MultiHeadLatentAttention`
+  and `DeepSeekMixtureOfExperts`, and `modeling_moonfrost.py`'s header says
+  *"DeepSeek-style Multi-head Latent Attention + Mixture-of-Experts"*. The
+  attention uses **weight absorption**: `W_UK`/`W_UV` are views of
+  `kv_up_projection`, `W_O` a view of `output_projection`, with
+  `scale_correction = sqrt(kv_latent + rotary)/sqrt(content + rotary)`.
+* **But no tensor name matches the engine's MLA path.** Moonfrost uses
+  `query_down_projection` / `query_down_projection_norm` / `query_up_projection` /
+  `kv_down_projection` / `kv_down_projection_norm` / `kv_up_projection` /
+  `output_projection`; the engine's MLA paths — `include/deepseek.h` and
+  `include/deepseek_v4.h`, the only MLA archs `src/model_router.cpp` branches on
+  — key on the DeepSeek names (`q_a_proj`, `kv_a_proj`). Three further structures
+  have **zero hits** in the tree:
+  `expert_gate_weights`/`expert_up_weights`/`expert_down_weights` (the routed
+  experts are **stacked into single tensors**, not per-expert modules),
+  `pre_attention_norm` / `pre_feedforward_norm`, and `model.rotary_cosine` /
+  `model.rotary_sine` — **precomputed rotary tables stored as tensors**, where the
+  engine derives RoPE from `rope_theta`.
+* **Why an alias is wrong**: the engine does have MLA and shared experts, which is
+  exactly why this one needed the tensor check — but a DeepSeek mapping would find
+  none of the projection names, and the config value it depends on is nested where
+  nothing reads. Matching a *mechanism* is not matching a *checkpoint*.
+* **Real support needs**: an `architecture{...}` config reader, the latent-norm MLA
+  naming, stacked expert weights and precomputed rotary tables — or a converter
+  that re-exports the checkpoint into the DeepSeek layout.
+
+### `open1b` — `Gensyn/open-1b-base` (also midtrained-93b, sft)
+
+* **Class / model_type**: `Open1BForCausalLM` / `open1b`.
+* **Shape**: 24 layers, H=2048, 16 heads / 4 kv, head_dim 128, intermediate 5632,
+  vocab 128256, rope 5e5, silu, no attention or MLP bias, untied. On the config
+  alone this is the most llama-like of the five.
+* **Four disqualifying structures, all in the 340-tensor checkpoint and the
+  modeling file**:
+  1. **Fused gate+up** — `blocks.N.ffn.w_gate_up.weight` is one matrix (beside
+     `w_down.weight`); there are no separate `gate_proj`/`up_proj`. `w_gate_up`
+     has 0 hits in the engine.
+  2. **Every linear carries an int8 scale** — `…attn.wq.weight_scale`, `wk`, `wv`,
+     `wo`, `…ffn.w_down.weight_scale`, `…ffn.w_gate_up.weight_scale`: **144 of them**,
+     6 per layer × 24, under `quantized_forward: true` / LSQ-trained layers.
+     `weight_scale` has 0 hits in the engine.
+  3. **A top-level `emb_norm.weight`** applied to the token-embedding output
+     before block 0 (`embedding_norm: true`, `modeling_open1b.py:275`). The only
+     `embedding_norm` in the tree is `src/lfm2moe_engine.cpp`'s — another family's.
+  4. **Gain-free QK-norm and a per-layer attention window** — `q_norm`/`k_norm`
+     are built with `elementwise_affine=config.qk_norm_gain` (false), which is why
+     the checkpoint has **no `q_norm`/`k_norm` tensor at all**, while the engine's
+     `qk_norm` path is Qwen3's and expects the learned weights. And `self.window`
+     is chosen **per layer** from `config.layer_types[layer_idx]` (`0` for
+     `full_attention`), with the docstring recording the training formula:
+     *"last layer of each `swa_full_every` group and the final layer are
+     full-causal, the rest slide"* (`sliding_window` 512, `swa_full_every` 5).
+     `swa_full_every` has 0 hits in the engine.
+* **Why an alias is wrong**: the shell is llama's, but the loader would have to
+  invent the fused gate/up split, ignore 48 `weight_scale` tensors, apply an
+  embedding norm only LFM2-MoE has, and read a missing `q_norm`/`k_norm` as
+  parameter-free rather than absent — four silent substitutions, any one of which
+  changes the forward pass.
+* **Real support needs**: fused `w_gate_up` decomposition, int8 weight-scale
+  handling, an embedding norm on the general path, parameter-free QK-norm, and the
+  per-layer window schedule. Substantial — this is a family of its own.
+
+---
+
 ## Unverifiable: gated configs
 
 `WaveMatrix/Qwen3-VL-8B-Instruct-GPTQ-Int4` is counted as **unverifiable** on
