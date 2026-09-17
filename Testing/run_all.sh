@@ -137,6 +137,21 @@ else
     printf '%s\n' "$vsync_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# The benchmark harness spawns its primary engine by path, and that path is a
+# symlink rather than a build product: build/zaya_server exists only after
+# install.sh, so a fresh `--target onebin` build left the harness spawning a file
+# that was not there — while the harness README named a target that was already
+# dead (#2477, #2478). No compiler sees it: the path is a config default. So the
+# three layouts are built in a temp dir and the resolution asserted for each.
+echo "== benchmark harness launch =="
+total=$((total+1))
+if zaya_launch_out=$("$PYTHON" Testing/zaya_launch_selfcheck.py 2>&1); then
+    echo "✓ zaya_launch"
+else
+    echo "✗ zaya_launch"
+    printf '%s\n' "$zaya_launch_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # Census diagnostics: one repo root, one policy set. Three scripts pinned ROOT
 # to the shared checkout and two carried a stale NON_TEXT_GEN copy (#2387), so a
 # worktree run read the wrong inputs and wrote the wrong tree — invisible,
