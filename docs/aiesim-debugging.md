@@ -309,7 +309,7 @@ dynamic DMA/BD tests, strix AOT lit tests, and submodule bumps
 Upstreaming to Xilinx/mlir-aie is deferred: the patches are WIP
 ("wip(toolchain): local NPU2-40 patches" — commit `1e6b70af0`), the npu2_40
 build path is not the production path, and the Xilinx repo is not one we
-contribute CI to. Recovery on a fresh box:
+contribute CI to.
 
 **Premise now in doubt (2026-09-17, round 22) — read this before treating the
 snapshot as precious.** The three files this section names are **verbatim
@@ -325,18 +325,31 @@ They were first added upstream by `135f931c7` (dyn-seq P6, 2026-07-16) and
 `1e6b70af0` — the local branch's base simply predates them, so the commit
 carries its own copy of the same content. Across all 70 files in that commit,
 **41 are byte-identical to `origin/main` and 0 are absent from it**; nothing in
-it is local-only by path. Upstream has since moved on: `AIELowerDynamicBDPool.cpp`
-grew from 11 to 21 functions (the local copy has 0 that upstream lacks), and the
-shim-BD API changed from per-tile args to a `BdTemplateFields` struct.
+it is local-only by path.
 
-So recovery never depended on the bundle — **upstream is the canonical copy**, at
-newer revisions. Keep the bundle only if this exact snapshot is needed for
-reproducibility. Whether the npu2_40 path needs anything upstream's current
-dyn-seq code lacks is the open P0.3 question; it has not been decided. Details:
-#1948.
+**Two different things, and they must not be confused** (an earlier revision of
+this text called upstream "the canonical copy" and then handed you the bundle,
+which reads as a contradiction):
+
+- **Recovering this snapshot — the bundle is required.** `npu2_40_toolchain/` was
+  built from upstream `main` at 2026-07-21, and this snapshot is that window's
+  code: the three bd-pool files are byte-identical to upstream `0fb8b8712`
+  (2026-07-20). The `.complete.bundle` below is the only self-contained copy of it.
+- **Upstream is a forward-looking reference, not a substitute.** It has moved on:
+  `AIELowerDynamicBDPool.cpp` grew 11 → 21 functions, and the shim-BD API changed
+  from per-tile arguments (`emitDynamicShimBdWordOverrides(…, tileCol, tileRow, bdId, …)`)
+  to a `BdTemplateFields` struct (`buildShimBdWords(…, const BdTemplateFields &f, …)`).
+  A tree cloned from current upstream therefore will **not** match the patched
+  bd-pool host path this section describes, so using it means re-validating the
+  npu2_40 path — it is not a drop-in replacement.
+
+Whether the npu2_40 path still needs anything upstream's current dyn-seq code
+lacks — i.e. whether this snapshot can be retired in favour of tracking upstream —
+is the open P0.3 question, and it has **not** been decided. Details: #1948.
 
 ```bash
-# canonical backup — the COMPLETE bundle (self-contained; this is the one to use):
+# canonical recovery path — the COMPLETE bundle (self-contained; required for the
+# npu2_40 build path described above):
 git clone ~/1bit-MONSTER-backups/mlir-aie-local-patches-2026-08-29.complete.bundle mlir-aie
 ```
 
