@@ -17,6 +17,14 @@
 # Case 2 is the point. A check that cannot fail is not a check, and this repo has
 # been bitten by exactly that (#2424: "a gate that never ran is not a pass").
 #
+# It also compares the engine's SOURCE SET between the two places that describe
+# it: NPU_ENGINE_SOURCES in engine/npu/CMakeLists.txt and the hand-written g++
+# line in .github/workflows/bench.yml. Only bench.yml compiles the engine with
+# XRT — the required `C++ (cmake configure + build)` job runs without it, so
+# CMakeLists adds engine/npu only `if(XRT_FOUND)` and never builds the target —
+# which makes bench.yml's copy the only thing that can catch a missing TU. The
+# two had already drifted when this was added (#2505).
+#
 # Run: bash Testing/npu_build_script_selfcheck.sh
 set -uo pipefail
 
@@ -58,6 +66,22 @@ run_script() { # run_script <dir> — prints combined output; returns the script
     ( cd "$1" && PATH="$1/stubs:$PATH" bash engine/npu/build_npu.sh 2>&1 )
 }
 
+# engine_sources_missing <CMakeLists> <workflow> — prints, one per line, each
+# NPU_ENGINE_SOURCES entry the workflow never references (as .cpp or as a linked
+# .o). Empty output means the two agree. A source compiled in a separate step and
+# linked as an object counts: bench.yml builds dequant_q4nx.cpp in its own step
+# and then links build/dequant_q4nx.o, so both spellings are accepted.
+engine_sources_missing() {
+    local cm="$1" wf="$2" f base
+    local srcs
+    srcs=$(awk '/set\(NPU_ENGINE_SOURCES/,/^\)/' "$cm" \
+           | grep -oE '[A-Za-z0-9_]+\.cpp' | sort -u)
+    for f in $srcs; do
+        base="${f%.cpp}"
+        grep -qE "${base}\.(cpp|o)([^A-Za-z0-9_]|$)" "$wf" || printf '%s\n' "$f"
+    done
+}
+
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 
 # ---- 1. positive: the committed script, on a tree with no build directory ----
@@ -89,6 +113,44 @@ else
     else
         n=$(printf '%s\n' "$out" | grep -ciE 'no such file' || true)
         echo "ok: control — with the mkdir removed it fails ($n 'No such file' line(s))"
+    fi
+fi
+
+# ---- 3. the engine's source set: CMakeLists.txt vs the job that compiles it ----
+CM="$REPO/engine/npu/CMakeLists.txt"
+BENCH="$REPO/.github/workflows/bench.yml"
+if [ ! -f "$CM" ] || [ ! -f "$BENCH" ]; then
+    echo "FAIL: cannot compare the engine's source sets — missing $CM or $BENCH"
+    fail=1
+else
+    n_target=$(awk '/set\(NPU_ENGINE_SOURCES/,/^\)/' "$CM" \
+               | grep -cE '[A-Za-z0-9_]+\.cpp' || true)
+    missing="$(engine_sources_missing "$CM" "$BENCH")"
+    if [ "$n_target" -lt 3 ]; then
+        # A parse that finds nothing would pass the comparison below vacuously.
+        echo "FAIL: parsed only $n_target source(s) out of NPU_ENGINE_SOURCES — nothing to compare"
+        fail=1
+    elif [ -n "$missing" ]; then
+        echo "FAIL: bench.yml never compiles these NPU_ENGINE_SOURCES:"
+        printf '        %s\n' $missing
+        echo "      bench.yml is the ONLY job that builds the engine with XRT, so a TU"
+        echo "      added to CMakeLists.txt without it here links-fails there alone (#2505)."
+        fail=1
+    else
+        echo "ok: bench.yml references all $n_target NPU_ENGINE_SOURCES"
+    fi
+    # Negative control: drop one reference from a copy and require the comparison
+    # to notice. Without this the check above could be passing on a bad pattern.
+    if [ -z "$missing" ]; then
+        sed '0,/gemm_npu_instructions\.cpp/s//gemm_npu_instructions_dropped.cpp/' \
+            "$BENCH" > "$T/bench.yml"
+        ctl="$(engine_sources_missing "$CM" "$T/bench.yml")"
+        if [ -z "$ctl" ]; then
+            echo "FAIL: control — removing a reference did not make the comparison fail"
+            fail=1
+        else
+            echo "ok: control — with one reference removed it reports:$(printf ' %s' $ctl)"
+        fi
     fi
 fi
 
