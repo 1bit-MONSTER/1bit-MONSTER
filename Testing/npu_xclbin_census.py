@@ -48,7 +48,14 @@ Two modes:
               are split into RISK — the engine names that slot as a literal, so it
               will really take the fallback — and a note for artifacts no engine
               slot token matches (another loader, or not this engine's).
-  (default)   the deployed-model census above.
+  (default)   the deployed-model census, BOTH halves: for every model and slot it
+              resolves the xclbin (xp()) and the instruction file (ip()) and
+              reports them separately, because their failure modes differ in kind.
+              No xclbin STOPS the engine (init returns false, the caller prints
+              FAIL <slot>); no .txt does NOT — init_i8() drops to the runtime
+              generator, which against a multi-row (v27) xclbin computes the wrong
+              answer. "xclbin present, insts missing" is therefore the dangerous
+              row, and the summary counts it on its own.
 
 Reports only — not wired into run_all.sh. Missing artifacts are a known existing
 condition, and a report that fails CI would be the same over-reach this file's
@@ -78,23 +85,41 @@ def model_tag(model_path: Path) -> str:
     return tag
 
 
-def xp_candidates(t: str, k: int, n: int, tag: str, xd: Path) -> list[tuple[str, Path]]:
-    """(kind, path) in the order xp() tries them. The last is the
-    dimension-keyed name, which xp() returns whether or not it exists."""
+def candidates(t: str, k: int, n: int, tag: str, xd: Path,
+               stem: str = "final_i8_", ext: str = ".xclbin") -> list[tuple[str, Path]]:
+    """(kind, path) in the order the engine tries them. xp() uses the defaults;
+    ip() uses stem='insts_i8_', ext='.txt'. The last candidate is the
+    dimension-keyed name, which the engine returns whether or not it exists."""
     out: list[tuple[str, Path]] = []
     tg = tag
     while True:
-        out.append(("tag", xd / f"final_i8_{t}_{tg}.xclbin"))
+        out.append(("tag", xd / f"{stem}{t}_{tg}{ext}"))
         u = tg.find("_")
         if u == -1 or u == len(tg) - 1:
             break
         tg = tg[u + 1:]
-    out.append(("dim", xd / f"final_i8_{t}_K{k}_N{n}.xclbin"))
+    out.append(("dim", xd / f"{stem}{t}_K{k}_N{n}{ext}"))
     return out
 
 
 def resolve(t: str, k: int, n: int, tag: str, xd: Path):
-    cands = xp_candidates(t, k, n, tag, xd)
+    cands = candidates(t, k, n, tag, xd)
+    for kind, path in cands:
+        if path.exists():
+            return kind, path
+    return "MISSING", cands[-1][1]
+
+
+def resolve_insts(t: str, k: int, n: int, tag: str, xd: Path):
+    """The ip() half — the same walk over insts_i8_*.txt.
+
+    Worth reporting separately from the xclbin because the two failure modes
+    differ in kind: no xclbin stops the engine (init returns false and the caller
+    prints FAIL <slot>), while no .txt does NOT stop it — init_i8() drops to the
+    runtime generator, which against a multi-row (v27) xclbin computes the wrong
+    answer. An xclbin WITHOUT its insts file is therefore the dangerous row, and
+    it is the one nothing reports."""
+    cands = candidates(t, k, n, tag, xd, stem="insts_i8_", ext=".txt")
     for kind, path in cands:
         if path.exists():
             return kind, path
@@ -206,6 +231,7 @@ def main() -> int:
         sys.exit(f"npu_xclbin_census: no xclbin directory at {xd}")
 
     models, missing_total, underivable = [], 0, []
+    no_insts_total = 0
     for mdir in sorted(p for p in root.iterdir() if p.is_dir()):
         cfgp = mdir / "config.json"
         if not cfgp.is_file():
@@ -222,12 +248,20 @@ def main() -> int:
             kind, path = resolve(t, k, n, tag, xd)
             if kind == "MISSING":
                 missing_total += 1
-            rows.append({"slot": t, "k": k, "n": n, "kind": kind,
-                         "path": path.name})
+            ikind, ipath = resolve_insts(t, k, n, tag, xd)
+            # The dangerous combination: the engine has an xclbin to run but no
+            # instructions for it, so init_i8() takes the runtime generator.
+            gen_fallback = kind != "MISSING" and ikind == "MISSING"
+            if gen_fallback:
+                no_insts_total += 1
+            rows.append({"slot": t, "k": k, "n": n, "kind": kind, "path": path.name,
+                         "insts_kind": ikind, "insts_path": ipath.name,
+                         "generator_fallback": gen_fallback})
         models.append({"model": mdir.name, "tag": tag, "dims": d, "slots": rows})
 
     if args.json:
         print(json.dumps({"xclbins": str(xd), "models": models,
+                          "generator_fallback_slots": no_insts_total,
                           "underivable": underivable}, indent=1))
         return 0
 
@@ -235,15 +269,24 @@ def main() -> int:
     print(f"model root : {root}\n")
     for m in models:
         miss = [s for s in m["slots"] if s["kind"] == "MISSING"]
+        gen = [s for s in m["slots"] if s["generator_fallback"]]
         d = m["dims"]
-        flag = "OK " if not miss else f"{len(miss)} MISSING"
+        flags = []
+        if miss:
+            flags.append(f"{len(miss)} NO XCLBIN")
+        if gen:
+            flags.append(f"{len(gen)} NO INSTS -> generator")
+        flag = "OK " if not flags else " + ".join(flags)
         print(f"{m['model']:28} tag={m['tag']:22} H={d['H']:<5} NH={d['NH']:<3} "
               f"NKV={d['NKV']:<3} HD={d['HD']:<4} IM={d['IM']:<6} "
               f"gu_split={'Y' if d['IM'] * 2 > GU_SPLIT_LIMIT else 'n'}  {flag}")
         for s in m["slots"]:
             via = f"via {s['kind']}" if s["kind"] != "MISSING" else "MISSING"
+            insts = (f"insts via {s['insts_kind']}" if s["insts_kind"] != "MISSING"
+                     else "insts MISSING")
+            note = "  <- RUNTIME GENERATOR (wrong results)" if s["generator_fallback"] else ""
             print(f"    {s['slot']:3} K={s['k']:<6} N={s['n']:<6} {via:9} "
-                  f"{s['path']}")
+                  f"{s['path']:44} {insts}{note}")
     if underivable:
         print("\nunderivable from config.json (needs the dims by hand):")
         for name, miss in underivable:
@@ -251,8 +294,11 @@ def main() -> int:
 
     total_slots = sum(len(m["slots"]) for m in models)
     print(f"\n{len(models)} models, {total_slots} slots checked "
-          f"(4 where GU is fused, 5 where it is split) — {missing_total} slot(s) "
-          f"with no xclbin under any candidate name")
+          f"(4 where GU is fused, 5 where it is split)")
+    print(f"  {missing_total} slot(s) with no xclbin under any candidate name"
+          f" — these STOP the engine (FAIL <slot>)")
+    print(f"  {no_insts_total} slot(s) with an xclbin but NO insts file"
+          f" — these silently use the runtime generator")
     return 0
 
 
