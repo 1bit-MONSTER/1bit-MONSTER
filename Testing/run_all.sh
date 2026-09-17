@@ -170,6 +170,22 @@ else
     fail=$((fail+1))
 fi
 
+# NPU engine build script: nothing in CI invokes engine/npu/build_npu.sh, so a
+# fresh clone could not build the NPU engine at all — it used its build dir 30
+# lines before creating it — and no job noticed until someone cloned (#2440).
+# A real build needs XRT, which a hosted runner has not got; this needs none,
+# because it stubs the compilers and tests the script's own file handling.
+echo "== NPU engine build script (stubbed compilers) =="
+total=$((total+1))
+if npu_build_out=$(bash Testing/npu_build_script_selfcheck.sh 2>&1); then
+    printf '%s\n' "$npu_build_out" | sed 's/^/  /'
+    echo "✓ npu_build_script"
+else
+    echo "✗ npu_build_script"
+    printf '%s\n' "$npu_build_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # NPU lane contract: the NPU runs on the engine's own worker (src/backend_npu.cpp
 # → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
 # the legacy FLM test harness printed "FLM not installed" as if the NPU were
