@@ -9,15 +9,28 @@
    "timestamp_utc": "2026-08-22T00:08:10Z"
   },
   "019b5626b933bf0519296a6e303e92de": {
-   "aliases": [
-    "final_i8_O_gemma4_e4b.xclbin"
-   ],
+   "aliases": [],
    "paths": [
-    "final_i8_O_K4096_N2560.xclbin",
     "final_i8_O_gemma4_e4b.xclbin"
    ],
    "sha256": "ba2ff3f9829b26cc90a64e5292d7450380f3be36c8372a22f0077a0686a0ecaa",
    "timestamp_utc": "2026-08-09T18:02:00Z"
+  },
+  "0a75bf48c7046beaa630d212ba44428d": {
+   "aliases": [],
+   "paths": [
+    "final_i8_G_K4096_N14336.xclbin"
+   ],
+   "sha256": "450d2a84a3f1864d4e0a8c3ee2fa8024bec0607c41993deca8323651ed549ee6",
+   "timestamp_utc": "2026-09-14T02:26:46Z"
+  },
+  "159efac87dc7d23ad767f5b8d5ed32e2": {
+   "aliases": [],
+   "paths": [
+    "final_i8_O_qwen3_6_35b_a3b_m1.xclbin"
+   ],
+   "sha256": "3d04dcde4233f71f5c329ecffe50ae30588c8d78499592b2830d8691a69c8d53",
+   "timestamp_utc": "2026-09-16T04:19:25Z"
   },
   "1634afc5f2575e34ed4ac95506cc07a6": {
    "aliases": [
@@ -31,11 +44,8 @@
    "timestamp_utc": "2026-09-14T13:30:59Z"
   },
   "188103bc20d530a6ff09a89eed1c0786": {
-   "aliases": [
-    "final_i8_QKV_gemma4_e4b.xclbin"
-   ],
+   "aliases": [],
    "paths": [
-    "final_i8_QKV_K2560_N6144.xclbin",
     "final_i8_QKV_gemma4_e4b.xclbin"
    ],
    "sha256": "105c15e2b55acd879b19556ff0e997a1c5b007b20ff1acc46d74a4cf7f5bc86a",
@@ -60,6 +70,14 @@
    "sha256": "8c8b5ba8b92ac9023f966784e77d94a3d45f969339672e6646c9968060dee35d",
    "timestamp_utc": "2026-08-05T12:31:35Z"
   },
+  "1b84195fe7d2bd21824ca57d221705a3": {
+   "aliases": [],
+   "paths": [
+    "final_i8_O_nanbeige4_1_3b.xclbin"
+   ],
+   "sha256": "0cc7e6a0a9dd03b33cfd21fa2548b72e757c720d5bf99a395da58e12f8ce9cdd",
+   "timestamp_utc": "2026-09-13T17:57:27Z"
+  },
   "1bfcf3cb7066d45f233a67a204acefb9": {
    "aliases": [],
    "paths": [
@@ -68,6 +86,14 @@
    "sha256": "d3ead0630e9d2f648b0a2e2cd414fd5093968af4471a83fc04013a0e1429b3b4",
    "timestamp_utc": "2026-09-09T15:52:12Z"
   },
+  "1e388b9b79277d22672ddb3b2bc48d8c": {
+   "aliases": [],
+   "paths": [
+    "final_i8_QKV_nanbeige4_1_3b.xclbin"
+   ],
+   "sha256": "678691da2b538431503fe031e6412b6391ae6bc7dddfc6a3ee15ae2cba1c7dfa",
+   "timestamp_utc": "2026-09-13T17:55:45Z"
+  },
   "216c5e087e9679fb7fcc043dbb8882e6": {
    "aliases": [],
    "paths": [
@@ -75,6 +101,14 @@
    ],
    "sha256": "dd07883082891b8440b823f9def66427c21dc8645c46b707b4e01887a34771c5",
    "timestamp_utc": "2026-08-05T12:31:34Z"
+  },
+  "24a99f0b9fc17e41cafa467baf051178": {
+   "aliases": [],
+   "paths": [
+    "final_i8_D_K14336_N4096.xclbin"
+   ],
+   "sha256": "41dd7f8e0ab3c18a00e0d50006df3b9e20fe9ce2d743400f327abfd9af206c08",
+   "timestamp_utc": "2026-09-14T02:27:25Z"
   },
   "258cd881dcd62e78dd5790333f8de7d8": {
    "aliases": [
@@ -122,6 +156,14 @@
    "sha256": "fc4438eedaf3afb999c9953545c8d49c67a043163559f899663c63db2440bfb6",
    "timestamp_utc": "2026-08-21T17:59:58Z"
   },
+  "285a23473cdd4fcbfb56b262cb6a92c2": {
+   "aliases": [],
+   "paths": [
+    "final_i8_U_K2560_N10240.xclbin"
+   ],
+   "sha256": "1b66795512686f6d3ef15b56a3a1cf8b98bab5523c471ba5721a9586b991ad08",
+   "timestamp_utc": "2026-09-14T04:22:45Z"
+  },
   "29b7358d85f376f5d67a28ff25237e6f": {
    "aliases": [],
    "paths": [
@@ -138,6 +180,14 @@
    "sha256": "be4a46dc49fa31fbe42af675877bb78fdff917f8f3a7b332eeb8e1633615075f",
    "timestamp_utc": "2026-08-05T14:23:05Z"
   },
+  "3128f6047f4843fcd017c63edd26c897": {
+   "aliases": [],
+   "paths": [
+    "final_i8_D_K9216_N2560.xclbin"
+   ],
+   "sha256": "a1f404d7a10ce7a1d1697019d30ee7e41b50eb8eff5d469f0e4d759b3ef8e3a3",
+   "timestamp_utc": "2026-09-14T09:59:09Z"
+  },
   "3315baf9f0d4bd29d1543b5c5316cec3": {
    "aliases": [],
    "paths": [
@@ -145,6 +195,22 @@
    ],
    "sha256": "85fcf77010704b7a1661a35ac50f5e5183d9935ca55a957e3cc51d4dfebe5403",
    "timestamp_utc": "2026-07-28T22:31:24Z"
+  },
+  "369c03d154b8eab01571a5d07412b1bc": {
+   "aliases": [],
+   "paths": [
+    "final_i8_G_nanbeige4_1_3b.xclbin"
+   ],
+   "sha256": "d80e0f0fc0861a4f598e25c6c9825a9bfb95367673a00f5c5dad4f3af8f7e04a",
+   "timestamp_utc": "2026-09-13T17:55:53Z"
+  },
+  "37fd3f2502be4720a6f9b52773da7201": {
+   "aliases": [],
+   "paths": [
+    "final_i8_QKV_K4096_N6144.xclbin"
+   ],
+   "sha256": "ebdd32ddd3c9b19be2e832fd803f060aa17b416243dc0e27b68be098fd881300",
+   "timestamp_utc": "2026-09-14T02:26:07Z"
   },
   "38041e599c06b89548d976536f030aea": {
    "aliases": [
@@ -164,6 +230,22 @@
    ],
    "sha256": "f298d0b51b9ac89e21fc9ede91eb021b0231d795ef81b19cacd699b755ae9102",
    "timestamp_utc": "2026-08-29T15:55:43Z"
+  },
+  "3953597b1a9a92031c0956716cd1d4f3": {
+   "aliases": [],
+   "paths": [
+    "final_i8_QKV_qwen3_6_35b_a3b_m1lin.xclbin"
+   ],
+   "sha256": "c4d56793cdeafa0b34a19cce2340fa34412afba4104c25f265f9d9e4b1326d6b",
+   "timestamp_utc": "2026-09-16T09:57:19Z"
+  },
+  "39b5b15186c674a26203ad436461b114": {
+   "aliases": [],
+   "paths": [
+    "final_i8_U_K1152_N6912.xclbin"
+   ],
+   "sha256": "244c568b45ea616c1eab304677d7c86f61ddab685c449a531ba009065097deb3",
+   "timestamp_utc": "2026-09-14T04:49:06Z"
   },
   "3a1ed255957b6e1be86ff141305b4bac": {
    "aliases": [
@@ -186,6 +268,14 @@
    ],
    "sha256": "bda217c1cddc33630276a42e3326b3897738070b8f2df192db0d80cbb3616623",
    "timestamp_utc": "2026-08-09T18:01:52Z"
+  },
+  "3c762342a978dec87f0fcf040b7515e8": {
+   "aliases": [],
+   "paths": [
+    "final_i8_QKV_K1152_N1536.xclbin"
+   ],
+   "sha256": "722c18d9264295926c188f633d3d6a5fb2f9282cb7d84565df73cd9a3aeca4dd",
+   "timestamp_utc": "2026-09-14T04:49:00Z"
   },
   "4322eb560c05fec68c1241c19d72c672": {
    "aliases": [],
@@ -214,6 +304,14 @@
    "sha256": "e9ccd99795e0b202b36e3a90021b39d5cf85f19db8b9ba992ba2ed34deb14928",
    "timestamp_utc": "2026-08-09T18:02:14Z"
   },
+  "47ddb563d5e517e121d7b7c07fa57243": {
+   "aliases": [],
+   "paths": [
+    "final_i8_O_K1024_N1152.xclbin"
+   ],
+   "sha256": "61b0424c418bd4bf9ea13c649d5e706e210a182c5c99c546c50d4cd93b5f6dd2",
+   "timestamp_utc": "2026-09-14T04:49:14Z"
+  },
   "4836ac19d7e4da8ef5cbaea79ab71898": {
    "aliases": [],
    "paths": [
@@ -230,16 +328,29 @@
    "sha256": "bd4ea78b8b09363d85ca7bb5cd1d0033b087364efad885259614a105111c11c1",
    "timestamp_utc": "2026-08-09T23:49:02Z"
   },
-  "521b784dcf26658c5863cfe72f53ec31": {
-   "aliases": [
-    "final_i8_O_nanbeige4_1_3b.xclbin"
-   ],
+  "4dafa3df50033ffdbb95a3ec0ce810db": {
+   "aliases": [],
    "paths": [
-    "final_i8_O_K2560_N2560.xclbin",
-    "final_i8_O_nanbeige4_1_3b.xclbin"
+    "final_i8_D_nanbeige4_1_3b.xclbin"
+   ],
+   "sha256": "9087c856fbc7de5f9b78761212d1043ff39fdc325081039f55f2c9aea19abfcd",
+   "timestamp_utc": "2026-09-13T17:56:08Z"
+  },
+  "521b784dcf26658c5863cfe72f53ec31": {
+   "aliases": [],
+   "paths": [
+    "final_i8_O_K2560_N2560.xclbin"
    ],
    "sha256": "cc15bb7f1a5b98eb73167093fe4bfe325814865fb3127b1185d039a9059c2d2e",
    "timestamp_utc": "2026-08-09T18:02:28Z"
+  },
+  "52b97251d8fa1b4870d39f7b26b08740": {
+   "aliases": [],
+   "paths": [
+    "final_rms_qwen3_6_35b_a3b_m1.xclbin"
+   ],
+   "sha256": "0a3b2dfc455bfd688724aeba3802d7476dadf2327e34850bb81270b628ebdb23",
+   "timestamp_utc": "2026-09-16T09:32:15Z"
   },
   "54fb7aaac493b3a0204b97622a545b8e": {
    "aliases": [],
@@ -295,12 +406,17 @@
    "sha256": "54452544a40d8d544df74788bedd5e933c6eab0f5d7cf08fe0de2b57c9a3096f",
    "timestamp_utc": "2026-09-12T16:49:25Z"
   },
-  "671cc1f0443735d8d5b3e9c5251cf038": {
-   "aliases": [
-    "final_i8_D_qwen3_5_4b.xclbin"
-   ],
+  "65ac819e457f0258751a9ea1e46f86f7": {
+   "aliases": [],
    "paths": [
-    "final_i8_D_K9216_N2560.xclbin",
+    "final_i8_D_K6912_N1152.xclbin"
+   ],
+   "sha256": "ebc72740aae830013cbb33ed151f13ea777dcbf96079c5600f586db8198863f8",
+   "timestamp_utc": "2026-09-14T04:49:16Z"
+  },
+  "671cc1f0443735d8d5b3e9c5251cf038": {
+   "aliases": [],
+   "paths": [
     "final_i8_D_qwen3_5_4b.xclbin"
    ],
    "sha256": "e1706e79bebc6766a40b0d764e735bba78525ce3be88f4ae1c5c462030a0ec76",
@@ -321,6 +437,14 @@
    ],
    "sha256": "66b429f0a895049ed12649e96ebddbaabb05f5c30e2b513c347471fce0d28f70",
    "timestamp_utc": "2026-08-05T14:22:34Z"
+  },
+  "6c56462833325d06c2081617993fda04": {
+   "aliases": [],
+   "paths": [
+    "final_i8_GU_K2560_N18432.xclbin"
+   ],
+   "sha256": "7a61cb41c0e8436e56a8fa83eec1e7f15817c241b18cadb27cbe7bb0f14f26f5",
+   "timestamp_utc": "2026-09-14T09:59:02Z"
   },
   "701f346aecdb2702b5eaea4bb3617efb": {
    "aliases": [],
@@ -366,12 +490,9 @@
    "timestamp_utc": "2026-08-05T14:23:14Z"
   },
   "7a23fc5a22860384547f6a218f81c68c": {
-   "aliases": [
-    "final_i8_U_nanbeige4_1_3b.xclbin"
-   ],
+   "aliases": [],
    "paths": [
-    "final_i8_U_K2560_N8192.xclbin",
-    "final_i8_U_nanbeige4_1_3b.xclbin"
+    "final_i8_U_K2560_N8192.xclbin"
    ],
    "sha256": "417084a6766dee8559f59ea22dd0f8af54d14ac4f89426aea2d553da74f5ce35",
    "timestamp_utc": "2026-08-09T18:02:35Z"
@@ -392,6 +513,22 @@
    "sha256": "23d29340164ce5cc68585a0fa8867253c08dcd1a28c1da552a00de8fa7df0635",
    "timestamp_utc": "2026-08-30T08:16:54Z"
   },
+  "82b9574bf891956b83546665606633ce": {
+   "aliases": [],
+   "paths": [
+    "final_i8_QKV_K2560_N6144.xclbin"
+   ],
+   "sha256": "4a80294b6509dc6eded56083efe60a139e589df3cab7ac074fff3aa37f6b2352",
+   "timestamp_utc": "2026-09-14T09:58:43Z"
+  },
+  "82dab9e75e7d9293955749fd236276fe": {
+   "aliases": [],
+   "paths": [
+    "final_i8_D_K10240_N2560.xclbin"
+   ],
+   "sha256": "e57aec26ad721e765650ddf5df37befa08455dff8321976a61027441cf6ab818",
+   "timestamp_utc": "2026-09-14T04:22:54Z"
+  },
   "82fd6702ae3a2b983ac3758da589abd7": {
    "aliases": [],
    "paths": [
@@ -399,6 +536,14 @@
    ],
    "sha256": "b0359e751ef8d72e24e856927da334e0c27b4bf73b748a00f12a50d766570ba1",
    "timestamp_utc": "2026-08-05T14:22:56Z"
+  },
+  "84241bf7791d759d12ef893912a46ac2": {
+   "aliases": [],
+   "paths": [
+    "final_i8_O_K4096_N2560.xclbin"
+   ],
+   "sha256": "3a94f252050e0acc5c30a8ae5a7f9b5a495ca49932f6799dcf9d104cde971fc3",
+   "timestamp_utc": "2026-09-14T09:58:46Z"
   },
   "846206f4079801d01e553ac9a661f8c1": {
    "aliases": [],
@@ -409,12 +554,9 @@
    "timestamp_utc": "2026-09-03T00:10:48Z"
   },
   "85a139d66f8c362844bdb2b3eb94adad": {
-   "aliases": [
-    "final_i8_D_nanbeige4_1_3b.xclbin"
-   ],
+   "aliases": [],
    "paths": [
-    "final_i8_D_K8192_N2560.xclbin",
-    "final_i8_D_nanbeige4_1_3b.xclbin"
+    "final_i8_D_K8192_N2560.xclbin"
    ],
    "sha256": "b1148924ec982e7bdb858dd3755a8532fe522c2a2e2fb89cdcc7e6831a3cc158",
    "timestamp_utc": "2026-08-09T18:02:37Z"
@@ -484,6 +626,22 @@
    "sha256": "8bc50690e1c85d31e026263ed2705848f860576f81fd5894c9deb3b93c945f6f",
    "timestamp_utc": "2026-08-21T17:59:46Z"
   },
+  "8f37e9251b7590f6296367aa3d4f163a": {
+   "aliases": [],
+   "paths": [
+    "final_i8_U_nanbeige4_1_3b.xclbin"
+   ],
+   "sha256": "ba2866c9734b7ac76bd8610708b165b8df4b5780b0e2652e4842e689a3fab0ab",
+   "timestamp_utc": "2026-09-13T17:56:00Z"
+  },
+  "8f74437e0098003026bdfb00437af7b1": {
+   "aliases": [],
+   "paths": [
+    "final_i8_O_K4096_N4096.xclbin"
+   ],
+   "sha256": "5a42dc6e18544e988e54d7328acd6af08297e2c380eba4b64e815c5a6481c668",
+   "timestamp_utc": "2026-09-14T02:26:26Z"
+  },
   "8fe22b73a3e23c26eee3669379f39e8e": {
    "aliases": [],
    "paths": [
@@ -492,6 +650,14 @@
    "sha256": "c721ca286dc3a18d2702e63ee3d31e2c4b0a869a627bca049133acf9473e7bb8",
    "timestamp_utc": "2026-08-22T00:07:38Z"
   },
+  "9002555f4a512afc964a09508f1c462b": {
+   "aliases": [],
+   "paths": [
+    "final_i8_U_K4096_N14336.xclbin"
+   ],
+   "sha256": "eff1db17c6ed1b73a49b228ce3f750b468cdd0c57188f401320a4e9ca110f304",
+   "timestamp_utc": "2026-09-14T02:27:06Z"
+  },
   "923546837989560d85d1ad7428bfa6a3": {
    "aliases": [],
    "paths": [
@@ -499,6 +665,14 @@
    ],
    "sha256": "05ba709d15d73c2941d5166f6e6a6f6e0ae8e662d7030cdb426517e922bb3b4c",
    "timestamp_utc": "2026-07-28T22:31:20Z"
+  },
+  "92c1bc60ab577837d2786ecad513a1fe": {
+   "aliases": [],
+   "paths": [
+    "final_i8_O_qwen3_6_35b_a3b_m1lin.xclbin"
+   ],
+   "sha256": "e6891dc4bd4ff7cf5833de8094f5aab0ca414ad025a9011ab142b0cee19dc058",
+   "timestamp_utc": "2026-09-16T09:57:21Z"
   },
   "943ecadd0136f1085d0584db6c9cf153": {
    "aliases": [
@@ -526,6 +700,22 @@
    ],
    "sha256": "bd48f8992c40605864777eea7aa525caedcfddf496682ada6dd0a3ebe0d8b3f0",
    "timestamp_utc": "2026-08-05T14:22:17Z"
+  },
+  "a07b22d91f416706f49761506ef2bf6b": {
+   "aliases": [],
+   "paths": [
+    "final_i8_MOE_DSD_qwen3_6_35b_a3b_m1.xclbin"
+   ],
+   "sha256": "d94e3a70fa99bd9e474f3e3d08108cf7443d79d8293633b8bd48231c220c922b",
+   "timestamp_utc": "2026-09-16T03:38:10Z"
+  },
+  "a2f6f6394fca953080ecbf184b0600a3": {
+   "aliases": [],
+   "paths": [
+    "final_i8_QKV_K2560_N8192.xclbin"
+   ],
+   "sha256": "6f4278672021cdc05c27e0db9f731e9aac2e7ca39200c20f85450e1e1675f421",
+   "timestamp_utc": "2026-09-14T12:35:48Z"
   },
   "a3cdb924dac4ab3915cd91c808b9cec1": {
    "aliases": [],
@@ -558,6 +748,14 @@
    ],
    "sha256": "8c8285b6840bd593a7febf312067b52224fc0dbd4dfe22d398387188dfe72c6c",
    "timestamp_utc": "2026-08-05T14:22:09Z"
+  },
+  "ada5d9a92582796418a1f19111e9651b": {
+   "aliases": [],
+   "paths": [
+    "final_i8_MOE_GUSGU_qwen3_6_35b_a3b_m1.xclbin"
+   ],
+   "sha256": "e074a88a0b8d262aa5f2d24d21f6705366f1b2713072102a483be4b7885f5dc7",
+   "timestamp_utc": "2026-09-16T03:38:08Z"
   },
   "af4d187ff27eb9c002f09e82ea42998b": {
    "aliases": [],
@@ -670,15 +868,28 @@
    "timestamp_utc": "2026-08-05T14:23:23Z"
   },
   "d95941e021f0975a0a9beb7ced106b2a": {
-   "aliases": [
-    "final_i8_QKV_nanbeige4_1_3b.xclbin"
-   ],
+   "aliases": [],
    "paths": [
-    "final_i8_QKV_K2560_N3840.xclbin",
-    "final_i8_QKV_nanbeige4_1_3b.xclbin"
+    "final_i8_QKV_K2560_N3840.xclbin"
    ],
    "sha256": "22d6157cc5435fa72739e2a570a9c18264e08250c012ae1f2ab097914dac4a3a",
    "timestamp_utc": "2026-08-09T18:03:47Z"
+  },
+  "d9b7d2070faea80fe302ba910cc08800": {
+   "aliases": [],
+   "paths": [
+    "final_i8_QKV_qwen3_6_35b_a3b_m1.xclbin"
+   ],
+   "sha256": "519e868f8ea31c1e6e6422ad8ec824f0e2287c4c81c4b409471b9be4d1c2f6be",
+   "timestamp_utc": "2026-09-16T04:19:23Z"
+  },
+  "da71444399dcbd073555803683ceedcb": {
+   "aliases": [],
+   "paths": [
+    "final_i8_G_K2560_N10240.xclbin"
+   ],
+   "sha256": "66a149d4c89646fc9d068acb3e4a7ad1673ac9733e118ce9f0dd5ab135e875f4",
+   "timestamp_utc": "2026-09-14T04:22:36Z"
   },
   "dca4ec1f04c539dd254044d74ad9ca3c": {
    "aliases": [
@@ -703,12 +914,9 @@
    "timestamp_utc": "2026-07-05T02:53:27Z"
   },
   "df66d307843c4a2c17b0940a544fda25": {
-   "aliases": [
-    "final_i8_G_nanbeige4_1_3b.xclbin"
-   ],
+   "aliases": [],
    "paths": [
-    "final_i8_G_K2560_N8192.xclbin",
-    "final_i8_G_nanbeige4_1_3b.xclbin"
+    "final_i8_G_K2560_N8192.xclbin"
    ],
    "sha256": "d96df80ce3d870a1bfd3b594b67584c457b9ae17dbf8c86d9fb5eeead75d2dd6",
    "timestamp_utc": "2026-08-09T18:02:32Z"
@@ -720,6 +928,14 @@
    ],
    "sha256": "8e0eea4b87ddda163e4da69b59b418805a35d067f62d570efc8efa5911d8b205",
    "timestamp_utc": "2026-08-09T18:01:45Z"
+  },
+  "e65380271c77d33a79b5474f44f29354": {
+   "aliases": [],
+   "paths": [
+    "final_i8_QKV_K2560_N4096.xclbin"
+   ],
+   "sha256": "01873a65ce47bc8feff908b23ac4420bafd4f13679606285079f6775744bb276",
+   "timestamp_utc": "2026-09-14T04:22:25Z"
   },
   "e6795afb37cc4b704d85189de34ce730": {
    "aliases": [],
@@ -753,6 +969,14 @@
    "sha256": "05fc0b572b8ce3689e107a039d705e1ca6a0ae218452633aa639df9f2e03f610",
    "timestamp_utc": "2026-08-05T12:31:31Z"
   },
+  "ee877abbcc8bdd445bb4c2a2417bed16": {
+   "aliases": [],
+   "paths": [
+    "final_i8_O_K2048_N2560.xclbin"
+   ],
+   "sha256": "a8773fc022a1b901c5dce1634d1bbfedd97f0b61c20e7aea40b522aaa6b4d057",
+   "timestamp_utc": "2026-09-14T04:22:27Z"
+  },
   "f05f77ab8955584a0913ba60337350a8": {
    "aliases": [
     "final_i8_G_qwen3_5_4b.xclbin"
@@ -763,6 +987,14 @@
    ],
    "sha256": "0028cffd3f8e2987fc8c3bd8f4e6c078d5b1ad68a191a96154197b5ceb6e834f",
    "timestamp_utc": "2026-08-09T18:01:48Z"
+  },
+  "f73271c3a72a428203be080bb8526410": {
+   "aliases": [],
+   "paths": [
+    "final_i8_G_K1152_N6912.xclbin"
+   ],
+   "sha256": "641a48327617337ec31661afea71c495587649659d423232c7952ec7a84fb769",
+   "timestamp_utc": "2026-09-14T04:49:03Z"
   },
   "f84f1a3c11b3f1c737b2483793e73421": {
    "aliases": [],
@@ -787,6 +1019,14 @@
    ],
    "sha256": "9cd96f9cafa3b976f1b38c13c6c70be5e69def62df1c4f4405be60b35582ce72",
    "timestamp_utc": "2026-07-20T16:16:53Z"
+  },
+  "fd457dea14c3ccba91207789f1ce28cb": {
+   "aliases": [],
+   "paths": [
+    "final_i8_GU_K1152_N13824.xclbin"
+   ],
+   "sha256": "54f548b4d0cf0669b565b0a93bcc72ca47f8ccce948cad53e892d2b7227d800d",
+   "timestamp_utc": "2026-09-14T04:49:33Z"
   },
   "fde3cdbf188463d4e9641cf077151af2": {
    "aliases": [],
@@ -823,12 +1063,14 @@
    "2026-09-03": 1,
    "2026-09-09": 1,
    "2026-09-12": 1,
-   "2026-09-14": 3
+   "2026-09-13": 5,
+   "2026-09-14": 24,
+   "2026-09-16": 7
   },
-  "distinct_builds": 89,
-  "payload_bytes": 9915493,
-  "redundant_bytes": 2411548,
-  "redundant_percent": 24.32,
+  "distinct_builds": 122,
+  "payload_bytes": 10383303,
+  "redundant_bytes": 1713220,
+  "redundant_percent": 16.5,
   "timezone": "UTC (embedded AXLF TimeStamp, never mtime)",
   "top_days_utc": [
    {
@@ -836,33 +1078,33 @@
     "day": "2026-08-09"
    },
    {
+    "builds": 24,
+    "day": "2026-09-14"
+   },
+   {
     "builds": 22,
     "day": "2026-08-05"
    },
    {
+    "builds": 7,
+    "day": "2026-09-16"
+   },
+   {
     "builds": 5,
     "day": "2026-07-28"
-   },
-   {
-    "builds": 5,
-    "day": "2026-08-29"
-   },
-   {
-    "builds": 4,
-    "day": "2026-07-20"
    }
   ],
   "unit": "one row per distinct XclBinUUID"
  },
  "declared_dangling": {},
  "generated": {
-  "at": "2026-09-14T13:45:00Z",
+  "at": "2026-09-17T01:49:17Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
   "host": "strixhalo",
-  "ref": "5735f9c38"
+  "ref": "bc1d37cfd"
  },
- "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest and land it in the same commit as the artifact change.",
+ "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest --toolchain \"<compiler arm + versions>\" --script-revision \"<git rev of the generating script>\" and land it in the same commit as the artifact change. Those two flags are the point of this file: the artifacts carry no compiler marker to derive them from, so a rebuild that omits --toolchain records build.toolchain as null again (issue #2262).",
  "notes": [
   "population.dangling_symlinks and population.alias_symlinks_in_tree are HOST-DEPENDENT: they were observed on generated.host. Installing fastflowlm at /opt/fastflowlm makes the four third-party links resolve, which says nothing about the repo. The check asserts symlink TARGETS (the symlinks and declared_dangling maps), never this split.",
   "declared_dangling lists the third-party targets that did not resolve on generated.host. It is a target map, not a resolution requirement."
@@ -870,8 +1112,11 @@
  "observed": {
   "note": "host/path-variant facts, reported not asserted",
   "pairs_with_insts": [
+   "D_K10240_N2560",
    "D_K12288_N2560",
+   "D_K14336_N4096",
    "D_K512_N2048",
+   "D_K6912_N1152",
    "D_K8192_N2560",
    "D_K8192_N3072",
    "D_K9216_N2560",
@@ -893,6 +1138,8 @@
    "D_v",
    "GUSILU_i4_qwen3_0_6b",
    "GUSILU_i4_qwen3_0_6b_bf16pair",
+   "GU_K1152_N13824",
+   "GU_K2560_N18432",
    "GU_gemma4_e2b",
    "GU_qwen3.6-moe_35b",
    "GU_qwen3_0_6b",
@@ -900,12 +1147,15 @@
    "GU_qwen3_0_6b_m32",
    "GU_qwen3_0_6b_m8",
    "GU_v",
+   "G_K1152_N6912",
    "G_K2048_N512",
+   "G_K2560_N10240",
    "G_K2560_N12288",
    "G_K2560_N8192",
    "G_K2560_N9216",
    "G_K2560_N9728",
    "G_K3072_N8192",
+   "G_K4096_N14336",
    "G_gemma4_e4b",
    "G_llama",
    "G_nanbeige4_1_3b",
@@ -918,6 +1168,7 @@
    "KV_qwen3_0_6b",
    "KV_v",
    "MOE_DSD_qwen3.6-moe_35b",
+   "MOE_DSD_qwen3_6_35b_a3b_m1",
    "MOE_D_qwen3.6-moe_35b",
    "MOE_D_zaya",
    "MOE_D_zaya_m16",
@@ -925,6 +1176,7 @@
    "MOE_D_zaya_m8h2",
    "MOE_FUSED_zaya",
    "MOE_GUSGU_qwen3.6-moe_35b",
+   "MOE_GUSGU_qwen3_6_35b_a3b_m1",
    "MOE_GUSILU_i4_zaya",
    "MOE_GUSILU_zaya",
    "MOE_GU_qwen3.6-moe_35b",
@@ -933,10 +1185,13 @@
    "MOE_GU_zaya_m8",
    "MOE_SD_qwen3.6-moe_35b",
    "MOE_SGU_qwen3.6-moe_35b",
+   "O_K1024_N1152",
+   "O_K2048_N2560",
    "O_K2560_N2560",
    "O_K3072_N3072",
    "O_K4096_N2048",
    "O_K4096_N2560",
+   "O_K4096_N4096",
    "O_gemma4_e2b",
    "O_gemma4_e4b",
    "O_llama",
@@ -945,13 +1200,19 @@
    "O_qwen3.6-moe_35b",
    "O_qwen3_0_6b",
    "O_qwen3_5_4b",
+   "O_qwen3_6_35b_a3b_m1",
+   "O_qwen3_6_35b_a3b_m1lin",
    "O_qwen3_8b",
    "O_qwen3_vl_4b",
    "O_v",
+   "QKV_K1152_N1536",
    "QKV_K2048_N8192",
    "QKV_K2560_N3840",
+   "QKV_K2560_N4096",
    "QKV_K2560_N6144",
+   "QKV_K2560_N8192",
    "QKV_K3072_N5120",
+   "QKV_K4096_N6144",
    "QKV_gemma4_e2b",
    "QKV_gemma4_e4b",
    "QKV_llama",
@@ -960,15 +1221,20 @@
    "QKV_qwen3.6-moe_35b",
    "QKV_qwen3_0_6b",
    "QKV_qwen3_5_4b",
+   "QKV_qwen3_6_35b_a3b_m1",
+   "QKV_qwen3_6_35b_a3b_m1lin",
    "QKV_qwen3_8b",
    "QKV_qwen3_vl_4b",
    "QKV_v",
+   "U_K1152_N6912",
    "U_K2048_N512",
+   "U_K2560_N10240",
    "U_K2560_N12288",
    "U_K2560_N8192",
    "U_K2560_N9216",
    "U_K2560_N9728",
    "U_K3072_N8192",
+   "U_K4096_N14336",
    "U_gemma4_e4b",
    "U_llama",
    "U_nanbeige4_1_3b",
@@ -987,11 +1253,11 @@
  "population": {
   "alias_symlinks_in_tree": 12,
   "dangling_symlinks": 0,
-  "distinct_builds_by_uuid": 89,
-  "regular_artifacts": 117,
-  "top_level_xclbin": 129,
-  "tracked_paths_under_dir": 519,
-  "tracked_top_level_entries": 258,
+  "distinct_builds_by_uuid": 122,
+  "regular_artifacts": 142,
+  "top_level_xclbin": 154,
+  "tracked_paths_under_dir": 582,
+  "tracked_top_level_entries": 321,
   "txt_symlinks": 12,
   "xclbin_symlinks": 12
  },
