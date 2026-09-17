@@ -4,12 +4,24 @@
 set -euo pipefail
 
 export PEANO_INSTALL_DIR=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
+# Must be the venv interpreter: /usr/bin/python3 has neither the `aie` bindings
+# nor `ml_dtypes`, so the generator dies with ModuleNotFoundError under it.
+# run_build.sh already pins this; this script used bare `python3`.
+PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
 export AIETOOLS_DIR=/home/bcloud/mlir-aie/npu2_40_toolchain
 export MLIR_AIE_DIR=/home/bcloud/mlir-aie
 # 2026-09-17: was /opt/amd/vitis/install/2026.1/Vitis/aietools/include — that path does
-# not exist on this host (no /opt/amd at all). Real aietools include root below.
-export VITIS_INC=/home/bcloud/Xilinx/2026.1/Vitis/aietools/include
-export PATH=$AIETOOLS_DIR/bin:$PEANO_INSTALL_DIR/bin:$PATH
+# not exist on this host (no /opt/amd at all). Real Vitis root below.
+#
+# This root is not just an include path: aiecc shells out to `bootgen` to emit the
+# PDI/xclbin, and bootgen lives in <Vitis>/bin — NOT in aietools/bin where aiecc
+# itself is. Nothing added that directory, and bootgen is not on the ambient PATH,
+# so every build ended with "Error: bootgen not found, cannot generate requested
+# PDI/xclbin" (reproduced 2026-09-17). The old line exported VITIS_INC for this
+# same root while nothing read it — the variable was real, the PATH was missing.
+VITIS_ROOT=/home/bcloud/Xilinx/2026.1/Vitis
+export VITIS_INC=$VITIS_ROOT/aietools/include
+export PATH=$AIETOOLS_DIR/bin:$PEANO_INSTALL_DIR/bin:$VITIS_ROOT/bin:$PATH
 
 GENERATOR_DIR="$(cd "$(dirname "$0")" && pwd)"
 XCLBIN_DIR="$GENERATOR_DIR/../xclbins"
@@ -96,18 +108,44 @@ build_xclbin() {
     
     local xclbin_name="final_i8_${proj}_${model_tag}.xclbin"
     local insts_name="insts_i8_${proj}_${model_tag}.txt"
-    
+
     echo ""
     echo "═══════════════════════════════════════════════"
     echo "  Building ${model_tag} ${proj} (K=${K}, N=${N}, cols=${cols})"
     echo "═══════════════════════════════════════════════"
-    
-    # Generate MLIR
-    python3 "$GENERATOR_DIR/n1_core_i8_v26.py" \
+
+    # PID-unique workdir, as run_build.sh does. Three things were wrong when this
+    # ran from the caller's CWD (all three reproduced 2026-09-17):
+    #   * the generator ran as bare `python3`, which on this box is
+    #     /usr/bin/python3 — it has neither the `aie` bindings nor `ml_dtypes`,
+    #     so design generation died with ModuleNotFoundError and produced an
+    #     empty design (run_build.sh already pins the venv interpreter);
+    #   * the kernel object was never staged where aiecc looks for it, so a
+    #     build started from anywhere but this directory failed with
+    #     "could not copy .../mm_32x64x128.o ... No such file or directory";
+    #   * the generator's stderr was redirected INTO the design file (`2>&1`),
+    #     so a failing generator wrote a traceback that aiecc then tried to
+    #     parse as MLIR.
+    # Running from here also left design.mlir.prj/ behind in whatever directory
+    # the script was invoked from (five such directories are in the repo root).
+    local workdir="/tmp/build_new_${proj}_${model_tag}.$$"
+    rm -rf "$workdir"; mkdir -p "$workdir"
+    local design="$workdir/design.mlir"
+
+    # Generate MLIR. stderr goes to its own file: it must never land in the design.
+    $PYTHON "$GENERATOR_DIR/n1_core_i8_v26.py" \
         -M 128 -K "$K" -N "$N" \
         -m 32 -k 64 -n 128 \
-        -c "$cols" -b 5 > "$GENERATOR_DIR/design_${proj}_${model_tag}.mlir" 2>&1
-    
+        -c "$cols" -b 5 > "$design" 2>"$workdir/gen.err"
+    if [ ! -s "$design" ]; then
+        echo "  ❌ ${model_tag} ${proj}: design generation produced no MLIR"
+        sed 's/^/     /' "$workdir/gen.err" | tail -5
+        rm -rf "$workdir"
+        return 1
+    fi
+    cp "$KERNEL_OBJ" "$workdir/mm_32x64x128.o"
+    cd "$workdir"
+
     # Compile to xclbin
     aiecc --aietools="$AIETOOLS_DIR" --peano="$PEANO_INSTALL_DIR" \
         --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
@@ -115,9 +153,10 @@ build_xclbin() {
         --aie-generate-npu-insts \
         --xclbin-name="$XCLBIN_DIR/$xclbin_name" \
         --npu-insts-name="$GENERATOR_DIR/$insts_name" \
-        "$GENERATOR_DIR/design_${proj}_${model_tag}.mlir" 2>&1
-    
+        "$design" 2>&1
     local status=$?
+    cd "$GENERATOR_DIR"
+    rm -rf "$workdir"
     if [ $status -eq 0 ]; then
         local size
         size=$(stat -c%s "$XCLBIN_DIR/$xclbin_name" 2>/dev/null || echo "0")
@@ -125,9 +164,6 @@ build_xclbin() {
     else
         echo "  ❌ FAILED (exit=$status)"
     fi
-    
-    # Clean up MLIR design file
-    rm -f "$GENERATOR_DIR/design_${proj}_${model_tag}.mlir"
     
     return $status
 }
@@ -139,7 +175,16 @@ echo "================================================"
 total_ok=0
 total_fail=0
 
+# MODELS_FILTER limits the run to entries containing the given substring, so one
+# shape can be rebuilt — and this script verified — without running all of them.
+# Mirrors SHAPES_FILTER in run_build.sh. Example:
+#   MODELS_FILTER="moe_35b:G:" ./build_new_xclbins.sh
+MODELS_FILTER="${MODELS_FILTER:-}"
+
 for entry in "${MODELS[@]}"; do
+    if [ -n "$MODELS_FILTER" ] && [[ "$entry" != *"$MODELS_FILTER"* ]]; then
+        continue
+    fi
     IFS=':' read -r model_tag proj K N cols <<< "$entry"
     
     if build_xclbin "$model_tag" "$proj" "$K" "$N" "$cols"; then
