@@ -5,7 +5,12 @@ on:
     paths:
       - "tools/unified_server.cpp"
       - "src/backend_*.cpp"
-      - "src/backend_*.hip"
+      # HIP kernel sources. The previous arm here was "src/backend_*.hip", which
+      # matches ZERO files: the kernels are not named backend_*.hip. They live in
+      # src/*.hip and kernels/*.hip, and both are compiled into the product
+      # (CMakeLists.txt:403-430), so a kernel-only change did not run this gate.
+      - "src/**.hip"
+      - "kernels/**.hip"
       - "src/zaya_engine.cpp"
       - "src/zamba2_engine*"
       - "src/gguf_*.cpp"
