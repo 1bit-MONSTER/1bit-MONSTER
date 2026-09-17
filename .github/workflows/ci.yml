@@ -198,9 +198,14 @@ jobs:
         with:
           scandir: '.'
           severity: warning
-          # vendored deps pulled in by the cmake build (mbedtls, cpp_httplib)
-          # ship shell scripts that fail SC warnings — never our code.
-          ignore_paths: 'build _deps third_party packaging'
+          # Vendored trees ONLY: deps pulled in by the cmake build (mbedtls,
+          # cpp_httplib) ship shell scripts that fail SC warnings — never our code.
+          # `packaging` was listed here as though it were vendored, but all 13 shell
+          # scripts under it are first-party, and the exclusion was hiding a real
+          # SC2155 in packaging/model-download.sh (fixed in the same change). Lifting
+          # it costs nothing: at severity=warning the whole first-party tree is clean
+          # — 147 scripts scanned, 0 findings.
+          ignore_paths: 'build _deps third_party'
 
   lint:
     name: Lint (clang-format)
