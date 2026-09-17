@@ -535,13 +535,114 @@ shell.**
   of the four aliases. The name is not the standard here and the tensors are
   unreachable, so this is recorded as unverifiable rather than reviewed.
 
-**Running tally after this batch**: of the 77 uncovered classes, **13 have a
-review entry here** — 8 before this batch (`deepseekv41`, `qwen3mamba3`, `gdn2`,
-`fidel`, `blockmtp`, `jarvistitanmoe`, `canopy`, `zgcm`) plus the 5 above — so
-**64 classes / 90 instances remain unreviewed**. Counted by review *heading*
-rather than by whether the class name appears anywhere in the file: my own prose
-above mentions `moonfrost` in order to correct the record, and a substring test
-duly reported it as reviewed.
+## Reviewed 2026-09-17 (third batch) — six more, including the largest remaining
+
+Same method and same matcher as the batch above, checked the same way.
+
+### `fhn_t4max_150m` / `FHN_T4Max_150M` — `aixk/baar2-150m` (4)
+
+**Not an alias.** This is the largest single remaining class, and it is invisible
+to a name search: the census class comes from the arch string `FHN_T4Max_150M`,
+while the configs say `model_type: fhn_concept_gau`. The 4 instances are
+`aixk/baar2-150m`, `baar2-3m`, `baar2-9m`, `baar3-19m`.
+
+* **Tensors** (112): `blocks.{N}.in_proj` / `out_proj` (a **fused** QKV),
+  `blocks.{N}.q_norm` + `k_norm`, **one** `blocks.{N}.norm` per block,
+  `blocks.{N}.res_scale`, and a learned `pos_embed.weight`.
+* **Why that is decisive**: `res_scale` and `pos_embed` have **zero**
+  dotted-component hits — a per-block residual scale factor and a learned
+  *absolute* positional table, where every covered family uses RoPE. Every
+  covered family also carries **two** norms per block (`input_layernorm` and
+  `post_attention_layernorm`); this has one. That `norm`, `q_norm` and `k_norm`
+  are recognised names does not rescue it. (The nearest `res_scale` in the tree is
+  zaya's `res_scale_hs.weight`, a different component — which is exactly the
+  distinction the dotted-component matcher exists to make.)
+* **Verdict**: implement, do not alias.
+
+### `corm` — `ilsp/corm-182m-top1` (3)
+
+**Not an alias, and the disqualifier is the router, not the experts.**
+
+* **Tensors** (423): an ordinary attention shell (`input_layernorm`,
+  `post_attention_layernorm`, `self_attn.{q,k,v,o}_proj`) around a MoE whose
+  experts are `moe.experts.{N}.w1` / `w2` / `w3`.
+* **The experts alone would not disqualify it**: `%sexperts.%d.w1.weight` *is*
+  engine vocabulary (`src/minimaxm2_engine.cpp:198`), so the Mixtral/Nemotron
+  `w1/w2/w3` layout is served.
+* **The router is what does**: `moe.router.expert_queries.weight`,
+  `moe.router.key.weight` (a query-key **retrieval** router),
+  `moe.router.global_null_mean`, `moe.router.routing_temperature` and
+  `moe.router.ema_initialized` all have **zero** hits. The engine's router forms
+  are a single routing matrix (`block_sparse_moe.router.layer.weight`,
+  `experts.router.layer.weight`). A null-expert retrieval router with its own
+  temperature is a different routing scheme, not a rename.
+* **Verdict**: implement, do not alias.
+
+### `fly` — `ngxson/fly-llm-hf` (3)
+
+**Not a transformer. Not an alias.**
+
+* **Tensors** — only **13**: `brain.in_index`, `brain.w_values`, `brain.w_offsets`,
+  `brain.in_proj`, `brain.out_index`, `brain.gain`, `brain.bias`, `brain.rec_gain`,
+  `brain.wte.weight`, `ln.{weight,bias}`, `lm_head.weight`.
+* **Why that is decisive**: `brain`, `rec_gain`, `w_values`, `w_offsets` and
+  `in_index` all have zero hits. A sparse value/offset weight encoding plus a
+  recurrent gain is a brain-inspired recurrent model — there is no attention
+  tensor of any kind, and 13 tensors total is not a transformer of any size.
+* **Verdict**: no implementation warranted as a text family.
+
+### `open1b` — `gensyn/open-1b-base` (3)
+
+**Not an alias.**
+
+* **Tensors** (340): `blocks.{N}.attn.{wq,wk,wv,wo}.weight`, each with a
+  **`weight_scale`** sibling, `blocks.{N}.ffn.w_gate_up.weight` + scale,
+  `norm1`/`norm2`, `emb_norm`, `embedding.tok_embeddings`, `embedding.output`,
+  `norm_out`.
+* **Why that is decisive**: `w_gate_up` is a **fused** gate+up projection (zero
+  hits — the engine loads `gate_proj` and `up_proj` separately), and *every*
+  weight carries a `weight_scale` (zero hits): a quantised scheme the loader does
+  not read. `wq`, `wv`, `norm1` and `norm2` are also outside the vocabulary.
+* **Verdict**: implement, do not alias.
+
+### `tinylm2` — `se00n00/tinylm2-50m-base` (3)
+
+**Not an alias — and the reason is one character.**
+
+* **Tensors** (111): `model.blocks.{N}.attention.{q,k,v,o}_proj`,
+  `model.blocks.{N}.feedforward.{gate,up,down}_proj`,
+  `model.blocks.{N}.norm1.weights` / `norm2.weights`, `model.embeddings`,
+  `model.final_norm.weights`, `model.head_proj`.
+* **Why that is decisive**: the norms are `norm1.**weights**` / `norm2.**weights**`
+  — plural, where the engine reads `.weight` — and `feedforward`, `head_proj`,
+  `norm1` and `norm2` all have zero hits. The block *shape* is a Llama block; the
+  loader would find none of its norms.
+* **Verdict**: implement, do not alias.
+
+### `lightning` — `aobangaming/lightning-60m` (2)
+
+**Not an alias.**
+
+* **Tensors** (101): `lightning.transformer.{N}.attention.qkv.{weight,bias}`,
+  `.attention.out_proj`, `.ffn.{0,1}.{weight,bias}` (two FFN sublayers per block),
+  `norm1`/`norm2` with biases, `lightning.positional_encoding.pe`,
+  `lightning.token_embedding`, `lightning.output_layer`.
+* **Why that is decisive**: `positional_encoding.pe` is a **learned absolute**
+  positional table and has zero hits — every covered family is RoPE — and
+  `lightning`, `output_layer`, `ffn` and `norm1` have zero hits, with two `ffn.N`
+  sublayers per block. That `qkv`, `final_norm` and `token_embedding` *are*
+  recognised does not make it the family that uses those names.
+* **Verdict**: implement, do not alias.
+
+**Running tally**: of the 77 uncovered classes, **19 have a review entry here** —
+8 before today's two batches (`deepseekv41`, `qwen3mamba3`, `gdn2`, `fidel`,
+`blockmtp`, `jarvistitanmoe`, `canopy`, `zgcm`, 73 instances) plus the 11 above
+(21 + 18 = 39 instances) — so **58 classes / 72 instances remain unreviewed**.
+Counted by review *heading* rather than by whether the class name appears anywhere
+in the file: my own prose above mentions `moonfrost` in order to correct the
+record, and a substring test duly reported it as reviewed. The per-entry counts
+are the census's own, which is why `lightning` reads (2) here though three models
+carry the arch.
 
 ---
 
