@@ -6,6 +6,46 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-17 — unlanded-work audit, part 2: it only ever looked at ONE clone
+
+The 2026-09-13 audit above is scoped by its own first line — `git branch` **here**.
+The box holds a second working clone, and on the same test it has **14 local
+branches that are not on its `origin`**:
+
+```
+~/hrx-ws/amd-hrx-graph      15 local heads, 14 not on origin
+  feat/decode-fusion-30b            fix/hrx-ngl-init-order       goal/hrx-collapse
+  fix/2152-concat-capacity          fix/qwen3-decode-norm        goal/mttfnld6-runtime-machinery
+  fix/2152-concat-claims            fix/qwen35-prefill-coverage  round-28-zaya-port
+  fix/hrx-compute-buffer-resize     goal/bench-unblock           validate-2152
+                                    goal/engine-arch
+                                    goal/hipcc-decode-toolchain
+```
+
+**The remedy from the 09-13 audit does not transfer.** There, the fix was "pushed to
+`origin` (preservation only, deliberately no PRs)". In that clone `origin` is
+`AMD-Ecosystem/llama.cpp`, and this account has **`push=false`** there (checked with
+`gh api repos/AMD-Ecosystem/llama.cpp --jq .permissions`; read is allowed, push is
+not). So the branches go to `bong` — `https://github.com/bong-water-water-bong/llama.cpp`
+— which currently carries **34 heads to this clone's 15**.
+
+The consequence is the part worth carrying forward: in that clone **pushing is not
+evidence of landing at all**, and with no push path to the intended upstream there is
+no PR path either, so "no PR" is the *normal* state rather than a signal. That is how
+`fix/2152-concat-capacity` sat complete from 2026-09-10 with nobody noticing — the only
+artefact that would have surfaced it audits one clone. Both branches are on `bong`
+(`bong/fix/2152-concat-claims` at `7c9f875c0`, `bong/fix/2152-concat-capacity` at
+`68ad35c9d`), so they are preserved; they are unreviewed, and nothing tracks them.
+They are two divergent lines for the same fix, with nothing recording that `capacity`
+supersedes `claims`. Recorded on #2152.
+
+**Method, extended:** run the audit in **every clone on the box**, not just this one —
+`for d in ~/1bit-MONSTER ~/hrx-ws/amd-hrx-graph …; do git -C $d for-each-ref …; done` —
+and treat the remedy as per-remote: where this account cannot push to `origin`, a
+branch being "on a remote" means preserved, not reviewable. The 09-13 lesson still
+applies unchanged in each clone: check `origin/<same-name>` *and* names referenced in
+the branch's own commits, per branch and never through a capped list.
+
 ## 2026-09-16 (late) — strixhalo: the fused engine's K/V staging race, fixed; #2213 stays open
 
 State for whoever picks up the NPU/attention lane, so this is not re-derived.
