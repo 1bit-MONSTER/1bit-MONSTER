@@ -48,8 +48,8 @@ Against Modular's actual curated `/models` front-page lineup (~18 LLMs, not the 
 | Family | HF arch string | model_type | token | backend refs | smallest checkpoint | size |
 |---|---|---|---|---|---|---|
 | DeepSeek V4 | `DeepseekV4ForCausalLM` | `deepseek_v4` | `DEEPSEEK_V4` (22) | **0** — engine exists but written against FICTIONAL arch (audit 2026-08-16, see note) | `deepseek-ai/DeepSeek-V4-Flash` | **159.6 GB** (46 shards) |
-| ~~GLM-5.2~~ **DONE (mini-gate)** | `GlmMoeDsaForCausalLM` | `glm_moe_dsa` | `GLM` (2) | **validated** — V3-MLA + DSA indexer + sigmoid group-topk MoE (2026-08-16, mini fixture, top1 171, 20/20) | `zai-org/GLM-4.5` | large |
-| ~~MiMo~~ **DONE (mini-gate)** | `MiMoV2FlashForCausalLM` | `mimo_v2_flash` | `MIMO` (4) | **validated** — MoD hybrid SWA+full GQA + sigmoid noaux_tc group-topk MoE (2026-08-16, mini fixture, top1 524, 20/20) | `XiaomiMiMo/MiMo-V2-Flash` | 313 GB |
+| ~~GLM-5.2~~ **DONE (mini-gate)** | `GlmMoeDsaForCausalLM` | `glm_moe_dsa` | `LLAMA` (2) | **validated** — V3-MLA + DSA indexer + sigmoid group-topk MoE (2026-08-16, mini fixture, top1 171, 20/20) | `zai-org/GLM-4.5` | large |
+| ~~MiMo~~ **DONE (mini-gate)** | `MiMoV2FlashForCausalLM` | `mimo_v2_flash` | `QWEN2` (4) | **validated** — MoD hybrid SWA+full GQA + sigmoid noaux_tc group-topk MoE (2026-08-16, mini fixture, top1 524, 20/20) | `XiaomiMiMo/MiMo-V2-Flash` | 313 GB |
 | ~~Nemotron 3~~ **DONE** | `NemotronForCausalLM` | `nemotron` | `NEMOTRON` (989) | **validated** — LayerNorm1P, relu2 non-gated MLP, partial rope (2026-08-16, `mgoin/nemotron-3-8b-chat-4k-sft-hf`, top1 7503 ' Paris', corr 0.99986) | `mgoin/nemotron-3-8b-chat-4k-sft-hf` | 17 GB |
 | ~~Qwen3.5~~ **DONE (mini-gate)** | `Qwen3_5ForCausalLM` (text) | `qwen3_5` | `QWEN35` (21) | **validated** — GatedDeltaNet + gated GQA hybrid text decoder (2026-08-16, mini fixture, top1 142, 20/20, corr 1.0) | text-only mini | — |
 

@@ -134,6 +134,20 @@ else
     printf '%s\n' "$census_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# The family manifest's declared mappings. `Testing/bringup_runner.sh` step 1 does
+# exactly this comparison and nothing invokes bringup_runner.sh (its step 3 needs
+# fixtures and torch), which is how two families came to declare MIMO and GLM —
+# tokens that do not exist in the enum (#2511). This runs the half that needs
+# neither fixtures nor a device.
+total=$((total+1))
+if manifest_out=$("$PYTHON" Testing/manifest_mapping_selfcheck.py 2>&1); then
+    echo "✓ manifest_mappings"
+    printf '%s\n' "$manifest_out" | grep -E "^  " | sed 's/^/  /'
+else
+    echo "✗ manifest_mappings"
+    printf '%s\n' "$manifest_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # Published coverage claims must equal the census. seo_sync rewrites them in the
 # daily apply workflows, but that is not a gate — four false-claim shapes
 # survived for months in wordings its patterns did not know (#2389 -> #2397).
