@@ -82,6 +82,27 @@ engine_sources_missing() {
     done
 }
 
+# engine_objs_missing <build_npu.sh> <workflow> — the objects ENGINE_OBJS links
+# that the workflow never references. build_npu.sh names its objects through
+# variables (`RUNLIST_BRIDGE_O="$BUILDDIR/npu_runlist_bridge.o"`), so this resolves
+# them in two steps. The variable class MUST include digits: plain `[A-Z_]` matches
+# the tail of `BF16MM_BRIDGE_O` ("MM_BRIDGE_O"), finds no assignment for it, and
+# reports an unparsed name instead of the object.
+engine_objs_missing() {
+    local script="$1" wf="$2" v o
+    awk '/^ENGINE_OBJS=\(/,/\)/' "$script" \
+        | grep -oE '\$\{?[A-Z0-9_]+\}?_O' | tr -d '${}' | sed 's/_O$//' \
+        | while read -r v; do
+            [ -n "$v" ] || continue
+            o=$(sed -n "s/^${v}_O=\"\$BUILDDIR\/\([A-Za-z0-9_.]*\)\".*/\1/p" "$script" | head -1)
+            if [ -z "$o" ]; then
+                printf '%s\n' "<unparsed ${v}_O>"
+                continue
+            fi
+            grep -qE "${o%.o}\.(cpp|c|o)([^A-Za-z0-9_]|$)" "$wf" || printf '%s\n' "$o"
+        done
+}
+
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 
 # ---- 1. positive: the committed script, on a tree with no build directory ----
@@ -123,8 +144,10 @@ if [ ! -f "$CM" ] || [ ! -f "$BENCH" ]; then
     echo "FAIL: cannot compare the engine's source sets — missing $CM or $BENCH"
     fail=1
 else
+    # Count MATCHES, not lines: the source list is one entry per line here, but
+    # ENGINE_OBJS below is a single line and `grep -c` would read it as one.
     n_target=$(awk '/set\(NPU_ENGINE_SOURCES/,/^\)/' "$CM" \
-               | grep -cE '[A-Za-z0-9_]+\.cpp' || true)
+               | grep -oE '[A-Za-z0-9_]+\.cpp' | wc -l)
     missing="$(engine_sources_missing "$CM" "$BENCH")"
     if [ "$n_target" -lt 3 ]; then
         # A parse that finds nothing would pass the comparison below vacuously.
@@ -147,6 +170,42 @@ else
         ctl="$(engine_sources_missing "$CM" "$T/bench.yml")"
         if [ -z "$ctl" ]; then
             echo "FAIL: control — removing a reference did not make the comparison fail"
+            fail=1
+        else
+            echo "ok: control — with one reference removed it reports:$(printf ' %s' $ctl)"
+        fi
+    fi
+fi
+
+# ---- 3b. the same comparison against build_npu.sh's ENGINE_OBJS --------------
+# Checked as well as, not instead of, the target above: they serve different
+# builds and either can drift alone. ENGINE_OBJS is the list the XRT+FLM build
+# actually links, and on a branch that adds bridges it is the longer one — for
+# #2435's tree it names eight objects against the target's five, so it sees TUs
+# the target comparison cannot (npu_model.o, npu_runlist_runtime.o,
+# npu_engine_bf16_mm_bridge.o, flm_prefill_bridge.o against the target's one).
+BUILD_NPU="$REPO/engine/npu/build_npu.sh"
+if [ -f "$BUILD_NPU" ] && [ -f "$BENCH" ]; then
+    n_obj=$(awk '/^ENGINE_OBJS=\(/,/\)/' "$BUILD_NPU" \
+            | grep -oE '\$\{?[A-Z0-9_]+\}?_O' | wc -l)
+    obj_missing="$(engine_objs_missing "$BUILD_NPU" "$BENCH")"
+    if [ "$n_obj" -lt 2 ]; then
+        echo "FAIL: parsed only $n_obj object(s) out of ENGINE_OBJS — nothing to compare"
+        fail=1
+    elif [ -n "$obj_missing" ]; then
+        echo "FAIL: bench.yml never compiles these ENGINE_OBJS objects:"
+        printf '        %s\n' $obj_missing
+        echo "      Each is linked into the engine by build_npu.sh, so bench.yml — the only"
+        echo "      XRT-enabled engine build in CI — link-fails without it (#2505)."
+        fail=1
+    else
+        echo "ok: bench.yml references all $n_obj ENGINE_OBJS objects"
+    fi
+    if [ -z "$obj_missing" ]; then
+        sed '0,/zaya_decode\.cpp/s//zaya_decode_dropped.cpp/' "$BENCH" > "$T/bench_obj.yml"
+        ctl="$(engine_objs_missing "$BUILD_NPU" "$T/bench_obj.yml")"
+        if [ -z "$ctl" ]; then
+            echo "FAIL: control — removing an ENGINE_OBJS reference did not fail the comparison"
             fail=1
         else
             echo "ok: control — with one reference removed it reports:$(printf ' %s' $ctl)"
