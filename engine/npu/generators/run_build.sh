@@ -164,40 +164,53 @@ build_one() {
             echo "  (alias: building $_link, link left in place)"
         fi
     fi
-    rm -f "$build_path"
-    
+    # Build into the workdir, NOT over the target. The previous `rm -f "$build_path"` was
+    # there so the post-build check could not be satisfied by a stale file — but when
+    # $xclbin is an alias, build_path is the link's TARGET, which is a TRACKED artifact.
+    # Deleting it before aiecc meant a failed build left it deleted and the alias dangling,
+    # with nothing to restore it. A fresh path inside the PID-unique workdir gives the same
+    # freshness guarantee while leaving the repo untouched until the build has succeeded.
+    _build_out="$workdir/$(basename "$build_path")"
+    _insts_out="$workdir/insts_i8_${proj}_${tag}.txt"
+
     cd "$workdir"
     $AIECC --peano="$PEANO" --aietools="$AIETOOLS" \
         --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
         --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \
         --aie-generate-npu-insts \
-        --xclbin-name="$build_path" \
-        --npu-insts-name="$insts_dir/insts_i8_${proj}_${tag}.txt" \
+        --xclbin-name="$_build_out" \
+        --npu-insts-name="$_insts_out" \
         "$design" 2>&1 | tail -1
     cd "$GENERATOR_DIR"
-    rm -rf "$workdir"
     
-    if [ -f "$build_path" ] && [ "$(head -c8 "$build_path" 2>/dev/null)" = "xclbin2" ] \
-       && [ "$(stat -Lc%s "$build_path" 2>/dev/null || echo 0)" -gt 4096 ]; then
-        local size; size=$(stat -Lc%s "$build_path" 2>/dev/null)
+    if [ -f "$_build_out" ] && [ "$(head -c8 "$_build_out" 2>/dev/null)" = "xclbin2" ] \
+       && [ "$(stat -Lc%s "$_build_out" 2>/dev/null || echo 0)" -gt 4096 ]; then
+        local size; size=$(stat -Lc%s "$_build_out" 2>/dev/null)
+        # Nothing in the repo has been touched up to this point; only a verified build
+        # writes through, so a failure cannot damage a committed artifact.
+        cp -f "$_build_out" "$build_path"
+        cp -f "$_insts_out" "$insts_dir/insts_i8_${proj}_${tag}.txt"
         # Dimension-keyed copies: the engine falls back to
         # final_i8_<op>_K<K>_N<N>.xclbin when no tag-keyed file exists (#1481),
         # so any model with identical GEMM shapes loads without a rebuild.
         cp -f "$build_path" "$XCLBIN_DIR/final_i8_${proj}_K${K}_N${N}.xclbin"
         cp -f "$insts_dir/insts_i8_${proj}_${tag}.txt" "$XCLBIN_DIR/insts_i8_${proj}_K${K}_N${N}.txt"
+        rm -rf "$workdir"
         echo "  ✅ $(basename "$xclbin") ($(numfmt --to=iec "$size")) + dim-keyed copies"
         return 0
     else
         # Say WHICH precondition failed. Plain `[ -f ]` was not enough: a stale xclbin
         # left by an earlier run satisfies it, so a failed aiecc still reported ✅ and
         # the existing artifact was then re-copied over the dim-keyed names as if fresh.
-        if [ ! -e "$build_path" ]; then
+        if [ ! -e "$_build_out" ]; then
             echo "  ❌ FAILED: aiecc produced no xclbin (see the ${proj}_${tag} error above)"
-        elif [ "$(head -c8 "$build_path" 2>/dev/null)" != "xclbin2" ]; then
+        elif [ "$(head -c8 "$_build_out" 2>/dev/null)" != "xclbin2" ]; then
             echo "  ❌ FAILED: $xclbin is not an AXLF container (bad magic) - not copying it forward"
         else
-            echo "  ❌ FAILED: $build_path is $(stat -Lc%s "$build_path" 2>/dev/null) B, below the 4096 B floor"
+            echo "  ❌ FAILED: $_build_out is $(stat -Lc%s "$_build_out" 2>/dev/null) B, below the 4096 B floor"
         fi
+        echo "  (the committed artifact, if any, was not touched)"
+        rm -rf "$workdir"
         return 1
     fi
 }
