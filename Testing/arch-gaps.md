@@ -337,12 +337,13 @@ request when the model is sharded.
 four largest un-reviewed ones, in decreasing order, reviewed from their live
 configs and HF metadata.
 
-**A limit on all four**: the standard above is to decide an alias on the
-checkpoint's *tensors*, and these verdicts rest on `config.json` plus HF metadata,
-not on tensor headers. That is decisive for the two that are not text LMs at all
-(a vocabulary of 82, and a `text-to-speech` pipeline tag); for the two real ones it
-establishes "not a name we map", not "not an alias" — the tensor check is still
-outstanding and is called out per entry.
+**On the standard**: the rule above is to decide an alias on the checkpoint's
+*tensors*. All four now have that check. For `blockmtp` and `canopy` the config was
+already decisive (a vocabulary of 82; a `text-to-speech` pipeline tag) and the tensor
+layout is consistent with it. For `jarvistitanmoe` and `zgcm` the tensor index was
+read on 2026-09-17 — `model.safetensors.index.json`, no weights downloaded — and both
+are **not aliases**, for the per-entry reasons below. The earlier version of this
+section recorded those two as "tensor check outstanding"; that is now closed.
 
 ### `blockmtp` / `looped_block_mtp` — `violetxi/hparam-92m-block-mtp-…` (12)
 
@@ -363,16 +364,23 @@ outstanding and is called out per entry.
 
 ### `jarvistitanmoe` / `jarvis_titan_moe` — `dhanesh-hf/Jarvis-Titan-V12-MoE-14B` (9)
 
-**A real causal text LM. Not a name the registry maps — and the tensor check is
-outstanding.**
+**A real causal text LM, a genuine coverage gap, and NOT an alias — tensor check
+done 2026-09-17.**
 
 * **Class / model_type**: `JarvisTitanMoEForCausalLM` / `jarvis_titan_moe`.
 * **Config**: `vocab_size` 152064, `hidden_size` 3584, `num_hidden_layers` 28, and
   MoE. A genuine text-generation family from a community uploader
   (`Jarvis-Titan-V10-SFT-Merged`, `V12-MoE-14B`, `V12-MoE-Adapted`).
-* **Verdict**: this is a coverage gap worth implementing, not an artefact. Whether it
-  is also an *alias* is untested: the vocabulary 152064 matches the Qwen2.5-class
-  size, so the tensors — not the class name — are what would settle it.
+* **Tensors** (451 in the index): `self_attn.{q,k,v}_proj` **carry biases** (a
+  Qwen2-era trait, not Qwen3), and the FFN is a **packed** MoE layout —
+  `mlp.router.weight` plus `mlp.routed_gate` / `mlp.routed_up` / `mlp.routed_down`
+  and `mlp.shared_gate` / `mlp.shared_up` / `mlp.shared_down`.
+* **Why that is decisive**: `routed_gate`, `routed_up` and `routed_down` have **zero
+  hits** across `src/` and `include/`. The engine's shared-expert vocabulary is
+  DeepSeek's (`shared_up` in `include/deepseek.h`), which is a different scheme, and
+  nothing reads a `routed_*` packed expert weight. A checkpoint whose MoE weights are
+  packed under names the loader does not know is not a rename of a family we serve.
+* **Verdict**: implement, do not alias. The gap is real and the layout is distinct.
 
 ### `canopy` — `canopylabs/orpheus-3b-0.1-ft` (7)
 
@@ -388,15 +396,26 @@ outstanding.**
 
 ### `zgcm` — `zgcagi/ZGCM-1-7B` (6)
 
-**A real causal text LM. Not a name the registry maps — and the tensor check is
-outstanding.**
+**A real causal text LM, a genuine coverage gap, and NOT an alias — tensor check
+done 2026-09-17.**
 
 * **Class / model_type**: `ZgcmForCausalLM` / `zgcm`.
 * **Config**: `vocab_size` 155136, `hidden_size` 4096, `num_hidden_layers` 32 —
   a 7B-class text LM with a full text vocabulary, and a trainer's own architecture
   name (`ZGCM-1-7B`, plus `-Pretrain-Curriculum`, `-Midtrain-Staged-16K/256K`).
-* **Verdict**: a coverage gap worth implementing. As with `jarvis_titan_moe`, the
-  alias question needs the tensors.
+* **Tensors** (382 in the index): a *modern* dense layout, not Qwen2 —
+  `self_attn.{q,k,v,o}_proj.weight` with **no biases**, `self_attn.q_norm` and
+  `self_attn.k_norm` (Qwen3-style), `mlp.{gate,up,down}_proj`,
+  `post_attention_layernorm` **and** `post_feedforward_layernorm` — plus
+  **`self_attn.g_proj.weight`**, an attention output gate.
+* **Why that is decisive**: `g_proj` has **zero hits** across `src/` and `include/`.
+  The engine handles `q_norm`/`k_norm` and `post_feedforward_layernorm`, so most of
+  this layout would line up with a Qwen3-class path — but nothing produces or consumes
+  an attention output gate, and a checkpoint carrying one is not the family it
+  otherwise resembles.
+* **Verdict**: implement, do not alias. This is the closest of the four to an existing
+  family and the one most likely to be mistaken for an alias, which is exactly why the
+  tensor check was worth running: the shell matches, the gate does not.
 
 ---
 
