@@ -9,15 +9,19 @@ toolchain has a pre-existing version mismatch that prevents clean builds"). That
 *committed* artifacts the source of truth, and it means two classes of defect can only be
 caught by inspecting the committed set rather than by building it:
 
-  1. Hygiene regressions that a clean checkout reproduces deterministically. Four of the
-     tracked *.xclbin symlinks point into a machine-local FastFlowLM install
-     (/opt/fastflowlm/...) rather than into the repo, so whether they resolve is HOST
-     state, not a property of the commit. The check therefore asserts their TARGETS -
-     nobody may repoint them, materialise them, or drop a different binary in their place -
-     and reports the dangling/resolving split as host information instead of asserting it.
-     (Asserting the split was an earlier design error: it made the gate red on any box with
-     fastflowlm installed while staying green in CI, which is how a check gets ignored.
-     A clean checkout does not get those four files; a box with FLM does.)
+  1. Hygiene regressions that a clean checkout reproduces deterministically. An in-tree
+     alias must stay inside engine/npu/xclbins/ and name a tracked sibling *.xclbin - a link
+     that escapes the directory, or names a path the commit does not carry, is broken in a
+     fresh clone no matter which machine made it. Third-party links may also be tracked,
+     pointing into a machine-local FastFlowLM install (/opt/fastflowlm/...), and for those
+     whether they resolve is HOST state, not a property of the commit: the check asserts
+     their TARGETS - nobody may repoint them, materialise them, or drop a different binary
+     in their place - and reports the dangling/resolving split as host information instead
+     of asserting it. (Asserting the split was an earlier design error: it made the gate red
+     on any box with fastflowlm installed while staying green in CI, which is how a check
+     gets ignored. A clean checkout does not get those files; a box with FLM does. No such
+     link is tracked today - the four that motivated this mechanism were deleted in #2218 -
+     but the invariant is what the check is for, so it stays.)
   2. Provenance loss. The artifacts record their producer, format version, UUID and
      timestamp, but no toolchain version, no source revision and no generating script - so
      a green rebuild could never be shown to reproduce what ships. PROVENANCE.json is the
@@ -28,6 +32,10 @@ This check runs with stdlib Python only and needs no NPU, so it can gate on stoc
 runners. It asserts hygiene invariants that need no baseline, then compares the observed
 tree against the committed manifest; a legitimate change to the artifact set is landed by
 regenerating the manifest in the same commit (--write-manifest), which is the review point.
+Every field the manifest records about the committed set is compared, not a hand-picked
+subset of it: population.tracked_paths_under_dir counted 519 against a tree of 520 without
+the gate noticing (issue #2513), which is what a recorded-but-unread field buys you. The
+only exclusions are the two host-dependent population keys, named in HOST_DEPENDENT_KEYS.
 
 POPULATION, UNITS, TIMEZONE (stated because a census is meaningless without them)
 --------------------------------------------------------------------------------
@@ -266,7 +274,6 @@ def observe(root: Path) -> dict:
 def hygiene(obs: dict) -> list[str]:
     """Invariants that need no baseline. Returns warnings; raises Failure on violations."""
     notes: list[str] = []
-    pop = obs["population"]
 
     # (b) dangling links must be declared, and must not be "fixed" with a foreign binary
     for path, target in obs["declared_dangling"].items():
@@ -275,58 +282,81 @@ def hygiene(obs: dict) -> list[str]:
                 f"{path}: dangling to {target} - an unexpected dangling target; "
                 "if this is intentional, regenerate the manifest"
             )
-    # (a) every non-dangling symlink must resolve (by construction, but assert the split)
-    if pop["alias_symlinks_in_tree"] + pop["dangling_symlinks"] != pop["xclbin_symlinks"]:
-        raise Failure(
-            "symlink accounting does not add up: "
-            f"{pop['alias_symlinks_in_tree']} resolving + {pop['dangling_symlinks']} dangling "
-            f"!= {pop['xclbin_symlinks']} total"
-        )
-    # (d) aliases must stay symlinks: they are counted as symlinks, and no alias may also
-    #     exist as a regular artifact of the same name
-    regular_names = {
-        name for entry in obs["artifacts"].values() for name in entry["paths"]
+
+    # (a) An in-tree alias must stay inside the artifact directory and name a tracked,
+    #     regular sibling artifact. This needs no baseline, so it still holds after the
+    #     same commit regenerates the manifest - which is the case the manifest diff
+    #     cannot see. Absolute targets are the declared third-party case: whether they
+    #     resolve is host state (noted above), and which target each one carries is
+    #     recorded and asserted by compare().
+    #
+    #     This replaces two blocks that could not fail. One asked whether a symlink's
+    #     basename was also a regular artifact - impossible, since observe() classifies
+    #     each top-level path as a symlink XOR a regular file. The other walked every
+    #     (UUID group x symlink) pair looking for an alias that left its group, but
+    #     artifacts[uuid]["paths"] only ever holds *regular* names, so its guard
+    #     `if name not in regular: continue` fired on all 1068 iterations and the
+    #     assertion below it was unreachable. The invariant they were reaching for is the
+    #     one asserted here; "still points at the same twin" is a manifest fact and is
+    #     asserted by compare()'s whole-map symlink comparison.
+    tracked_regular = {
+        f"{XCLBIN_DIR}/{name}" for entry in obs["artifacts"].values() for name in entry["paths"]
     }
-    for path in obs["symlinks"]:
-        if os.path.basename(path) in regular_names:
+    for path, target in sorted(obs["symlinks"].items()):
+        if os.path.isabs(target):
+            continue
+        if ".." in Path(target).parts:
             raise Failure(
-                f"{path}: exists BOTH as a symlink and as a regular artifact - "
-                "an alias was materialised instead of linked"
+                f"{path}: target {target!r} leaves {XCLBIN_DIR}/ - a tracked alias may only "
+                "name a sibling artifact, never a path outside the artifact directory "
+                "(a fresh clone gets the link, not the bytes)"
             )
-    # (c) dedupe correctness: paths sharing a UUID must be byte-identical (checked in observe)
-    # (d) aliases must stay symlinks AND keep pointing at their own twin. A materialised
-    #     alias shows up as an extra REGULAR path in its UUID group (caught by the manifest
-    #     comparison, which also sees the payload/redundancy move); a "repaired" alias
-    #     pointing somewhere else is caught here, without needing a baseline.
-    for uuid, entry in obs["artifacts"].items():
-        regular = set(entry["paths"])
-        for path, target in obs["symlinks"].items():
-            name = os.path.basename(path)
-            if name not in regular:
-                continue  # this symlink's own artifact is elsewhere (e.g. dangling targets)
-            if os.path.basename(target) not in regular:
-                raise Failure(
-                    f"{name}: is a link into UUID {uuid}'s group but points at "
-                    f"{target!r}, which is not a member of that group"
-                )
+        resolved = f"{XCLBIN_DIR}/{target}"
+        if resolved not in tracked_regular:
+            raise Failure(
+                f"{path}: target {target!r} is not a tracked *.xclbin directly under "
+                f"{XCLBIN_DIR}/ (resolves to {resolved}) - a fresh clone would not get it"
+            )
     return notes
+
+
+# The two population keys that describe the HOST rather than the commit: whether a
+# third-party link resolves depends on whether FastFlowLM is installed at
+# /opt/fastflowlm. Comparing them made the gate red on strixhalo while staying green in
+# CI, which is how a check trains people to ignore it; the caller reports them instead.
+HOST_DEPENDENT_KEYS = {
+    ("population", "alias_symlinks_in_tree"),
+    ("population", "dangling_symlinks"),
+}
+# Sections of the manifest that describe the COMMITTED set. `generated`/`build` record the
+# generation event and the arm that produced the artifacts, and are not properties of the
+# tree, so they are not compared.
+COMPARED_SECTIONS = ("population", "census", "observed")
+
+
+def _walk_recorded(prefix: tuple, want, got, problems: list[str]) -> None:
+    """Report every leaf of a recorded section that differs from the observation."""
+    if isinstance(want, dict) and isinstance(got, dict):
+        for key in sorted(set(want) | set(got)):
+            if prefix + (key,) in HOST_DEPENDENT_KEYS:
+                continue
+            _walk_recorded(prefix + (key,), want.get(key), got.get(key), problems)
+        return
+    if want != got:
+        problems.append(f"{'.'.join(prefix)}: manifest {want!r} != observed {got!r}")
 
 
 def compare(obs: dict, manifest: dict) -> list[str]:
     """Diff the observed snapshot against the committed manifest."""
     problems: list[str] = []
 
-    m_pop = manifest.get("population", {})
-    # Host-INDEPENDENT keys only. The alias/dangling split is a property of the repo
-    # PLUS the host: installing FastFlowLM at /opt/fastflowlm makes the four
-    # third-party links resolve, which says nothing about the repo. Comparing that
-    # split was a design error - it made the gate red on strixhalo while green in CI,
-    # which is how a check trains people to ignore it.
-    for key in ("top_level_xclbin", "regular_artifacts", "xclbin_symlinks",
-                "distinct_builds_by_uuid"):
-        want, got = m_pop.get(key), obs["population"].get(key)
-        if want != got:
-            problems.append(f"population.{key}: manifest {want} != observed {got}")
+    # Everything the manifest records about the committed set is compared, not a
+    # hand-picked subset: population.tracked_paths_under_dir said 519 against a tree of 520
+    # (one path of 4aa5fa1ca's 13 landed after the manifest was regenerated) and the gate
+    # stayed green, because only four population keys were read. A field nothing reads is
+    # not a check, it is a note to the future (issue #2513).
+    for section in COMPARED_SECTIONS:
+        _walk_recorded((section,), manifest.get(section) or {}, obs.get(section) or {}, problems)
 
     # The invariant is the TARGET, not the resolution state. Every recorded third-party
     # link must still point where it pointed (nobody repoints it, materialises it, or
@@ -503,9 +533,12 @@ def main(argv: list[str] | None = None) -> int:
             "notes": [
                 "population.dangling_symlinks and population.alias_symlinks_in_tree are "
                 "HOST-DEPENDENT: they were observed on generated.host. Installing "
-                "fastflowlm at /opt/fastflowlm makes the four third-party links resolve, "
-                "which says nothing about the repo. The check asserts symlink TARGETS "
-                "(the symlinks and declared_dangling maps), never this split.",
+                "fastflowlm at /opt/fastflowlm makes third-party links resolve, which says "
+                "nothing about the repo. They are the only two keys compare() excludes - "
+                "every other recorded field is compared against the tree, so a counter that "
+                "drifts turns the gate red instead of sitting in this file unread "
+                "(issue #2513). Symlink TARGETS are asserted (the symlinks and "
+                "declared_dangling maps), never this split.",
                 "declared_dangling lists the third-party targets that did not resolve on "
                 "generated.host. It is a target map, not a resolution requirement.",
             ],

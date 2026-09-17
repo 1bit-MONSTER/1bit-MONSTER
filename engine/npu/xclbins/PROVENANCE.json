@@ -800,7 +800,7 @@
  "build": {
   "generating_script_revision": null,
   "toolchain": null,
-  "toolchain_note": "Empty by design: the artifacts record no compiler arm or version (no chesscc/peano/llvm/aiecc/clang marker in the AXLF metadata; PlatformVBNV is empty). A build that regenerates these artifacts must fill this in - that is the missing half of the provenance."
+  "toolchain_note": "Empty by design, and written only because --allow-null-toolchain was passed explicitly (issue #2262). The artifacts record no compiler arm or version (no chesscc/peano/llvm/aiecc/clang marker in the AXLF metadata; PlatformVBNV is empty), so this tool cannot derive one, and it now REFUSES to write this blank by default. The build that regenerates these artifacts is the only thing that can fill it in - that is the missing half of the provenance."
  },
  "census": {
   "days_utc": {
@@ -856,13 +856,13 @@
  },
  "declared_dangling": {},
  "generated": {
-  "at": "2026-09-14T13:45:00Z",
+  "at": "2026-09-17T22:35:00Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
   "host": "strixhalo",
-  "ref": "5735f9c38"
+  "ref": "02b4e04a3"
  },
- "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest and land it in the same commit as the artifact change.",
+ "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest --toolchain \"<compiler arm + versions>\" --script-revision \"<git rev of the generating script>\" and land it in the same commit as the artifact change. Those two flags are the point of this file: the artifacts carry no compiler marker to derive them from, so a rebuild that omits --toolchain records build.toolchain as null again (issue #2262).",
  "notes": [
   "population.dangling_symlinks and population.alias_symlinks_in_tree are HOST-DEPENDENT: they were observed on generated.host. Installing fastflowlm at /opt/fastflowlm makes the four third-party links resolve, which says nothing about the repo. The check asserts symlink TARGETS (the symlinks and declared_dangling maps), never this split.",
   "declared_dangling lists the third-party targets that did not resolve on generated.host. It is a target map, not a resolution requirement."
@@ -990,8 +990,8 @@
   "distinct_builds_by_uuid": 89,
   "regular_artifacts": 117,
   "top_level_xclbin": 129,
-  "tracked_paths_under_dir": 519,
-  "tracked_top_level_entries": 258,
+  "tracked_paths_under_dir": 520,
+  "tracked_top_level_entries": 259,
   "txt_symlinks": 12,
   "xclbin_symlinks": 12
  },
