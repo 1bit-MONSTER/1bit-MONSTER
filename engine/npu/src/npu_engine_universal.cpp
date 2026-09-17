@@ -1013,6 +1013,19 @@ int main(int argc,char**argv){
         // swapped for the single GU+SiLU launch. Opt-in (NPU_QWEN_I4=1) until
         // its per-weight fused corr gate passes. Geometry pinned from the p1_i4
         // generator (-M 8 -K H -N_GU 2*IM -N_D H): P1 KD=H ND=H bC_nd=N_GU.
+        // #2307: the int4 fused context below is built only for the COMBINED-GU
+        // geometry, so on a split-G model this flag cannot be honoured. It used
+        // to be dropped in silence: the request is read here, the `!cfg.gu_split`
+        // conjunct fails, and the engine runs the int8 G/U path without a word.
+        // A flag that is quietly ignored is the same class of defect this issue
+        // was opened for, so name it instead. One line, at init, not per layer.
+        if (cfg.gu_split && getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1) {
+            fprintf(stderr,
+                "NPU_QWEN_I4=1 is not available for this model and is being ignored: "
+                "IM=%d selects split-G (gu_split when IM*2 > 14336), and the int4 fused "
+                "GU->SiLU context is only built for the combined-GU geometry. "
+                "Continuing on the int8 G/U path (issue #2307).\n", IM);
+        }
         if (!cfg.gu_split && getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1) {
             cg_fused_i4 = std::make_unique<I8Ctx>();
             cg_fused_i4->MD = 8; cg_fused_i4->KD = H; cg_fused_i4->ND = H;
