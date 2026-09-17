@@ -104,6 +104,12 @@ def rni_bf16(x):  # x: fp32 ndarray -> uint16 bf16 values, RNI rounding
   issues mailbox calls to the dead firmware that never return. The driver's
   `aie2_hw_reset()` self-heal only fires on job timeouts, not release-path ioctl
   hangs — recovery is reboot-only.
+- Which driver is doing this is checkable and was checked: the installed module is
+  the out-of-tree tree upstream deleted in `813e0bf` (compile path `src/driver/amdxdna`),
+  built 2026-09-01, and nothing upstream has landed in that tree since — so the mailbox
+  path above predates `ebd297c` (ring-buffer check before a mailbox timeout) and
+  `77e5325` (MMU-notifier unregister before BO removal). `scripts/npu-driver-reapply.sh`
+  reports which tree the installed module came from; see #2459.
 - Fix: default teardown flushes stdio explicitly then `_exit(0)` (no atexit /
   static dtors — same pattern as npu_engine_universal and the #1426 fix). Set
   `NPU_CLEAN_TEARDOWN=1` to run the real destructors and return normally (safe
