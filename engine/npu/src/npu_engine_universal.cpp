@@ -343,10 +343,20 @@ static inline float softplus_f(float x){return x>20.0f?x:log1pf(expf(x));}
 // SIGABRT handler: prints diagnostic, then re-raises for default core dump
 // so the heap corruption root cause can be debugged. The measured results
 // are flushed to stderr before the re-raise.
+//
+// It must NOT assert a cause it cannot know. SIGABRT also arrives from an
+// uncaught C++ exception (std::terminate -> abort), and this handler used to
+// print "likely heap corruption from free(): invalid size" for those too. On
+// 2026-09-17 that cost a reader a detour into free() while the actual cause — an
+// xrt_core::system_error from an XRT ENOMEM — was printed two lines above it
+// (issue #2377). terminate_handler below now reports that case explicitly, and
+// this message points at the cause instead of naming one.
 static void sigabrt_handler(int sig) {
     // Async-signal-safe only (issue #1433): fprintf/fflush can deadlock when
     // SIGABRT fires from heap corruption while stdio/arena locks are held.
-    static const char m1[] = "\n[NPU engine] caught SIGABRT (likely heap corruption from free(): invalid size)\n";
+    static const char m1[] = "\n[NPU engine] caught SIGABRT — see the lines above for the cause.\n"
+                             "[NPU engine] (reported above as an uncaught exception? then it is not a heap\n"
+                             "[NPU engine]  problem. Nothing named a cause? then suspect a libc heap check.)\n";
     static const char m2[] = "[NPU engine] re-raising for core dump — see core.{pid} for backtrace\n";
     ssize_t r1 = write(2, m1, sizeof(m1) - 1);
     ssize_t r2 = write(2, m2, sizeof(m2) - 1);
@@ -354,6 +364,42 @@ static void sigabrt_handler(int sig) {
     // Reset handler to default and re-raise to get a core dump
     signal(SIGABRT, SIG_DFL);
     raise(SIGABRT);
+}
+
+// An uncaught C++ exception reaches SIGABRT through std::terminate, which is
+// indistinguishable from a libc heap abort at the signal level — so the only way
+// to report it honestly is from here, where the exception is still available.
+// Reports the exception type and what(), then aborts.
+//
+// write(2)-only by construction, for the same reason as sigabrt_handler (#1433):
+// this fires during OOM, when stdio locks may be held. The type name is the
+// mangled one — demangling needs __cxa_demangle, which allocates, and allocating
+// on the way to an OOM abort is exactly what must be avoided.
+static void terminate_handler() {
+    const char* what = "<unavailable>";
+    const char* type = "<non-std exception>";
+    try {
+        if (std::exception_ptr ep = std::current_exception()) {
+            try { std::rethrow_exception(ep); }
+            catch (const std::exception& ex) {
+                what = ex.what() ? ex.what() : "<null>";
+                type = typeid(ex).name();
+            }
+        }
+    } catch (...) {
+        // Reporting must never itself throw; keep the defaults and abort.
+    }
+    static const char p1[] = "\n[NPU engine] uncaught exception — this is NOT a heap-corruption abort\n"
+                             "[NPU engine]   type: ";
+    static const char p2[] = "\n[NPU engine]   what(): ";
+    static const char p3[] = "\n";
+    ssize_t r = 0;
+    r = write(2, p1, sizeof(p1) - 1); (void)r;
+    r = write(2, type, strlen(type)); (void)r;
+    r = write(2, p2, sizeof(p2) - 1); (void)r;
+    r = write(2, what, strlen(what)); (void)r;
+    r = write(2, p3, sizeof(p3) - 1); (void)r;
+    std::abort();
 }
 
 // ── GatedDeltaNet attention (single-token, CPU, ported from llama.cpp ggml-cpu/ops.cpp) ──
@@ -496,6 +542,9 @@ int main(int argc,char**argv){
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESETHAND; // allow one handler invocation; re-trigger = default (core dump)
     sigaction(SIGABRT, &sa, nullptr);
+    // An uncaught exception arrives at the same SIGABRT, so report that case
+    // where the exception is still reachable (issue #2377).
+    std::set_terminate(terminate_handler);
 
     if(argc<2){fprintf(stderr,"Usage: %s model.q4nx [decode_tokens] [input_tokens_file|-]\n",argv[0]);return 1;}
     // Check for --worker flag (subprocess protocol mode)
