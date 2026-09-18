@@ -136,8 +136,10 @@ PFHIP=""
 if [ -x "$HIPCC" ]; then
   if "$HIPCC" --offload-arch=gfx1151 -O3 -std=c++17 -I "$REPO/include" -I "$REPO/src" \
       "$REPO/tests/prism/prism_forward_hip.hip" "$REPO/kernels/prism_hadamard_fwht.hip" \
-      "$REPO/kernels/prism_gemv.hip" "$REPO/kernels/prism_gdn.hip" "$REPO/kernels/prism_attn.hip" \
-      "$REPO/kernels/prism_ops.hip" "$REPO/src/onebp_model.cpp" -o "$TMP/pfhip" >/dev/null 2>&1; then
+      "$REPO/kernels/prism_gemv.hip" "$REPO/kernels/prism_gemv_row4.hip" \
+      "$REPO/kernels/prism_gemv_tile.hip" "$REPO/kernels/prism_gdn.hip" \
+      "$REPO/kernels/prism_attn.hip" "$REPO/kernels/prism_ops.hip" \
+      "$REPO/src/onebp_model.cpp" -o "$TMP/pfhip" >/dev/null 2>&1; then
     PFHIP="$TMP/pfhip"
   else
     echo "  (hipcc present but the full device forward failed to build — skipping)"
