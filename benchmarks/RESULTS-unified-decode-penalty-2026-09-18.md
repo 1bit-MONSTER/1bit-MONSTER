@@ -109,6 +109,27 @@ Neither is run here; both are named with their instrument. This correction matte
 candidate (1) as originally written in this document ("KV layout/quantisation") and the
 length-based reading are different diagnoses with different fixes.
 
+
+### Instrument caveats for candidate (1) — read before running the dump
+
+`RT_KV_DUMP_DIR` fires at the **start** of `RuntimeLayerEngine::forward(ctx_len)` and writes the
+full 32 MB of `kv_bos_[0]` to `<dir>/kv_ctx<ctx_len>.bin`. Two consequences, both of which
+must be handled or the diff will be read wrong:
+
+- **Volume.** It fires on *every* forward call, so a 1024-token prompt writes 1024 files of
+  32 MB (32 GB) per run. `/tmp` is tmpfs on this box and a previous lane already wedged every
+  agent tool by filling it; use a real-disk directory and a "keep only the newest file"
+  watcher (`while :; do ls -t | tail -n +2 | xargs -r rm -f; sleep 0.2; done`), then read the
+  surviving file.
+- **The two paths dump different points.** The pure-runlist decode calls
+  `build_runlist`/`execute_runlist`, **not** `forward()`, so its last dump is
+  `kv_ctx1024.bin` — the BO *before* the 1024th token executes, i.e. 1023 tokens of KV. The
+  unified path's `npu_runlist_forward(++ctx, …)` *does* call `forward()`, so its first dump is
+  `kv_ctx1025.bin` — the full 1024-token KV written by the bf16 handoff. Comparing "the same
+  ctx file" across the two runs therefore compares 1023 vs 1024 tokens of KV, not the same
+  state. To make them comparable, add a one-line dump call right after the pure path's prefill
+  loop (or use `RT_DUMP_POST` with the same alignment), rather than diffing `kv_ctx<N>.bin`.
+
 ## Status
 
 Criterion (c) remains unmet. What changed here is that its remaining decode shortfall is now
