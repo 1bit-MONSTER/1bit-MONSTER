@@ -50,6 +50,21 @@ run() {  # run <name> <compile-args...> -- <run-args...>
 
 echo "== fixture self-checks =="
 run arch      Testing/arch_mapping_selfcheck.cpp --
+
+# The alias table itself: rcpp_arch_from_string is a linear if-chain, so a string defined twice
+# makes the later line dead code — and a tool that parses the file last-match-wins gets the
+# opposite token from the engine. Eight such duplicates sat in the header; seven agreed with the
+# first definition, `qwen3_5moe` did not (QWEN3 vs the engine's QWEN35, #2501).
+echo "== arch alias uniqueness =="
+total=$((total+1))
+if alias_out=$("$PYTHON" Testing/arch_alias_selfcheck.py 2>&1); then
+    printf '%s\n' "$alias_out" | sed 's/^/  /'
+    echo "✓ arch_alias_uniqueness"
+else
+    echo "✗ arch_alias_uniqueness"
+    printf '%s\n' "$alias_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 run discovery Testing/discovery_selfcheck.cpp src/model_discovery.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp
 run router    Testing/router_selfcheck.cpp src/model_router.cpp
 run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
@@ -173,6 +188,21 @@ else
     printf '%s\n' "$vsync_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# The benchmark harness spawns its primary engine by path, and that path is a
+# symlink rather than a build product: build/zaya_server exists only after
+# install.sh, so a fresh `--target onebin` build left the harness spawning a file
+# that was not there — while the harness README named a target that was already
+# dead (#2477, #2478). No compiler sees it: the path is a config default. So the
+# three layouts are built in a temp dir and the resolution asserted for each.
+echo "== benchmark harness launch =="
+total=$((total+1))
+if zaya_launch_out=$("$PYTHON" Testing/zaya_launch_selfcheck.py 2>&1); then
+    echo "✓ zaya_launch"
+else
+    echo "✗ zaya_launch"
+    printf '%s\n' "$zaya_launch_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # Census diagnostics: one repo root, one policy set. Three scripts pinned ROOT
 # to the shared checkout and two carried a stale NON_TEXT_GEN copy (#2387), so a
 # worktree run read the wrong inputs and wrote the wrong tree — invisible,
@@ -224,6 +254,20 @@ if gate_out=$("$PYTHON" Testing/claims_gate_selfcheck.py 2>&1); then
 else
     echo "✗ claims_gate"
     printf '%s\n' "$gate_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+# The claims workflow's own trigger: two of its three gates are content SCANNERS (index.html's
+# rendered text for quarantined numbers, the badge JSONs against a re-run of the badge logic),
+# and none of those files were in its pull_request.paths — so a PR editing exactly what the
+# gate exists to catch never ran it. Same class as #2507 for bench.yml's compiled inputs.
+echo "== claims workflow trigger coverage =="
+total=$((total+1))
+if wf_cov_out=$("$PYTHON" Testing/validate_claims_trigger_selfcheck.py 2>&1); then
+    printf '%s\n' "$wf_cov_out" | grep -E '^(OK|validate)' | sed 's/^/  /'
+    echo "✓ claims_trigger_coverage"
+else
+    echo "✗ claims_trigger_coverage"
+    printf '%s\n' "$wf_cov_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
@@ -298,10 +342,38 @@ else
     fail=$((fail+1))
 fi
 
+# Provenance comparisons: PROVENANCE.json records nine population keys, a census block and
+# an observed block, and compare() read four population keys - so
+# population.tracked_paths_under_dir said 519 against a tree of 520 and the gate stayed
+# green, while hygiene()'s three structural assertions were unreachable (#2513). These
+# cases perturb keys nothing used to read, and the ways a tracked alias can leave the
+# artifact set, AFTER a --write-manifest: a manifest diff is defeated by regenerating it,
+# and the tool's own failure text tells you to.
+echo "== xclbin provenance gate comparisons =="
+total=$((total+1))
+if xclbin_pop_out=$(bash Testing/xclbin_provenance_gate_selfcheck.sh 2>&1); then
+    printf '%s\n' "$xclbin_pop_out" | sed 's/^/  /'
+    echo "✓ xclbin_provenance_gate"
+else
+    echo "✗ xclbin_provenance_gate"
+    printf '%s\n' "$xclbin_pop_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # NPU lane contract: the NPU runs on the engine's own worker (src/backend_npu.cpp
 # → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
 # the legacy FLM test harness printed "FLM not installed" as if the NPU were
 # broken. A compiler cannot see a missing install step or a mislabelled lane (#2358).
+echo "== capture interposer build (skips without XRT headers) =="
+if cap_build_out=$(bash Testing/capture_interposer_build_selfcheck.sh 2>&1); then
+    printf '%s\n' "$cap_build_out" | sed 's/^/  /'
+    echo "✓ capture_interposer_build"
+else
+    echo "✗ capture_interposer_build"
+    printf '%s\n' "$cap_build_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 echo "== NPU lane contract =="
 total=$((total+1))
 if npu_lane_out=$("$PYTHON" Testing/npu_lane_selfcheck.py 2>&1); then
