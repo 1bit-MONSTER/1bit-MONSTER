@@ -277,6 +277,25 @@ def make_targets() -> set[str]:
 # reporting every workflow as covered. It now also asserts it found inputs.
 CC_INVOCATION = re.compile(r"(?<![\w+-])(g\+\+|gcc|clang\+\+|clang)(?![\w+-])")
 
+# #2506 replaced bench.yml's hand-rolled g++ line with `cmake -S engine/npu ...`, so a
+# job can now build without naming a compiler anywhere in the workflow. Matching only
+# the compiler made this rule go silent on the one job it was written for: the check
+# still ran, parsed no inputs, and reported nothing — a gate that had stopped looking.
+CMAKE_CONFIGURE = re.compile(r"(?<![\w-])cmake(?![\w-])[^\n]*?\s-S\s+([^\s;|&'\"]+)")
+
+
+def strip_comments(body: str) -> str:
+    """Drop `#` comments from a workflow run body.
+
+    Not cosmetic. main's bench.yml explains the g++ line it replaced in a comment that
+    contains "g++", so scanning the raw body made this rule report "a compiler runs in
+    this job" about a job that no longer runs one — a finding that sends the reader to
+    the wrong line. `#` opens a comment at line start or after whitespace; shell
+    parameter expansions (`${x#y}`) keep theirs because there the `#` follows a word
+    character.
+    """
+    return "\n".join(re.sub(r"(^|\s)#.*$", "", l) for l in body.splitlines())
+
 
 def run_scripts(text: str):
     """Yield (line_number, body) for every `run: |` / `run: >` block."""
@@ -353,6 +372,25 @@ def compiled_inputs(script: str) -> set[str]:
                 p = tok.strip("\"'\\")
                 if not p.startswith("/") and (ROOT / p).exists():
                     found.add(p)
+    return found
+
+
+def cmake_inputs(script: str) -> set[str]:
+    """The build description a `cmake -S <dir>` invocation reads.
+
+    A CMake build's source list lives in CMakeLists.txt, not in the workflow, so the
+    file is the in-repo input: if it can change without firing the job, the job's
+    result is stale for exactly the reason this check exists. The sources it names
+    are covered by the same glob that covers the file."""
+    found: set[str] = set()
+    for line in script.splitlines():
+        for m in CMAKE_CONFIGURE.finditer(line):
+            d = m.group(1).strip("\"'")
+            if d.startswith("/"):
+                continue
+            cm = ROOT / d / "CMakeLists.txt"
+            if cm.exists():
+                found.add(str(cm.relative_to(ROOT)))
     return found
 
 
@@ -504,17 +542,23 @@ def main() -> int:
         text = "\n".join(lines)
         pats = trigger_paths(text)
         if pats:
-            saw_cc, inputs, first_cc = False, set(), 1
+            saw_build, inputs, first_cc = False, set(), 1
             for start, script in run_scripts(text):
-                if not CC_INVOCATION.search(script):
+                script = strip_comments(script)
+                cc = CC_INVOCATION.search(script)
+                cm = CMAKE_CONFIGURE.search(script)
+                if not (cc or cm):
                     continue
-                if not saw_cc:
+                if not saw_build:
                     first_cc = start
-                saw_cc = True
-                inputs |= compiled_inputs(script)
-            if saw_cc and not inputs:
+                saw_build = True
+                if cc:
+                    inputs |= compiled_inputs(script)
+                if cm:
+                    inputs |= cmake_inputs(script)
+            if saw_build and not inputs:
                 findings.append((str(wf.relative_to(ROOT)), first_cc,
-                                 "a compiler runs in this job but no in-repo input was "
+                                 "a build runs in this job but no in-repo input was "
                                  "parsed — the coverage check below would be vacuous"))
             for p in sorted(inputs):
                 if path_covered(p, pats):
