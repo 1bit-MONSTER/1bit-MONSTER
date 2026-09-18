@@ -7,10 +7,10 @@
  *     This is what lets us answer "who shared what link, from which team"
  *     — each shared link carries a campaign tag (see share.html).
  *  2. Beacon: load Cloudflare Web Analytics (RUM) if a token is configured.
- *     The token is injected at deploy time by the CF Web Analytics bootstrap
- *     workflow (it creates the RUM site and rewrites __CF_ANALYTICS_TOKEN__
- *     here). Without a token, attribution still works via localStorage;
- *     only the server-side RUM aggregation is unavailable.
+ *     The token is written by the CF Web Analytics bootstrap workflow (it creates
+ *     the RUM site and rewrites the `var TOKEN` value below). Without a token,
+ *     attribution still works via localStorage; only the server-side RUM
+ *     aggregation is unavailable.
  *
  * Attribution is intentionally dependency-free and synchronous-once.
  */
@@ -96,7 +96,7 @@
   }
 
   // ── 2. Web Analytics beacon ────────────────────────────────────────
-  var TOKEN = "33fb8448bfe84a56b1b06bbfea9f2032";  // rewritten at deploy by bootstrap
+  var TOKEN = "33fb8448bfe84a56b1b06bbfea9f2032";  // rewritten by the CF Web Analytics bootstrap workflow
   if (TOKEN && TOKEN.indexOf("CF_ANALYTICS") < 0 && TOKEN.length > 10) {
     var s = document.createElement("script");
     s.defer = true;

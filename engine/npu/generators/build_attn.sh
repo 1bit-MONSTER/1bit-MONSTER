@@ -47,7 +47,7 @@ cd "$W"  # link_with resolves attn_kernel.o from CWD
 export PATH=/home/bcloud/Xilinx/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
-/home/bcloud/mlir-aie/build_tmp/bin/aiecc --peano="$P" --aietools="$M" \
+/home/bcloud/mlir-aie/install_tmp/bin/aiecc --peano="$P" --aietools="$M" \
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
     --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \
     --aie-generate-npu-insts \

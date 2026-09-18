@@ -3,16 +3,18 @@
 #
 # Why this exists (measured 2026-09-15, strixhalo):
 #
-#   The generators emit the post-#3306 `aie.dma_bd` form, where sizes/strides/
-#   offset/len are SSA operands (upstream mlir-aie 398f7f704, "[dyn-seq]
-#   Convert aie.dma_bd sizes/strides/offset/len to SSA operands
-#   (DynamicIndexList) (#3306)"). An aiecc built before that change rejects the
-#   generated MLIR at parse time with a bare
+#   The generators emit the PRE-#3306 `aie.dma_bd` form, where sizes/strides/
+#   offset/len are a literal attribute list — `[<size = 4, stride = 32768>, …]`.
+#   Upstream #3306 (mlir-aie 398f7f704, "[dyn-seq] Convert aie.dma_bd
+#   sizes/strides/offset/len to SSA operands (DynamicIndexList)") is what moved
+#   them TO SSA operands, so a root that HAS that change rejects the generated
+#   literal form at parse time with a bare
 #
 #       loc("d.mlir":1059:45): error: expected ')'
 #       Error parsing MLIR file
 #
-#   at the dma_bd line. That reads like a generator bug. It is not.
+#   at the dma_bd line. That reads like a generator bug. It is not — the generator
+#   emits the older form and the root being probed is the newer parser.
 #
 #   THE MISMATCH IS BETWEEN THE BINDINGS THAT GENERATE AND THE BINARY THAT
 #   PARSES, not simply between two installs. `build_xclbins.sh:267` couples them
@@ -21,9 +23,16 @@
 #   self-explanatory. Concretely, with the mlir-aie venv's python generating and
 #   three different aie-opt binaries parsing the SAME file:
 #
-#       ~/mlir-aie/install_tmp/bin/aie-opt  PARSES
-#       ~/mlir-aie/build_tmp/bin/aie-opt    rejects: error: expected ')'
-#       ~/mlir-aie/iron/bin/aie-opt         rejects: error: expected ')'
+#       ~/mlir-aie/install_tmp/bin/aie-opt  PARSES   <- pre-#3306 parser
+#       ~/mlir-aie/build_tmp/bin/aie-opt    rejects: error: expected ')'  <- post-#3306
+#       ~/mlir-aie/iron/bin/aie-opt         rejects: error: expected ')'  <- post-#3306
+#
+#   Which is the other way round from how this header read for a while: the root
+#   that REJECTS is the one that postdates #3306, not the one that predates it. The
+#   operational advice is unchanged either way (install_tmp is the root to use), but
+#   the diagnostic used to point a reader at the wrong upgrade. This script's own
+#   count is the check: the form it greps for ends in `[<`, which is the literal
+#   attribute list and cannot match an SSA operand.
 #
 #   (Each root also ships its own `python/`; generated with THAT, an old aiecc
 #   accepts its own older form — which is exactly why testing each root against
@@ -89,8 +98,11 @@ if ! timeout 300 "$PYTHON" "$GEN" "${GEN_ARGS[@]}" > "$MLIR" 2> "$TMP/gen.err"; 
     exit 2
 fi
 n_dma=$(grep -c 'aie\.dma_bd' "$MLIR" 2>/dev/null || echo 0)
-n_dyn=$(grep -c 'aie\.dma_bd(.*, \[<' "$MLIR" 2>/dev/null || echo 0)
-echo "  generated $(wc -c < "$MLIR") bytes: $n_dma aie.dma_bd, $n_dyn in the post-#3306 operand form"
+# The pattern ends in `[<` — the literal attribute list `[<size = …, stride = …>]`.
+# That is the PRE-#3306 form; the label below used to call it the post-#3306
+# "operand" form, which the pattern itself cannot match.
+n_lit=$(grep -c 'aie\.dma_bd(.*, \[<' "$MLIR" 2>/dev/null || echo 0)
+echo "  generated $(wc -c < "$MLIR") bytes: $n_dma aie.dma_bd, $n_lit in the literal-attribute (pre-#3306) form"
 echo
 
 passed=0
@@ -107,8 +119,8 @@ for root in "${ROOTS[@]}"; do
     else
         printf '  %-14s REJECT  %s\n' "$short" "$(grep -m1 -o "error: .*" "$TMP/$short.log" | cut -c1-52)"
         if grep -q "dma_bd" "$TMP/$short.log"; then
-            printf '  %-14s         ^ predates upstream #3306, so the generated dma_bd\n' ""
-            printf '  %-14s           operand form is rejected. See this file header.\n' ""
+            printf '  %-14s         ^ postdates upstream #3306 (SSA operands), so it rejects\n' ""
+            printf '  %-14s           the literal dma_bd form this generator emits. See the header.\n' ""
         fi
     fi
 done
