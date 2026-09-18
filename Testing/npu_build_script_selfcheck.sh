@@ -90,6 +90,19 @@ delegates() {
     grep -qE -- '--target[= ]+npu_engine_universal' < <(strip_comments "$1")
 }
 
+# npu_engine_sources <CMakeLists> — the .cpp names in NPU_ENGINE_SOURCES, with
+# comments removed and duplicates collapsed. Comment stripping is not cosmetic on
+# this side either: the block carries the note "model.c is C; runtime_layer.cpp +
+# bridge are C++", which names a real source in prose. Counting it made n_target 7
+# against 6 real sources, so n_ref came out 1 and sources_verdict reported a hand
+# list in bench.yml — a FAIL for a workflow that delegates to the CMake target and
+# names no source at all. Deduping is what keeps one name from being counted twice.
+npu_engine_sources() {
+    awk '/set\(NPU_ENGINE_SOURCES/,/^\)/' "$1" \
+        | sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#.*$//' \
+        | grep -oE '[A-Za-z0-9_]+\.cpp' | sort -u
+}
+
 # engine_sources_missing <CMakeLists> <workflow> — prints, one per line, each
 # NPU_ENGINE_SOURCES entry the workflow never references (as .cpp or as a linked
 # .o). Empty output means the two agree. A source compiled in a separate step and
@@ -98,8 +111,7 @@ delegates() {
 engine_sources_missing() {
     local cm="$1" wf="$2" f base
     local srcs
-    srcs=$(awk '/set\(NPU_ENGINE_SOURCES/,/^\)/' "$cm" \
-           | grep -oE '[A-Za-z0-9_]+\.cpp' | sort -u)
+    srcs=$(npu_engine_sources "$cm")
     for f in $srcs; do
         base="${f%.cpp}"
         grep -qE "${base}\.(cpp|o)([^A-Za-z0-9_]|$)" < <(strip_comments "$wf") \
@@ -187,8 +199,7 @@ BUILD_NPU="$REPO/engine/npu/build_npu.sh"
 sources_verdict() {
     local cm="$1" wf="$2" wfname n_target missing n_ref
     wfname="$(basename "$wf")"
-    n_target=$(awk '/set\(NPU_ENGINE_SOURCES/,/^\)/' "$cm" \
-               | grep -oE '[A-Za-z0-9_]+\.cpp' | wc -l)
+    n_target=$(npu_engine_sources "$cm" | wc -l)
     if [ "$n_target" -lt 3 ]; then
         printf 'FAIL: parsed only %s source(s) out of NPU_ENGINE_SOURCES — nothing to compare\n' \
                "$n_target"
@@ -221,7 +232,8 @@ objs_verdict() {
     local script="$1" wf="$2" wfname n_obj missing n_ref
     wfname="$(basename "$wf")"
     n_obj=$(awk '/^ENGINE_OBJS=\(/,/\)/' "$script" \
-            | grep -oE '\$\{?[A-Z0-9_]+\}?_O' | wc -l)
+            | sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#.*$//' \
+            | grep -oE '\$\{?[A-Z0-9_]+\}?_O' | sort -u | wc -l)
     if [ "$n_obj" -lt 2 ]; then
         printf 'FAIL: parsed only %s object(s) out of ENGINE_OBJS — nothing to compare\n' "$n_obj"
         return 1
@@ -313,6 +325,38 @@ if [ -n "$srcs" ]; then
         fail=1
     else
         echo "ok: control — dropping one entry reports the missing TU"
+    fi
+
+    # (d) the source LIST is read, not its prose.  Two facts at once: a commented
+    # name is invisible, and a real entry is still counted — so this control cannot
+    # pass merely because the extractor went blind.
+    { printf 'set(NPU_ENGINE_SOURCES\n'
+      printf '    ${NPU_SRC_DIR}/alpha.cpp\n'
+      printf '    # prose: alpha.cpp is C; gamma.cpp is not a real entry\n'
+      printf '    ${NPU_SRC_DIR}/delta.cpp\n'
+      printf '    ${NPU_SRC_DIR}/epsilon.cpp\n'
+      printf ')\n'
+    } > "$T/CM_prose.txt"
+    got="$(npu_engine_sources "$T/CM_prose.txt" | tr '\n' ' ')"
+    if [ "$got" = "alpha.cpp delta.cpp epsilon.cpp " ]; then
+        echo "ok: control — a commented source name is not counted in NPU_ENGINE_SOURCES"
+    else
+        echo "FAIL: control — NPU_ENGINE_SOURCES read prose (or lost an entry): '$got'"
+        fail=1
+    fi
+    { printf 'set(NPU_ENGINE_SOURCES\n'
+      printf '    ${NPU_SRC_DIR}/alpha.cpp\n'
+      printf '    ${NPU_SRC_DIR}/delta.cpp\n'
+      printf '    ${NPU_SRC_DIR}/epsilon.cpp\n'
+      printf '    ${NPU_SRC_DIR}/zeta.cpp\n'
+      printf ')\n'
+    } > "$T/CM_extra.txt"
+    n_extra=$(npu_engine_sources "$T/CM_extra.txt" | wc -l)
+    if [ "$n_extra" -eq 4 ]; then
+        echo "ok: control — a real added NPU_ENGINE_SOURCES entry IS counted (4)"
+    else
+        echo "FAIL: control — a real added source was not counted (got $n_extra)"
+        fail=1
     fi
 fi
 

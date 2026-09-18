@@ -9,7 +9,12 @@
 // Run:
 //   LD_PRELOAD=/tmp/txn_decode/cap_interposer.so ./run_qwen3_npu ...
 //
-// GATES: this build reads CAP_DIR and CAP_POSTRUN_ACT. The three dump gates -
+// GATES: the documented gates this build READS are CAP_DIR and CAP_POSTRUN_ACT.
+// The marker below lists every CAP_* the file getenv()s, which is a larger set: it
+// also carries the value-style knobs no operator doc gates on (CAP_BIG_MAX,
+// CAP_MM_W, CAP_RUNLIST_KV, CAP_POSTRUN_KV). Testing/capture_gates_selfcheck.py
+// requires that marker to equal the getenv() set, so adding a variable here means
+// updating the marker in the same commit. The three dump gates -
 // CAP_NO_SYNC, CAP_SKIP_BIG, CAP_DUMP_BIG - are implemented on
 // goal/runlist-decode-wire, NOT here, and they are REFUSED at load time rather than
 // ignored (see refuse_unimplemented_gates below). That refusal is not cosmetic:
@@ -19,7 +24,7 @@
 // believes they are protected.
 //
 // capture-gates-refused: CAP_NO_SYNC CAP_SKIP_BIG CAP_DUMP_BIG
-// capture-gates-read: CAP_DIR CAP_POSTRUN_ACT
+// capture-gates-read: CAP_BIG_MAX CAP_DIR CAP_DUMP_BIG CAP_MM_W CAP_NO_SYNC CAP_POSTRUN_ACT CAP_POSTRUN_KV CAP_RUNLIST_KV CAP_SKIP_BIG
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
