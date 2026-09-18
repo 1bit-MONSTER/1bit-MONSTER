@@ -54,6 +54,7 @@ g++ -O2 -std=c++17 -I "$REPO/include" -I "$REPO/src" -I "$REPO/engine/npu/includ
 # Optional GPU parity tool: built only when hipcc is present (needs the device).
 PGEMV=""
 HIPCC=/opt/rocm-therock/bin/hipcc
+if [ -n "${PRISM_NO_DEVICE:-}" ]; then HIPCC=/nonexistent-skipping-device-gates; fi
 if [ -x "$HIPCC" ]; then
   if "$HIPCC" --offload-arch=gfx1151 -O3 -std=c++17 -I "$REPO/include" -I "$REPO/src" \
       "$REPO/tests/prism/prism_gemv_hip.hip" "$REPO/src/onebp_model.cpp" -o "$TMP/pgemv" \
@@ -151,6 +152,8 @@ if [ -x "$HIPCC" ]; then
     echo "  (hipcc present but the full device forward failed to build — skipping)"
   fi
 fi
+
+run "honesty tags: every numeric claim tagged (P6)" python3 "$REPO/tests/prism/check_honesty_tags.py"
 
 echo "== container / codec gates (no model file needed) =="
 run "1BP v5 transform blob + Prism geometry" "$TMP/t5"
