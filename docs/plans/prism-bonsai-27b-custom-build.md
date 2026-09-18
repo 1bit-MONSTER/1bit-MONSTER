@@ -329,6 +329,17 @@ reported as a delta, not a replacement.
 > the fix needs zig which is not installed, and the deliverable wants our own kernels with no third-party runtime
 > in the loop - so ZINC stays an *optional cross-check* if zig ever lands rather than the source of the number.
 >
+> **Update 16:46 - P5 COMPLETE for all three packs** (`q1_0 + PQ2_0 + PTQ1_0` correctness PASSED on Vulkan against a codec-faithful reference; commits `8d7c8113a` + `25d5751cc`), column reported as a fallback at 23-43 GB/s and busy-tagged for re-bracketing.
+>
+> **Update 16:46 - Q1_0 GEMV: ALU-bound confirmed by a pattern-matched bound.** Running the production dp4a grid/lane
+> traversal with the unpack and dot removed (kernel-vs-kernel, so in-situ would have been the wrong instrument):
+> `ffn_gate` 463.7 read-only vs 217.9 dp4a = **47%**; `output.weight` 209.6 vs 181.2 = **86%**; `ffn_down` 736.0 vs
+> 282.9 = **38%**. So the GEMV is ALU-bound for cache-resident shapes and at the HBM roof only for the cached-out
+> one; the earlier "86% of the achievable bound, unpack costs ~a seventh" was right for the big tensors and wrong
+> as a general claim. Since ffn tensors are 37.60 MB of 56.25 MB per layer (**67%**), the bulk runs at 38-47% of its
+> own pattern bound ⟹ **the unpack ALU is the lever**, now measured rather than inferred. Caveat kept: different
+> tensor sizes mean part of the read-only figure is L2 residency, and the pattern bound is not claimed for a
+> full-model pass.
 > **Update 16:31 - P5's third column now EXISTS, on our own stack (`8d7c8113a`).** Rather than wait on the
 > third-party fix, the peer drove **our** `kernels/vulkan/dmmv_prism.comp` through **our** `src/vulkan_rt.h` with a
 > new `tests/test_vulkan_prism.cpp`, checked per element against a CPU dequant+dot reference: Q1_0 max_abs_err

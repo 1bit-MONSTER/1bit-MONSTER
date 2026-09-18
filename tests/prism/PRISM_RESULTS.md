@@ -268,7 +268,7 @@ lane's record decision asked for: `kernels/vulkan/dmmv_prism.comp` driven throug
 | Q1_0 correctness, shader vs CPU reference | M=16 K=256 max_abs_err 0.000000; M=17408 K=5120 max_abs_err 0.000005 | `[Bonsai-27B-Q1_0 \| Q1_0 \| Vulkan dmmv_prism.comp vs CPU ref \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
 | PQ2_0 correctness, shader vs CPU reference | M=16 K=256 max_abs_err 0.000000; M=17408 K=5120 max_abs_err 0.000002 | `[Ternary-Bonsai-27B-PQ2_0 \| PQ2_0 \| Vulkan dmmv_prism.comp vs CPU ref \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
 | throughput at 17408x5120 | Q1_0 23.3 GB/s, PQ2_0 43.0 GB/s (load 23 - **busy-tagged, re-bracket pending**) | `[2-packs \| Q1_0+PQ2_0 \| Vulkan dmmv_prism.comp \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
-| PTQ1_0 | **NOT COVERED** - printed as such rather than silently skipped | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| Vulkan dmmv_prism.comp \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| PTQ1_0 | was NOT COVERED when first recorded; **now COVERED** - all three packs verified against a codec-faithful reference (commit 25d5751cc) | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| Vulkan dmmv_prism.comp \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
 | the column's role | a **fallback, not a competitor**: 23.3 GB/s against the HIP dp4a path's 200-260 GB/s standalone, because the shader dequantizes to float where HIP uses int8 dp4a | `[Bonsai-27B-Q1_0 \| Q1_0 \| Vulkan vs HIP \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
 
 **The trap that had to be cleared first, and it is the day's recurring shape in a new costume.** `src/vulkan_rt.h`'s
@@ -284,6 +284,35 @@ harness and the skipped gate earlier today.
 a CPU reference, which is the shape of gate that the end-to-end fork oracle turned out not to be (section 4a: the
 oracle matched 5/5 while a kernel's norm output was wrong by up to 0.42). A fallback column that is slow but
 elementwise-verified is a better asset than a fast column whose only evidence is a short-prompt argmax.
+
+## 4f. Pattern-matched GEMV bounds (16:46) - the Q1_0 GEMV is ALU-bound for cache-resident shapes
+
+**Method, and it is the rule applied correctly:** this is a kernel-versus-kernel comparison, so in-situ would have
+been the wrong instrument. The production dp4a GEMV's *exact* grid and lane traversal was re-run with the unpack and
+the dot removed - same rows, same blocks, same lane stride, same x accesses - accumulating four bytes per block
+instead of decoding. That yields the memory-only bound **for that pattern**, rather than judging the kernel against
+a generic triad.
+
+| tensor | read-only pattern | dp4a | ratio | tag |
+|---|---|---|---|---|
+| `blk.0.ffn_gate` 17408x5120 | 463.7 GB/s | 217.9 GB/s | 47% | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a vs pattern-matched read-only stub \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| `output.weight` 248320x5120 | 209.6 GB/s | 181.2 GB/s | 86% | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a vs pattern-matched read-only stub \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| `blk.0.ffn_down` 5120x17408 | 736.0 GB/s | 282.9 GB/s | 38% | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a vs pattern-matched read-only stub \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| the ffn share of a layer | 37.60 MB of 56.25 MB = 67% of every layer is ffn tensors | - | so the bulk is in the ALU-limited shapes | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from the container geometry \| cpu-host \| - \| - \| 2026-09-18]` |
+
+**Two conclusions, and the second one reverses an earlier framing of ours.** First: the Q1_0 GEMV is **ALU-bound,
+not memory-bound, for every tensor that fits in cache** - the cache-resident shapes run two to three times faster as
+a read-only stub than as dp4a, while the one tensor large enough to exceed cache behaves the other way (the rows
+above carry both figures). Second: therefore the earlier statement that the GEMV sits near the achievable bound, so
+the unpack costs only a small fraction, was **right for the big tensors and wrong as a general claim**. Since the ffn
+tensors are two thirds of every layer (row above) and are cache-resident, the bulk of the weight stream runs at under
+half of what its own pattern could do, and the unpack ALU is the lever after all - inferred, then doubted, now
+measured against a pattern-matched bound instead of a generic one.
+
+**Instrument caveat, theirs and kept:** the three tensors are different sizes, so part of that read-only figure
+reflects L2 residency rather than raw DRAM behaviour, and the pattern bound is **not** claimed to be achievable for a
+full-model pass. What is claimed is narrower and checkable: dp4a is far from the bound for cache-resident shapes and
+at the bound for the cached-out one, and the gap is decode work.
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 
@@ -364,7 +393,7 @@ deliverable constraint is unchanged.
 | PTQ1_0 budget vs that dot | 48.7 ms needed, 37.0 ms allowed; needs >=160.6 GB/s aggregate | - | **infeasible on this dot** | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| derived \| strixhalo-quiet \| - \| - \| 2026-09-18]` |
 | Q1_0 in-situ split, same binary and window (weight GEMVs skipped by a diagnostic hook, reverted after) | full 29.5 ms/token; weight GEMVs 21.1 ms (= 180.1 GB/s aggregate); all other kernels + launches 8.4 ms | - | measured in-situ, not standalone | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a forward with and without GEMVs \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | Q1_0 dp4a bandwidth, standalone per tensor | lm_head 201.1, ssm_out 235.8, ffn_down 335.6, ffn_gate 249.6, ffn_up 246.0 GB/s | - | in-situ aggregate is 180.1 GB/s, so the loss is the activation-quant pass + dependency + launches, not the dot | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP prism_gemv_dp4a.hip \| strixhalo-quiet \| - \| synthetic x \| 2026-09-18]` |
-| Q1_0 GEMV against the achievable bound (read-only, directional) | floor 17.1 ms for 3.60 GB at 210 GB/s against ~20.0 ms measured = 86% of achievable; the gate needs ~95% | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from hip_bw_probe direction test + rocprofv3 \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| Q1_0 GEMV against the achievable bound (read-only, directional) - **superseded as a general claim by 4f** | floor 17.1 ms for 3.60 GB at 210 GB/s against ~20.0 ms measured = 86% of achievable; the gate needs ~95%. That holds for the **cached-out** shapes; cache-resident shapes measure 38-47% of their own pattern-matched bound | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from hip_bw_probe direction test + rocprofv3 \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | Q1_0 gate arithmetic (gate needs 23.81 ms/token) | GEMV at 250 GB/s = 15.2 ms, + 8.4 ms non-GEMV = 23.6 ms -> 42.4 tok/s; with non-GEMV at 2.5 ms -> 17.7 ms -> 56.5 tok/s | - | **reachable by either lever alone** | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 
 **PQ2_0 is MET**, on a gate-clearing decode in a window whose triad cleared the quiet threshold on both sides, with the
@@ -591,7 +620,9 @@ floor would clear the gate comes from *overlapping* in-situ durations: those ter
 above carry both figures), so the sum is low by construction. A projection built that way cannot be used as a gate value -
 only a window can move a gate - so the row above is recorded as arithmetic, not as a measurement of the gate.
 
-**The right bound was checked, not assumed, and it closes a question.** The triad mixes reads and writes, so it is
+**The right bound was checked, not assumed - and then a better one replaced it (see 4f).** The directional test
+below settled that a read-only stream gets no extra headroom over the triad, which closes that question; the
+pattern-matched bound in 4f then showed that the generic figure was the wrong yardstick for cache-resident shapes. The triad mixes reads and writes, so it is
 not obviously the correct ceiling for a kernel that only reads weights; the directional test settles it - read-only
 bandwidth is essentially the same as the triad (rows in section 4), so a weight-streaming GEMV gets no extra
 headroom from the read/write asymmetry. Against that bound the Q1_0 GEMV achieves the fraction of the achievable
