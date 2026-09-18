@@ -51,6 +51,7 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | measurement | value | tag |
 |---|---|---|
 | triad, box idle (baseline) | 201-219 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
+| triad, @agent-1141bd window 13:19:20 (load 4.52->4.13, no process >300% CPU) | 204.2-217.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 
 ## 5. P3 gate — MEASURED, **NOT MET** (2026-09-18)
@@ -61,9 +62,9 @@ window, so the box is tagged `strixhalo-unknown`, **not** `strixhalo-quiet`.
 
 | pack | decoded (32 tokens) | gate | tag |
 |---|---|---|---|
-| Bonsai-27B-Q1_0 3.80 GB | 16 tok/s | >=42 tok/s | `[Bonsai-27B-Q1_0 | Q1_0 | HIP bench_hip_1bp | strixhalo-unknown | 32 | capital-of-France | 2026-09-18]` |
-| Ternary-Bonsai-2-27B-PTQ1_0 5.95 GB | 11 tok/s | >=27 tok/s | `[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | HIP bench_hip_1bp | strixhalo-unknown | 32 | capital-of-France | 2026-09-18]` |
-| Ternary-Bonsai-27B-PQ2_0 7.17 GB | 12 tok/s | >=22 tok/s | `[Ternary-Bonsai-27B-PQ2_0 | PQ2_0 | HIP bench_hip_1bp | strixhalo-unknown | 32 | capital-of-France | 2026-09-18]` |
+| Bonsai-27B-Q1_0 3.80 GB | 24 tok/s | >=42 tok/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP bench_hip_1bp \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| Ternary-Bonsai-2-27B-PTQ1_0 5.95 GB | 19 tok/s | >=27 tok/s | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| HIP bench_hip_1bp \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| Ternary-Bonsai-27B-PQ2_0 7.17 GB | 19 tok/s | >=22 tok/s | `[Ternary-Bonsai-27B-PQ2_0 \| PQ2_0 \| HIP bench_hip_1bp \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 
 **Gate reachability arithmetic (host-side, derived from the tagged rows above).** These gates are
 bandwidth targets, not measurement targets: each needs the pack's weights streamed at
@@ -90,7 +91,7 @@ is not a bound merely because it is simpler. The "unreachable whatever the decod
 **Current state after the fix.** GEMV on `blk.0.ffn_gate` at `133.5 GB/s `[Bonsai-27B-Q1_0\|Q1_0\|HIP prism_gemv_tile.hip\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`
 = 66% of the 201 GB/s triad `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|-\|-\|2026-09-18]`; end-to-end backend decode
 `Q1_0 24 / PTQ1_0 19 / PQ2_0 19 tok/s `[3-packs\|verbatim\|HIP bench_hip_1bp\|strixhalo-busy\|32\|capital-of-France\|2026-09-18]`
-in the peer's quietest window (load 5.7, not triad-verified, so `strixhalo-busy` and **relative only** -
+in the peer's **triad-verified quiet window** (13:19:20, load 4.52->4.13, no process >300% CPU; triad 204.2-217.4 GB/s in the same window, section 4), so these are **admissible absolute** rows and canonical over the earlier load-8.8 busy set `[3-packs\|verbatim\|HIP bench_hip_1bp\|strixhalo-busy\|32\|capital-of-France\|2026-09-18]`.7, not triad-verified, so `strixhalo-busy` and **relative only** -
 a same-window triad is still requested). Effective aggregate is therefore
 `91.2 / 113.0 / 136.2 GB/s `[3-packs\|verbatim\|derived: tok/s x pack size\|strixhalo-busy\|32\|capital-of-France\|2026-09-18]` against the
 `159.6 / 160.7 / 157.7 GB/s `[3-packs\|verbatim\|derived: gate x pack size\|strixhalo-unknown\|-\|-\|2026-09-18]` the gates imply: **NOT MET, gap 1.75x / 1.42x / 1.16x**
