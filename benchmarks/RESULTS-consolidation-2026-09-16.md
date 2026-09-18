@@ -137,3 +137,18 @@ nor the recorded deficit), and the decode end above ~8193 contexts does not exis
 | (new) **any number taken while a foreign process holds `accel0`** | the engine takes `/tmp/1bit-npu-device.lock`; other tools do not. Two long-lived `/tmp/attrib` processes inflated identical 8k prefills 3.3–4.4x on 2026-09-18. Instrument: `benchmarks/c8k_guarded.sh`; register entry: `LEVERS` §6.7 |
 
 The un-routed families' verdicts and the ≤1024-key family boundary above are unchanged.
+
+### Addendum 2026-09-18 (second) — (c) at 8k for all six, and the one cell that falls short
+
+- `RESULTS-8k-six-model-2026-09-18.md` — guard-accepted 8k prefill/TTFT for all six models;
+  native ahead 1.04–1.10x prefill, TTFT parity-or-faster for five.
+- `RESULTS-8k-decode-top-of-window-2026-09-18.md` — the decode clause **is** measurable at the top
+  of the window (prompt `8192-ng` keeps `ctx<=8192`); all six at parity or ahead with `ng=32`
+  (the `ng=8` reading of 0.93x for 0.6B was warm-up).
+- `RESULTS-0_6b-prefill-scaling-2026-09-18.md` + `RESULTS-0_6b-prefill-hostbound-2026-09-18.md` —
+  the single non-passing cell: 0.6B TTFT at 8k, 1–3% behind, localised to the host `conv+other`
+  prefill term (4007–4071 ms of a 4030–4094 ms total; the device attention is ~96% hidden, so
+  prefill pipelining has a ~25 ms ceiling and the fast int8 device prefill is the path that fails
+  the accuracy gate). Remaining lever: the host prefill path itself (~0.45 ms/token ≈ 3 GFLOPS
+  effective, so memory/format-bound). Raised with the user — hours of work, past the 2 h threshold.
+- **Criterion (c) as measured: 1k met for all six; 8k 17 of 18 cells met; the 18th classified.**
