@@ -66,8 +66,12 @@ def _in_scope_line(line, markers):
 
 
 def check_scoped(root, fails):
-    """Honesty check for this lane's claims living in shared docs (see the scope rules above)."""
+    """Honesty check for this lane's claims living in shared docs (see the scope rules above).
+
+    Returns (total, per_file_counts) so the self-test can assert coverage per file.
+    """
     checked = 0
+    counts = {}
     for rel, markers in SCOPED.items():
         f = root / rel
         if not f.exists():
@@ -87,21 +91,23 @@ def check_scoped(root, fails):
                     if not hit or not NUM.search(line):
                         continue
                     checked += 1
+                    counts[rel] = counts.get(rel, 0) + 1
                     if not tags_on(line):
                         fails.append(
                             f"{rel}:{k+1}: lane claim without a 7-field tag: {line.strip()[:100]}"
                         )
                 para_start = i + 1
-    return checked
+    return checked, counts
 
 
-def main():
-    if not DOC.exists():
-        print(f"FAIL: {DOC} missing")
-        return 1
-    lines = DOC.read_text().splitlines()
-    fails, checked, quiet_triads, quiet_tok_ok = [], 0, [], set()
+def scan_strict(lines, fails=None):
+    """Whole-file rule: any line stating a number with a unit needs a 7-field tag.
 
+    Extracted so the self-test below exercises the *same* code that polices the real file: a
+    self-test against a copy of the rule would prove only that the copy works.
+    """
+    fails = fails if fails is not None else []
+    checked, quiet_ok = 0, set()
     for i, line in enumerate(lines, 1):
         stripped = line.strip()
         if stripped.startswith("|") and stripped.endswith("|"):
@@ -125,7 +131,59 @@ def main():
             if not (tokens == "-" or tokens.isdigit()):
                 fails.append(f"{i}: bad token count '{tokens}'")
             if box == "strixhalo-quiet":
-                quiet_tok_ok.add(i)
+                quiet_ok.add(i)
+    return checked, fails, quiet_ok
+
+
+# Per-file coverage floors for the scoped scan. A too-narrow scope pattern under-policies *silently*
+# — it happened: the first version of the paragraph rule skipped the family doc's pack table entirely
+# and still printed PASS. A scope regression must therefore fail loudly instead of looking clean.
+# The floors sit well below the current counts on purpose: they catch a rule that stopped matching,
+# they do not pin today's numbers.
+SCOPED_FLOOR = {
+    "docs/model-families/bitnet-bonsai.md": 8,
+    "models/catalog/README.md": 3,
+}
+DOC_FLOOR = 15
+
+
+def self_test(fails, counts, doc_checked):
+    """Prove the gate can fail, can pass, and is still looking where it claims to look.
+
+    Recorded because this bit twice in one day, in this lane and in a peer's: an absent marker is not
+    evidence of an absent claim. A too-narrow grep/scope pattern produces a clean-looking PASS while
+    nothing is actually checked, and that is strictly worse than no gate — it manufactures trust.
+    """
+    good = ["a claim 1.5 GB/s [m | f | b | cpu-host | - | - | 2026-09-18]"]
+    bad = ["a claim 1.5 GB/s and no tag", "corr=0.99 and no tag"]
+    gc, gf, _ = scan_strict(good)
+    bc, bf, _ = scan_strict(bad)
+    if gc != 1 or gf:
+        fails.append(f"self-test: a correctly tagged fixture must pass (checked={gc}, failures={gf})")
+    if bc != 2 or len(bf) != 2:
+        fails.append(f"self-test: untagged fixtures must be flagged (checked={bc}, flagged={len(bf)})")
+    if doc_checked < DOC_FLOOR:
+        fails.append(
+            f"self-test: results of record scanned only {doc_checked} claims (<{DOC_FLOOR}) — the "
+            f"detector or the file shrank, and an absent claim is not an absent problem"
+        )
+    for rel, floor in SCOPED_FLOOR.items():
+        got = counts.get(rel, 0)
+        if got < floor:
+            fails.append(
+                f"self-test: {rel} scanned only {got} lane claims (<{floor}) — a scope rule stopped "
+                f"matching, and a silent under-check reads as PASS"
+            )
+    return 0 if not fails else 1
+
+
+def main():
+    if not DOC.exists():
+        print(f"FAIL: {DOC} missing")
+        return 1
+    lines = DOC.read_text().splitlines()
+    fails, quiet_triads = [], []
+    checked, fails, quiet_tok_ok = scan_strict(lines, fails)
 
     for i, line in enumerate(lines, 1):
         m = TRIAD.search(line)
@@ -140,10 +198,13 @@ def main():
         if hi < 200.0:
             fails.append(f"{i}: strixhalo-quiet triad is only {lo}-{hi} GB/s (<200) — not quiet")
 
-    checked += check_scoped(DOC.resolve().parents[2], fails)
+    scoped_checked, counts = check_scoped(DOC.resolve().parents[2], fails)
+    checked += scoped_checked
+    st = self_test(fails, counts, len(lines) and checked - scoped_checked)
 
     print(f"honesty tags: {checked} numeric claims checked, "
-          f"{len(quiet_triads)} quiet triad line(s), {len(fails)} violation(s)")
+          f"{len(quiet_triads)} quiet triad line(s), {len(fails)} violation(s); "
+          f"self-test {'ok' if st == 0 else 'FAILED'} (detector fires, tagged fixture passes, coverage floors)")
     for f in fails:
         print(f"  FAIL {f}")
     print("HONESTY GATE: " + ("PASS" if not fails else "FAIL"))
