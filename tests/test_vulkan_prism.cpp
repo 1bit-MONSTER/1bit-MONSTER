@@ -21,6 +21,7 @@
 // Run:    ./a.out            (expects dmmv_prism.spv in VK_SHADER_DIR)
 
 #include "../src/vulkan_rt.h"
+#include "../include/onebp_loader.h"   // folded-pack detection (fail closed)
 
 #include <cmath>
 #include <cstdint>
@@ -236,7 +237,34 @@ static int runFormat(vkrt::VkCtx& ctx, const char* spv, const char* name,
     return ok ? 0 : 1;
 }
 
-int main() {
+int main(int argc, char** argv) {
+    // FAIL CLOSED on a folded pack, before touching the device. This harness applies no folded
+    // basis: it never rotates the activation by the Hadamard manifest and never applies the
+    // ssm_out head permutation, both of which belong to the FOLDED basis only. Running it on a
+    // folded pack's weights as if they were plain would produce plausible-looking garbage, which
+    // is the exact failure mode this lane exists to avoid. The HIP engine refuses the same case
+    // (include/prism_engine.h: a transform manifest it cannot honour -> return false).
+    // Uses the repo's own loader rather than a byte scan, so the check is the same one P1 owns.
+    if (argc > 1) {
+        OnebpModel pack;
+        if (!pack.load(argv[1])) {
+            std::fprintf(stderr, "REFUSING: cannot load %s as a 1BP container\n", argv[1]);
+            return 2;
+        }
+        bool folded = false;
+        for (const auto& t : pack.tensors)
+            if (t.name == "__onebp_ext_prism_transform") folded = true;
+        if (folded) {
+            std::fprintf(stderr,
+                "REFUSING %s: this is a FOLDED Prism pack (it carries __onebp_ext_prism_transform).\n"
+                "  This Vulkan harness does not apply the folded Hadamard basis or the ssm_out head\n"
+                "  permutation, so its weights are NOT interchangeable with plain ones. Serving them\n"
+                "  as plain would silently produce plausible garbage. Failing closed.\n", argv[1]);
+            return 3;
+        }
+        std::printf("pack %s is UNFOLDED (no __onebp_ext_prism_transform): safe to treat as plain\n", argv[1]);
+    }
+
     const std::string shader_dir = VK_SHADER_DIR;
     const std::string spv = shader_dir + "/dmmv_prism.spv";
 
