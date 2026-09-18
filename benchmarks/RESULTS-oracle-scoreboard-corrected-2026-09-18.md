@@ -67,15 +67,15 @@ Same 20-prompt set (`benchmarks/prompts/qwen3_0_6b_oracle_set.txt`), greedy,
 | Qwen3-4B | 20/20 | 19/20 | 20/20 | 19/20 | OK=20, MISMATCH=0 |
 | Qwen3-8B | 20/20 | 19/20 | 20/20 | 18/20 | OK=20, MISMATCH=0 |
 | Qwen3-VL-4B | 20/20 | **20/20** | 20/20 | **20/20** | OK=20, MISMATCH=0 |
-| Llama-3.1-8B | — | *not measured* | — | — | — |
+| Llama-3.1-8B | 20/20 | **20/20** | 20/20 | **20/20** | OK=20, MISMATCH=0 |
 
 **Criterion (a)**: on the format-equalised 0.6B scoreboard the native arm **meets/beats
 the FLM oracle's own self-check** (19 vs 17, and 19 vs 17 in the answer region), with the
 residual content errors classified in
 `RESULTS-content-error-classification-2026-09-15.md`.
 
-**Criterion (b)**: the same scoreboard now covers five of the six models with the I1
-same-bytes assertion passing on **every row of every arm** (OK=100, MISMATCH=0).
+**Criterion (b)**: the same scoreboard now covers **all six** supported models with the I1
+same-bytes assertion passing on **every row of every arm** (OK=120, MISMATCH=0).
 
 Every native miss, individually:
 
@@ -93,14 +93,42 @@ is withdrawn — it was the 200-char window. This is consistent with `origin/mai
 independent re-measurements (`d621482f2` 4B 20/20 vs 20/20, `22d897c63` 8B 18/20 vs 20/20
 at 128 tokens with their harness).
 
-## Llama-3.1-8B is NOT measured, and hangs
+## Llama-3.1-8B: 20/20 — and the "hang" I first reported was my misconfiguration
 
-The corrected run completed row 1 (`The capital of France is` → `Paris`, I1 OK, 40 ids)
-and then **hung on row 2** (`The capital of Japan is`, 40 ids): no output in 600 s, and
-again in the harness with its 900 s per-invocation timeout. The old 20/20 in
-`RESULTS-oracle-vl-llama-2026-09-15.md` is therefore **unverified under the pinned
-configuration** and is not carried forward as a (b) row. This is a reproducible hang, not
-a slow run: the same prompt with the same ids printed nothing at all.
+First attempt reported a hang: row 1 completed and row 2 printed nothing for 600 s, and a
+separate 240 s probe printed nothing at all. **Both were wrong, and the cause was mine.**
+The probe's output was piped through `tail`, which shows nothing until EOF, and the run was
+not hanging — it was running the *dense fallback* at 14.7 s/token after 211 s of dense
+weight packing, so a 20-prompt harness run cannot finish inside any reasonable timeout.
+
+The fallback is silent and is selected by a gate in `npu_engine_universal.cpp` (~:844):
+
+```cpp
+const bool dense_qwen3 = cfg.NV == 151936 && !cfg.has_moe && (...);
+const bool runlist_eligible = dense_qwen3 || (!cfg.has_moe && getenv("NPU_LAYER_ELF_DIR"));
+```
+
+Llama's vocabulary is **128256**, so `dense_qwen3` is false, and with `NPU_LAYER_ELF_DIR`
+unset `runlist_eligible` is false too — the engine then uses the 112-launch dense path
+without saying so. The same command with an ELF dir completes on the runlist:
+
+```
+NPU_LAYER_ELF_DIR=/tmp/llama-elfs NPU_RUNLIST=1 ... npu_engine_llama model.q4nx 8 ids
+[runlist] LAYER_XCLBIN pinned to the in-repo copy: engine/npu/xclbins/flm_models/Llama-3.1-8B-NPU2/layer.xclbin
+=== Prefill 40 [runlist] ===    Prefill: 3638ms (91 ms/tok)
+=== 77.5 ms/tok (13 tok/s) | tokens=8 ===
+```
+
+With that configuration the full 20-prompt row is **20/20 vs FLM 20/20**, answer-region
+20/20, I1 OK=20 — i.e. the 2026-09-15 result (`e060acc4e`/`dac5417f4`) **reproduces**, and it
+is now gate-carrying.
+
+The defect that remains is real but different from a hang: **`NPU_RUNLIST=1` silently
+demotes any non-Qwen3, non-MoE model to the slow dense path unless the caller also passes
+`NPU_LAYER_ELF_DIR`** — even though the bridge can create and populate that directory
+itself (`ensure_elf_gen_env`). Widening `runlist_eligible` to attempt the runlist for any
+non-MoE model is a routing-semantics change affecting several families, which the goal's
+block rules reserve for the user; it is recorded, not made.
 
 ## Measurement-contract note: accuracy runs must be SERIAL
 
@@ -123,7 +151,9 @@ ENGINE_ENV="NPU_RUNLIST=1" bash benchmarks/oracle_accuracy_model.sh \
 ENGINE_ENV="NPU_RUNLIST=1" bash benchmarks/oracle_accuracy_model.sh \
   Qwen3-VL-4B-Instruct-NPU2 npu_engine_qwen3_vl_4b qwen3vl-it:4b 128 \
   benchmarks/prompts/qwen3_0_6b_oracle_set.txt /tmp/oracle_acc_vl4b.tsv
-ENGINE_ENV="NPU_RUNLIST=1" bash benchmarks/oracle_accuracy_model.sh \
+# non-Qwen3 vocab: the runlist gate needs an ELF dir or it silently takes the dense path
+ENGINE_ENV="NPU_RUNLIST=1 NPU_LAYER_ELF_DIR=/tmp/llama-elfs" \
+  bash benchmarks/oracle_accuracy_model.sh \
   Llama-3.1-8B-NPU2 npu_engine_llama llama3.1:8b 128 \
   benchmarks/prompts/qwen3_0_6b_oracle_set.txt /tmp/oracle_acc_llama.tsv
 ```
@@ -147,9 +177,14 @@ is purely the xclbin the engine resolves, not any build of this branch.
 
 ## What is still open
 
-- **Llama-3.1-8B: the runlist hang.** Reproducible on row 2 of the set. Until it is
-  diagnosed, Llama has no (b) row, and any speed number for it is unaccompanied by a
-  correctness gate.
+- **The silent runlist demotion for non-Qwen3 vocabularies** (above): `NPU_RUNLIST=1` +
+  no `NPU_LAYER_ELF_DIR` = the 112-launch dense path, ~190x slower per token for Llama, with
+  no message. Recorded for a routing-semantics decision rather than changed here.
 - 1.7B/4B/8B are 1–2 rows apart from a 20/20 oracle on a 20-prompt substring test; that is
   not a capability difference at this resolution, but it is also not parity, and the
   answer-region verdict (19/19/18) is the honest stricter reading.
+- This document carried a wrong "Llama hangs" claim for about an hour and it reached two
+  commits by the co-lane agent (832dffbee, LEVERS 6.5c) before it was retracted; both are
+  being corrected. The lesson is the one this goal keeps re-learning: a probe whose output
+  is piped through a pager-like filter cannot distinguish "slow" from "hung", and a
+  misconfiguration that silently selects a 190x-slower path presents exactly as a hang.
