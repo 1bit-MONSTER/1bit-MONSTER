@@ -59,7 +59,9 @@ Two modes:
 
 Reports only — not wired into run_all.sh. Missing artifacts are a known existing
 condition, and a report that fails CI would be the same over-reach this file's
-own docstring warns about.
+own docstring warns about. (Its classifier IS exercised: run_all.sh invokes
+Testing/npu_xclbin_census_selfcheck.sh, which drives this file against a synthetic
+fixture and never asserts anything about the real artifact set.)
 """
 from __future__ import annotations
 
@@ -153,16 +155,67 @@ def slots(d: dict) -> list[tuple[str, int, int]]:
     return out
 
 
+# A slot reaches a context in one of two ways, and the two sets differ:
+#   * as the slot argument of a context init — init_i8(cd,"D", …), xpm(t,"MOE"), …
+#   * inside a literal path the engine builds — D"/final_i8_KV_v.xclbin"
+# npu_engine_hybrid.cpp and npu_engine_cb.cpp hand whole paths to .init(), so the
+# first pattern alone cannot see their slots; a caller that passes a variable needs
+# the second. Both are "the engine names that slot as a literal".
+_SLOT_ARGUMENT = re.compile(r'\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*"([A-Z][A-Z0-9_]*)"')
+_PATH_LITERAL = re.compile(r'final_i8_([A-Z0-9_]+)')
+_ENGINE_SOURCE_GLOBS = ("*.c", "*.cc", "*.cpp", "*.h", "*.hpp")
+
+
+def _strip_c_comments(text: str) -> str:
+    """Drop // and /* */ spans, so a name that lives only in prose is not a token.
+
+    engine/npu/tests/check_xclbin_provenance.py records "grep for final_i8_ATTN/
+    insts_i8_ATTN over engine/ = 0" in a comment; a scan that read comments would
+    take that sentence for a loader and print ATTN as a RISK row — a wrong-answer
+    verdict about the one committed artifact nothing loads."""
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def _prefixes(run: str) -> set[str]:
+    """Every underscore-prefix of a name run: QKV_K2048_N2560 -> {QKV, QKV_K2048, …}.
+
+    Sound by construction — each one is a prefix of a path the engine builds, so the
+    engine really does ask for it (xp() walks exactly these prefixes)."""
+    parts = [p for p in run.rstrip("_").split("_") if p]
+    return {"_".join(parts[:i]) for i in range(1, len(parts) + 1)}
+
+
 def engine_slot_tokens(repo: Path) -> set[str]:
-    """Every quoted string literal in the engine that loads a context.
+    """Every slot name an engine source in the tree loads, or builds a path for.
 
     Used to tell "this xclbin's slot is one the engine actually asks for" from
     "this artifact belongs to some other loader", instead of hardcoding a list of
-    exceptions that would rot."""
-    src = repo / "engine" / "npu" / "src" / "npu_engine_universal.cpp"
-    if not src.is_file():
+    exceptions that would rot.
+
+    Two things this got wrong once, both of which made the RISK branch unreachable
+    for most of the op set (#2584):
+      * the character class required three characters — "([A-Z][A-Z0-9_]{2,})" —
+        while five of the six legacy slots are "O", "G", "U", "D" and "GU";
+      * it read npu_engine_universal.cpp alone, so a slot named only in another
+        engine (hybrid, cb, zaya_decode, the pool probes, the zero_copy tests)
+        could not match either.
+    Measured before the fix: 103 of the 146 committed final_i8_*.xclbin names fell
+    to the "note" branch, and stripping the .txt of final_i8_D_qwen3_4b.xclbin
+    printed "no engine slot token matches this name" with the summary still saying
+    "0 of them belong to a slot the engine loads".
+    """
+    root = repo / "engine"
+    if not root.is_dir():
         return set()
-    return set(re.findall(r'"([A-Z][A-Z0-9_]{2,})"', src.read_text(encoding="utf-8", errors="replace")))
+    tokens: set[str] = set()
+    for pattern in _ENGINE_SOURCE_GLOBS:
+        for src in root.rglob(pattern):
+            text = _strip_c_comments(src.read_text(encoding="utf-8", errors="replace"))
+            tokens.update(_SLOT_ARGUMENT.findall(text))
+            for run in _PATH_LITERAL.findall(text):
+                tokens.update(_prefixes(run))
+    return tokens
 
 
 def pairing_audit(xd: Path, repo: Path) -> int:
