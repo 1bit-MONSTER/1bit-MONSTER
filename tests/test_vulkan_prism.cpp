@@ -140,6 +140,49 @@ static void refQ2(const uint8_t* w, const float* x, float* y, uint32_t m, uint32
     }
 }
 
+
+// ── PTQ1_0: 28 B per 128 weights, base-3 trits, element order NOT positional ──────────────
+static const uint32_t kPtqBlockBytes = 28;
+static void fillPTQ(std::vector<uint8_t>& w, uint32_t m, uint32_t k) {
+    const uint32_t nb = k / 128;
+    const size_t row_bytes = (size_t)nb * kPtqBlockBytes;
+    w.assign((size_t)m * row_bytes, 0);
+    uint32_t s = 4242;
+    for (uint32_t r = 0; r < m; r++)
+        for (uint32_t b = 0; b < nb; b++) {
+            uint8_t* blk = w.data() + (size_t)r * row_bytes + (size_t)b * kPtqBlockBytes;
+            for (int i = 0; i < 24 + 2; i++) { s = s * 1103515245u + 12345u; blk[i] = (uint8_t)(s >> 24); }
+            const uint16_t d = f32ToF16(0.006f + (float)(r % 6) * 0.001f);
+            std::memcpy(blk + 26, &d, 2);
+        }
+}
+// follows include/prism_codec.h case 13 exactly (the base-3 chain and the (byte,n) mapping)
+static void refPTQ(const uint8_t* w, const float* x, float* y, uint32_t m, uint32_t k) {
+    const uint32_t nb = k / 128;
+    for (uint32_t r = 0; r < m; r++) {
+        const uint8_t* row = w + (size_t)r * nb * kPtqBlockBytes;
+        float acc = 0.f;
+        for (uint32_t b = 0; b < nb; b++) {
+            const uint8_t* blk = row + (size_t)b * kPtqBlockBytes;
+            uint16_t d16;
+            std::memcpy(&d16, blk + 26, 2);
+            const float d = f16ToF32(d16);
+            for (int e = 0; e < 128; e++) {
+                uint8_t bb;
+                int n;
+                if (e < 80)       { bb = blk[e & 15];              n = e >> 4; }
+                else if (e < 120) { const int t = e - 80;  bb = blk[16 + (t & 7)]; n = t >> 3; }
+                else              { const int t = e - 120; bb = blk[24 + (t & 1)]; n = t >> 1; }
+                uint32_t v = bb;
+                for (int kk = 0; kk < n; kk++) v = (v * 3u) & 0xFFu;
+                const int trit = (int)((v * 3u) >> 8);
+                acc += (float)(trit - 1) * d * x[b * 128 + e];
+            }
+        }
+        y[r] = acc;
+    }
+}
+
 // ── runner ────────────────────────────────────────────────────────────────────────────────
 static int runFormat(vkrt::VkCtx& ctx, const char* spv, const char* name,
                      std::vector<uint8_t>& weights, uint32_t m, uint32_t k,
@@ -215,6 +258,8 @@ int main() {
         fails += runFormat(ctx, spv.c_str(), "Q1_0", w, m, k, kQ1BlockBytes, 18, 11, x, refQ1);
         fillQ2(w, m, k);
         fails += runFormat(ctx, spv.c_str(), "PQ2_0", w, m, k, kQ2BlockBytes, 34, 12, x, refQ2);
+        fillPTQ(w, m, k);
+        fails += runFormat(ctx, spv.c_str(), "PTQ1_0", w, m, k, kPtqBlockBytes, 28, 13, x, refPTQ);
     }
     {   // throughput: the shape of the largest Prism GEMV in the model
         const uint32_t m = 17408, k = 5120;
@@ -226,9 +271,9 @@ int main() {
         fails += runFormat(ctx, spv.c_str(), "Q1_0", w, m, k, kQ1BlockBytes, 18, 11, x, refQ1);
         fillQ2(w, m, k);
         fails += runFormat(ctx, spv.c_str(), "PQ2_0", w, m, k, kQ2BlockBytes, 34, 12, x, refQ2);
+        fillPTQ(w, m, k);
+        fails += runFormat(ctx, spv.c_str(), "PTQ1_0", w, m, k, kPtqBlockBytes, 28, 13, x, refPTQ);
     }
-    printf("\nPTQ1_0: not covered by this tool (its trit order needs the shader's PTQ1_0 branch,\n"
-           "        which this harness does not yet drive) - reported, not skipped silently.\n");
     ctx.destroy();
     printf("\n%s\n", fails == 0 ? "PRISM VULKAN GEMV: ALL PASSED" : "PRISM VULKAN GEMV: FAILURES");
     return fails == 0 ? 0 : 1;
