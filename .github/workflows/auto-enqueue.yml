@@ -101,16 +101,25 @@ jobs:
           # verification below: an exit code is not evidence that the queue will
           # take the PR.
           #
-          # The call is also not allowed to ABORT the step. `set -e` would kill
-          # the step before the readback, and the readback is the only thing that
-          # can tell a stacked PR apart from a real failure. Measured on #2548's
-          # run 35297583998: on a base whose ruleset does not apply, this exits 1
-          # with "GraphQL: Pull request Protected branch rules not configured for
-          # this branch (enablePullRequestAutoMerge)", so the step died here and
-          # the stacked-base warning below was unreachable — present in the file,
-          # never printed. The failure is not swallowed: it is reported, and the
-          # readback judges it, still failing hard on the default branch.
+          # The call is also not allowed to ABORT the step. `set -e` would kill the step
+          # before the readback below, which is what decides whether an enqueue actually
+          # happened: an exit code is not evidence either way.
+          #
+          # A base other than the default branch is decided BEFORE the call, not after it.
+          # Two measured runs of this step on the same stacked PR (#2548) disagreed about
+          # whether the call even fails: run 35297583998 exited 1 with "GraphQL: Pull
+          # request Protected branch rules not configured for this branch
+          # (enablePullRequestAutoMerge)", while run 35297895113 exited 0 and left
+          # autoMergeRequest null. A call that sometimes does nothing is not a
+          # precondition to rely on, and if it ever does stick this workflow auto-merges a
+          # stacked PR into its base FEATURE branch - with the warning below never reached
+          # to say so. So the base is checked first and the call is not made for a stacked
+          # PR at all.
           base=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json baseRefName --jq .baseRefName)
+          if [ "$base" != "${{ github.event.repository.default_branch }}" ]; then
+            echo "::warning::#$PR was not enqueued: its base is '$base', not the default branch. A stacked PR merges with its base branch; this PR will be enqueued by the 'edited' run that its retarget to main triggers."
+            exit 0
+          fi
 
           # A PR whose head already conflicts with main cannot merge: the queue builds
           # it, the speculative merge fails, and the entry is ejected — which under
@@ -136,8 +145,11 @@ jobs:
             exit 0
           fi
 
+          # Not wrapped in `|| echo`: a silent enqueue failure is the exact failure mode
+          # this workflow exists to prevent. The failure is reported and then judged by the
+          # readback, which still fails hard below when nothing was enqueued.
           if ! gh pr merge "$PR" --squash --auto --repo "$GITHUB_REPOSITORY" 2>&1; then
-            echo "::notice::gh pr merge --squash --auto exited non-zero for base '$base'; the readback below decides whether that is a stacked PR or a real failure."
+            echo "::notice::gh pr merge --squash --auto exited non-zero for base '$base'; the readback below decides whether that is a real failure."
           fi
           # Two signals count as enqueued, and only one of them survives: GitHub
           # CLEARS the auto-merge request once the PR is in the merge queue, so a
@@ -151,17 +163,8 @@ jobs:
             -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F n="$PR" \
             --jq '.data.repository.pullRequest | ((.mergeQueueEntry != null) or (.autoMergeRequest != null))')
           if [ "$enqueued" != "true" ]; then
-            # Auto-merge into a base other than the default branch is not
-            # documented as supported, and the one stacked PR this workflow has
-            # seen was merged by hand. Report that case as such instead of
-            # asserting a behaviour nobody has measured - but keep the hard
-            # failure for the default branch, where a null means the enqueue
-            # really did not happen.
-            if [ "$base" != "${{ github.event.repository.default_branch }}" ]; then
-              echo "::warning::#$PR was not enqueued: its base is '$base', not the default branch. A stacked PR merges with its base branch; this PR will be enqueued by the 'edited' run that its retarget to main triggers."
-              exit 0
-            fi
             echo "::error::#$PR was not enqueued: no auto-merge request and no merge queue entry (base $base)"
             exit 1
           fi
+          echo "#$PR is enqueued (base $base) - auto-merge request or merge queue entry confirmed"
           echo "#$PR is enqueued (base $base) - auto-merge request or merge queue entry confirmed"

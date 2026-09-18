@@ -14,7 +14,7 @@ Why this exists, measured 2026-09-18:
   * A retarget arrives as `pull_request: edited`. Without that trigger, a stacked
     PR whose base merges becomes a main-based PR that nothing ever enqueues.
 
-Six properties are checked. Each is also checked against a mutated copy of the
+Seven properties are checked. Each is also checked against a mutated copy of the
 file, because a check that cannot fail is not a check. Each mutation removes the
 signal its matcher claims to test, located BY CONTENT: the first version deleted
 the first `::warning::` line and relied on it being the stacked-base one, so the
@@ -40,6 +40,12 @@ looked at.
      enqueued: the queue builds an entry before it can discover the conflict, and
      under grouping_strategy ALLGREEN one ejected entry costs every PR it was
      grouped with a rebuild cycle.
+  7. the non-default-base decision in 4 is made BEFORE the merge call, so a stacked
+     PR never reaches that call at all. Its behaviour there is not deterministic -
+     on the same PR it exited 1 once and exited 0 having enabled nothing the next
+     time - and a call that sometimes silently works would auto-merge a stacked PR
+     into its base FEATURE branch, with the warning below it never reached to say
+     so.
 
 Comments are stripped before matching: a `gh pr merge` spelled out in the step's
 own explanation is not an invocation. That is the same mistake
@@ -148,6 +154,30 @@ def merge_failure_is_tolerated(text: str) -> bool:
     )
 
 
+def stacked_base_is_decided_first(text: str) -> bool:
+    """The non-default-base branch must come BEFORE the merge call.
+
+    Deciding after the call means the call runs on a stacked PR, and its behaviour
+    there is not deterministic: `gh pr merge --squash --auto` on #2548 exited 1 with
+    "Protected branch rules not configured for this branch" in run 35297583998 and
+    exited 0 having enabled nothing in run 35297895113. If it ever does stick, the
+    PR is auto-merged into its base FEATURE branch and this warning - the one that
+    is supposed to describe exactly that - is unreachable."""
+    body = code(text).splitlines()
+    warn = next((i for i, l in enumerate(body)
+                 if re.search(r'^\s*echo "::warning::[^"]*not the default branch', l)), None)
+    merge = next((i for i, l in enumerate(body)
+                  if re.search(r"\bgh pr merge\b", l) and not re.match(r"\s*echo\b", l)), None)
+    return warn is not None and merge is not None and warn < merge
+
+
+def warn_after_enqueue(text: str) -> str:
+    """Mutation: the same warning, moved after the merge call."""
+    keep = [l for l in text.split("\n")
+            if not re.search(r'^\s*echo "::warning::[^"]*not the default branch', l)]
+    return "\n".join(keep + ['          echo "::warning::$base is not the default branch"'])
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--workflow", default=None, help=f"default: {DEFAULT_WORKFLOW}")
@@ -173,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
     check(merge_failure_is_tolerated(text),
           "a failing `gh pr merge` cannot abort the step before the readback")
     check(refuses_conflicts(text), "a conflicting PR is skipped rather than enqueued")
+    check(stacked_base_is_decided_first(text),
+          "a non-default base is decided before the merge call, not after it")
 
     # ---- controls: each matcher must be able to fail ---------------------------
     mutations = [
@@ -198,6 +230,9 @@ def main(argv: list[str] | None = None) -> int:
         ("mergeable read dropped from the conflict guard",
          re.sub(r'--json mergeable', "--json state", text),
          refuses_conflicts),
+        ("stacked-base warning moved after the enqueue",
+         warn_after_enqueue(text),
+         stacked_base_is_decided_first),
     ]
     for label, mutated, probe in mutations:
         check(mutated != text, f"control setup: '{label}' changes the file")
