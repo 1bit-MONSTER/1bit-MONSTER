@@ -2796,6 +2796,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "phi3withvectormemory") == 0) return RCPP_ARCH_PHI;
     if (strcmp(s, "phixtral") == 0) return RCPP_ARCH_PHI;
     // ── end 2026-09 sweep aliases ──
+    if (strcmp(s, "han2han") == 0) return RCPP_ARCH_LLAMA;  // census-auto
     return RCPP_ARCH_UNKNOWN;
 }
 
