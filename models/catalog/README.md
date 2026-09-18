@@ -138,6 +138,16 @@ Converted via C++ toolchain (`src/gguf_to_onebp.cpp`), zero Python at runtime.
 | Bonsai-8B | 8B | 4.1 GB | HIP GPU | qwen3 (ternary) |
 | Bonsai-27B | 27B | 15 GB | HIP GPU | qwen3 (ternary) |
 
+**In-lane, not published — Prism ML Bonsai 27B hybrid GatedDeltaNet.** A separate family
+branch from the Deepgrove Bonsai rows above: 64 layers, 48 GatedDeltaNet + 16 gated-GQA,
+served through **1BP v5** with the verbatim Prism packings (Q1_0 3.80 GB / PTQ1_0 5.95 GB /
+PQ2_0 7.17 GB) plus the folded Hadamard transform metadata. Correctness is gated on
+gfx1151 (fork's own generated tokens 5/5 on all three packs; per-layer cosine >= 0.999;
+full 64-layer device forward), but the tok/s targets are **not claimed** — they need a
+quiet box. These `.1bp` files live in the lane worktree, not on HuggingFace. See
+[model-families/bitnet-bonsai.md](../../docs/model-families/bitnet-bonsai.md) and the
+[plan of record](../../docs/plans/prism-bonsai-27b-custom-build.md).
+
 ### Vision-Language — 6
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
