@@ -36,6 +36,34 @@ set(NPU_ENGINE_SOURCES
 
 add_executable(npu_engine_universal ${NPU_ENGINE_SOURCES})
 
+# ── FLM bridge TUs (bf16 GEMM + prefill) ────────────────────────────────────
+# npu_engine_universal.cpp calls flm_prefill_init/run, flm_decode_run and the
+# bf16mm_* GEMM/attention entry points. Those live in these two bridge TUs,
+# which must be compiled against FLM's own headers (lm_config/modules/npu_utils)
+# that clash with the engine's vendored stubs — hence a separate OBJECT library
+# rather than adding them to NPU_ENGINE_SOURCES (mirrors build_npu.sh, which
+# compiles each bridge as its own TU and links FLM's libs at the end).
+set(FLM_ROOT "/home/bcloud/.local/flm-v0946" CACHE PATH "FLM install root (libs + headers)")
+set(FLM_INC "${FLM_ROOT}/include" CACHE PATH "FLM include dir")
+set(FLM_LIB "${FLM_ROOT}/lib/xrt" CACHE PATH "FLM xrt lib dir")
+
+add_library(npu_flm_bridges OBJECT
+    ${NPU_SRC_DIR}/npu_engine_bf16_mm_bridge.cpp
+    ${NPU_SRC_DIR}/flm_prefill_bridge.cpp
+)
+set_target_properties(npu_flm_bridges PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON)
+target_include_directories(npu_flm_bridges PRIVATE
+    ${NPU_SRC_DIR}
+    ${FLM_INC}
+    ${FLM_INC}/npu_utils)
+target_compile_options(npu_flm_bridges PRIVATE -O2)
+# flm_prefill_bridge pulls FLM's qwen3_npu prefill (AVX2 host paths) and the
+# climits-dependent model headers; bf16mm bridge needs neither.
+set_source_files_properties(${NPU_SRC_DIR}/flm_prefill_bridge.cpp PROPERTIES
+    COMPILE_OPTIONS "-mavx2;-include;climits")
+
 # ── #embed freshness (issue #1957) ────────────────────────────────────────
 # npu_embedded.h bakes the xclbin/insts artifacts into the binary at compile
 # time (P1967 #embed). If an artifact is regenerated (e.g. a new
@@ -99,11 +127,18 @@ if(ONEBP_SUPPORT)
     target_compile_definitions(npu_engine_universal PRIVATE ONEBP_SUPPORT)
 endif()
 
+target_link_directories(npu_engine_universal PRIVATE ${FLM_LIB})
 target_link_libraries(npu_engine_universal
     m dl pthread uuid
     OpenMP::OpenMP_CXX
     aiebu
+    npu_flm_bridges
+    gemm dequant qwen3_npu qwen3_6_moe_npu qwen3_5vl_npu q4_npu_eXpress
+    mha lm_head llama_npu gemma4e_npu phi4_npu nanbeige_npu lfm2_npu
 )
+# FLM's closed-source .so set lives in a non-standard dir; embed it on the
+# rpath so the binary finds them without LD_LIBRARY_PATH (matches build_npu.sh).
+target_link_options(npu_engine_universal PRIVATE "-Wl,-rpath,${FLM_LIB}")
 
 target_compile_options(npu_engine_universal PRIVATE
     -O3 -ffast-math -march=native -funroll-loops -fno-math-errno -mavx2
