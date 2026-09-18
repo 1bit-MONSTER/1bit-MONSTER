@@ -1,3 +1,10 @@
+> **SUPERSEDED 2026-09-18.** The numbers below were taken with a harness that scored
+> only the first 200 characters of each arm's output and used fixed `/tmp` paths, and the
+> runlist `layer.xclbin` was later replaced under the engine. Re-measured with the
+> corrected harness and a pinned `LAYER_XCLBIN`: **native 20/20 vs FLM oracle 20/20**,
+> I1 OK=20 MISMATCH=0 (see `RESULTS-oracle-scoreboard-corrected-2026-09-18.md`). The
+> 10-vs-9 rows below are measurement artefacts and must not be cited.
+
 # Qwen3-1.7B oracle accuracy vs the FLM oracle (20-prompt set) — 2026-09-16
 
 Closes the (b) gap the independent auditor raised: the 20-prompt scoreboard previously
