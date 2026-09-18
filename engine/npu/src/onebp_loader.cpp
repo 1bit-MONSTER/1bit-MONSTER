@@ -239,6 +239,12 @@ public:
     }
     size_t map_size() const { return map_size_; }
     const std::vector<TensorEntry>& debug_tensors() const { return tensors_; }
+    // Folded Prism packs carry a Hadamard transform manifest; any backend that cannot
+    // apply it must REFUSE the model rather than serve folded weights as plain (R15).
+    bool has_prism_transform() const {
+        for (auto& t : tensors_) if (t.name == "__onebp_ext_prism_transform") return true;
+        return false;
+    }
     const TensorEntry* find_tensor(const char* name) const {
         for (auto& t : tensors_)
             if (t.name == name) return &t;

@@ -25,4 +25,10 @@ struct OnebpModel {
     ~OnebpModel();
     bool load(const char* path);
     uint8_t* tensor_data(const OnebpTensor& t);
+    // __onebp_ext_* metadata entries are not weights; a folded pack's transform lives
+    // there. Backends that cannot apply it must fail closed (never serve folded as plain).
+    bool has_prism_transform() const {
+        for (const auto& t : tensors) if (t.name == "__onebp_ext_prism_transform") return true;
+        return false;
+    }
 };

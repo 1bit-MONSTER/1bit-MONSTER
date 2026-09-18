@@ -399,6 +399,14 @@ struct GenericBackend : Backend {
             fprintf(stderr, "Generic: failed to open 1BP\n");
             return false;
         }
+        // Fail closed (R15): the CPU path applies no folded-basis transform, so a Prism
+        // folded pack must be refused, never served as if its weights were plain.
+        if (tq2_->has_prism_transform()) {
+            fprintf(stderr, "Generic: refusing folded Prism pack '%s' -- the CPU path does "
+                            "not apply the Hadamard transform; serve it via the Prism HIP "
+                            "backend instead\n", path.c_str());
+            return false;
+        }
         NpuOnebpModel& model = *tq2_;
         auto& h = model.header();
         packed_ = (h.quant == ONEBP_TQ2) && !getenv("GENERIC_NO_PACKED") && cpu_has_packed_isa();
