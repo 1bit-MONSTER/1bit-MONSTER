@@ -512,7 +512,11 @@ int main(int argc, char** argv) {
     // (shape.size() != 2 filtered out every 1D tensor), which meant every
     // .1bp file ever produced was missing all its normalization weights —
     // structurally incapable of correct inference. See issue #1023.
-    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; int alias_of = -1; bool raw_q4nx = false; };
+    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; int alias_of = -1; bool raw_q4nx = false;
+                   bool prism_verbatim = false;      // v5: payload is a verbatim Prism packing
+                   bool ext_meta = false;            // v5: __onebp_ext_* metadata entry (raw bytes)
+                   std::vector<uint8_t> raw_payload;  // ext_meta payload
+    };
     std::vector<TInfo> tensors;
     int tr = 32, tc = 256, gs = 32;
 
@@ -549,10 +553,57 @@ int main(int argc, char** argv) {
         printf("  MoE shape: row-major [experts, rows, cols]\n");
     }
 
+    // ── Prism ML verbatim pass-through (1BP v5) ──
+    // A Prism GGUF already stores weights in the layout our kernels consume
+    // (Q1_0_g128 / PQ2_0 == TQ2_0_g128 / PTQ1_0_g128), so the converter copies the
+    // payload byte-for-byte rather than dequantise + requantise. Requantising would
+    // be lossy twice (fp16 scales -> bf16, and a re-pack) for no benefit.
+    // Layouts and the flat-vs-tiled order rule: include/onebp_format.h,
+    // docs/research/prism-bonsai-27b/P0-findings.md.
+    auto prism_quant_for = [](uint32_t dt, OnebpQuant& out) -> bool {
+        switch (dt) {
+            case GGUF_DTYPE_Q1_0:   out = ONEBP_Q1_0_G128;   return true;
+            case GGUF_DTYPE_PQ2_0:  out = ONEBP_PQ2_0_G128;  return true;
+            case GGUF_DTYPE_PTQ1_0: out = ONEBP_PTQ1_0_G128; return true;
+            default: return false;
+        }
+    };
+    bool prism_mode = false;
+    bool no_prism_passthrough = (getenv("ONEBP_NO_PRISM_PASSTHROUGH") != nullptr);
+    OnebpQuant prism_dominant = ONEBP_F16;
+    for (const auto& tn : reader.tensor_names()) {
+        const auto* i2 = reader.tensor_info(tn);
+        OnebpQuant q2;
+        if (i2 && prism_quant_for(i2->dtype, q2)) { prism_mode = true; prism_dominant = q2; break; }
+    }
+    if (prism_mode && no_prism_passthrough)
+        printf("Prism packing detected (quant id %d) — PASSTHROUGH DISABLED: dequantising to F16 tiles\n",
+               (int)prism_dominant);
+    else if (prism_mode)
+        printf("Prism packing detected (quant id %d) — copying payloads verbatim (1BP v5)\n",
+               (int)prism_dominant);
+
     for (auto& tn : reader.tensor_names()) {
         auto* inf = reader.tensor_info(tn);
         if (!inf) continue;
         int ndim = (int)inf->shape.size();
+        OnebpQuant pq;
+        if (ndim == 2 && prism_quant_for(inf->dtype, pq) && !no_prism_passthrough) {
+            // GGUF stores the fastest-varying dim first: shape[0] = cols (input width),
+            // shape[1] = rows. 1BP stores dims as [rows, cols].
+            int c = (int)inf->shape[0], r = (int)inf->shape[1];
+            if (r <= 0 || c <= 0) continue;
+            if (c % 128 != 0) {
+                fprintf(stderr, "FATAL: %s input width %d is not a multiple of 128 — not a Prism packing\n",
+                        tn.c_str(), c);
+                return 1;
+            }
+            const uint64_t nb = onebp_prism_block_bytes(pq);
+            TInfo t{tn, 2, r, c, 1, 0, (uint64_t)r * (uint64_t)c / 128 * nb, pq};
+            t.prism_verbatim = true;
+            tensors.push_back(std::move(t));
+            continue;
+        }
         if (ndim == 1) {
             int len = (int)inf->shape[0];
             if (len <= 0) continue;
@@ -678,6 +729,94 @@ int main(int argc, char** argv) {
     // interleaved (index oc*(2*gc)+j*2+t). The engine loader expects
     // per-time-step blocks [t][j][oc] (t-major). Reorder in place so
     // dedup-hash and per-expert quantization both see the right slices.
+    // ── v5 ext entries: Prism Hadamard (folded-basis) metadata ──
+    // Carried as `__onebp_ext_*` index entries — never in the 256-byte header,
+    // whose reserved[0..5] bytes belong to vision_encoder.cpp's ViT dims.
+    if (prism_mode && !no_prism_passthrough) {
+        uint32_t hblock = 1024;
+        bool hgrouped = false;
+        std::vector<uint32_t> hwidths, hsigs;
+        std::vector<std::string> hfolded, hinverse;
+        reader.get_u32("prism.hadamard.block_size", hblock);
+        reader.get_bool("prism.hadamard.gdn_v_grouped", hgrouped);
+        reader.get_u32_array("prism.hadamard.sign_widths", hwidths);
+        reader.get_u32_array("prism.hadamard.sign_values", hsigs);
+        reader.get_string_array("prism.hadamard.weight_names", hfolded);
+        reader.get_string_array("prism.hadamard.inverse_weight_names", hinverse);
+        hdr.quant = prism_dominant;              // per-entry quant is authoritative;
+        hdr.scale_type = ONEBP_SCALE_F16;        // this keeps the header from lying
+        if (!hwidths.empty() && !hsigs.empty()) {
+            std::vector<OnebpPrismTransformWidth> w(hwidths.size());
+            uint64_t off = 0;
+            for (size_t i = 0; i < hwidths.size(); i++) {
+                w[i].width = hwidths[i];
+                w[i].value_offset = (uint32_t)off;
+                off += hwidths[i];
+            }
+            if (off != hsigs.size()) {
+                fprintf(stderr, "FATAL: prism.hadamard manifest mismatch — widths sum to %llu but "
+                                "there are %zu sign values\n",
+                        (unsigned long long)off, hsigs.size());
+                return 1;
+            }
+            auto find_idx = [&](const std::string& n) -> int {
+                for (size_t i = 0; i < tensors.size(); i++)
+                    if (tensors[i].name == n) return (int)i;
+                return -1;
+            };
+            std::vector<uint32_t> fi, ii;
+            int missing = 0;
+            for (const auto& n : hfolded)  { int k = find_idx(n); if (k < 0) { missing++; fprintf(stderr, "  missing folded tensor: %s\n", n.c_str()); } else fi.push_back((uint32_t)k); }
+            for (const auto& n : hinverse) { int k = find_idx(n); if (k < 0) { missing++; fprintf(stderr, "  missing inverse tensor: %s\n", n.c_str()); } else ii.push_back((uint32_t)k); }
+            if (missing) {
+                fprintf(stderr, "FATAL: %d transformed tensor(s) named by prism.hadamard.* are absent — refusing "
+                                "to write a file whose transform manifest cannot be honoured\n", missing);
+                return 1;
+            }
+            // Every folded matmul must be keyed by an input width that has signs.
+            int no_sign = 0;
+            for (uint32_t k : fi) {
+                bool ok = false;
+                for (uint32_t wd : hwidths) if ((uint32_t)tensors[k].cols == wd) { ok = true; break; }
+                if (!ok) { no_sign++; fprintf(stderr, "  folded tensor without a sign vector: %s (cols=%d)\n",
+                                             tensors[k].name.c_str(), tensors[k].cols); }
+            }
+            if (no_sign) {
+                fprintf(stderr, "FATAL: %d folded tensor(s) have no sign vector for their input width\n", no_sign);
+                return 1;
+            }
+            std::vector<uint8_t> blob(sizeof(OnebpPrismTransformHeader)
+                                      + w.size() * sizeof(OnebpPrismTransformWidth)
+                                      + (fi.size() + ii.size()) * sizeof(uint32_t) + 16, 0);
+            const size_t wrote = onebp_prism_transform_write(
+                blob.data(), blob.size(), hblock, hgrouped ? 1u : 0u,
+                w.data(), (uint32_t)w.size(),
+                fi.data(), (uint32_t)fi.size(), ii.data(), (uint32_t)ii.size());
+            if (!wrote) { fprintf(stderr, "FATAL: could not build the transform blob\n"); return 1; }
+            blob.resize(wrote);
+            std::vector<uint8_t> sgn(hsigs.size());
+            for (size_t i = 0; i < hsigs.size(); i++) {
+                if (hsigs[i] == 1) sgn[i] = 1;
+                else if (hsigs[i] == 0xFFFFFFFFu || hsigs[i] == 0xFFFFFFFEu) sgn[i] = (uint8_t)-1;
+                else { fprintf(stderr, "FATAL: sign value %u is not +/-1\n", hsigs[i]); return 1; }
+            }
+            TInfo tb{ONEBP_EXT_PRISM_TRANSFORM, 1, 1, (int)blob.size(), 1, 0, blob.size(), ONEBP_I8};
+            tb.ext_meta = true;
+            tb.raw_payload = std::move(blob);
+            const size_t blob_bytes = tb.raw_payload.size();
+            tensors.push_back(std::move(tb));
+            TInfo ts{ONEBP_EXT_PRISM_SIGNS, 1, 1, (int)sgn.size(), 1, 0, sgn.size(), ONEBP_I8};
+            ts.ext_meta = true;
+            ts.raw_payload = std::move(sgn);
+            tensors.push_back(std::move(ts));
+            printf("Prism transform: block %u, %zu widths, %zu signs, %zu folded, %zu inverse, "
+                   "gdn_v_grouped=%d, blob=%zu B\n",
+                   hblock, w.size(), hsigs.size(), fi.size(), ii.size(), (int)hgrouped, blob_bytes);
+        } else {
+            printf("Prism pack without transform metadata — plain (unfolded) weights\n");
+        }
+    }
+
     auto maybe_reorder_zaya_cca = [&](const TInfo& ti, std::vector<float>& fw) {
         if (ti.name.find("cca_conv_grp.weight") == std::string::npos) return;
         auto* inf = reader.tensor_info(ti.name);
@@ -697,7 +836,18 @@ int main(int argc, char** argv) {
         std::vector<float> fw;
         std::vector<uint8_t> raw;
         uint64_t h = 1469598103934665603ull;
-        if (t.raw_q4nx) {
+        if (t.ext_meta) {
+            // metadata entry: no source tensor, never deduped
+            t.offset = data_off; data_off += t.tiled;
+            continue;
+        } else if (t.prism_verbatim) {
+            // hash the RAW payload: exact, and it avoids materialising 6 GB of f32
+            if (!reader.get_tensor_raw(t.name, 128, (int)onebp_prism_block_bytes(t.tq), raw, nullptr)) {
+                fprintf(stderr, "\nFATAL: get_tensor_raw failed for %s during dedup pass\n", t.name.c_str());
+                return 1;
+            }
+            for (size_t i = 0; i < raw.size(); i++) { h ^= raw[i]; h *= 1099511628211ull; }
+        } else if (t.raw_q4nx) {
             if (!reader.get_tensor_raw(t.name, 8192, 5120, raw, nullptr)) {
                 fprintf(stderr, "\nFATAL: get_tensor_raw failed for %s during dedup pass\n", t.name.c_str());
                 return 1;
@@ -787,6 +937,34 @@ int main(int argc, char** argv) {
         count++;
         printf("  [%d/%zu] %s... ", count, tensors.size(), ti.name.c_str()); fflush(stdout);
         if (ti.alias_of >= 0) { printf("(alias of #%d)\n", ti.alias_of); continue; }  // v4 dedup: data already written
+        if (ti.ext_meta) {
+            // v5 metadata: raw bytes exactly as built (transform blob, sign vector).
+            // ndim==1 + ONEBP_I8 is the one case where ndim==1 does NOT mean raw f32.
+            if (!wf(fout, ti.raw_payload.data(), ti.raw_payload.size())) return 1;
+            printf("  %-50s (ext meta, %zu B raw)\n", ti.name.c_str(), ti.raw_payload.size());
+            continue;
+        }
+        if (ti.prism_verbatim) {
+            // v5: byte-for-byte copy of the source packing. One tensor's worth of
+            // bytes: rows*cols/128 blocks of 18/34/28 B, flat row-major.
+            const uint32_t nb = onebp_prism_block_bytes(ti.tq);
+            std::vector<uint8_t> raw;
+            uint64_t numel = 0;
+            if (!reader.get_tensor_raw(ti.name, 128, (int)nb, raw, &numel)) {
+                fprintf(stderr, "\nFATAL: get_tensor_raw failed for %s\n", ti.name.c_str());
+                return 1;
+            }
+            if (raw.size() != ti.tiled) {
+                fprintf(stderr, "\nFATAL: %s payload %zu B != tiled %llu B (numel=%llu)\n",
+                        ti.name.c_str(), raw.size(), (unsigned long long)ti.tiled,
+                        (unsigned long long)numel);
+                return 1;
+            }
+            if (!wf(fout, raw.data(), raw.size())) return 1;
+            printf("  %-50s %4dx%-6d verbatim %u B/128 -> %.2f MB\n",
+                   ti.name.c_str(), ti.rows, ti.cols, nb, ti.tiled / 1048576.0);
+            continue;
+        }
         // All tensors processed
         if (ti.raw_q4nx) {
             // dtype-43 tensors are already Q4NX tiles: copy the raw bytes verbatim

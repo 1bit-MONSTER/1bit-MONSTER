@@ -82,7 +82,7 @@
 #include <cmath>
 
 static constexpr uint32_t ONEBP_MAGIC        = 0x00504231;  // "1BP\0"
-static constexpr uint32_t ONEBP_VERSION      = 4;  // v2: per-entry quant field (mixed-quant files);
+static constexpr uint32_t ONEBP_VERSION      = 5;  // v2: per-entry quant field (mixed-quant files);
                                                   // v3: rope_theta_f / rope_freq_base_swa_f hold
                                                   // RAW f32 bits (v1/v2: theta*1000 fixed-point,
                                                   // which overflows for theta > 4.29e6 — Granite's
@@ -90,6 +90,12 @@ static constexpr uint32_t ONEBP_VERSION      = 4;  // v2: per-entry quant field 
                                                   // v4: dedup aliases — an index entry with
                                                   // bytes==0 is an alias whose offset field is the
                                                   // INDEX of an earlier tensor it shares data with
+                                                  // v5: Prism ML Bonsai 27B support — the three verbatim
+                                                  // Prism packings below, plus `__onebp_ext_*` metadata
+                                                  // entries (see ONEBP_EXT_PRISM_TRANSFORM). The 256-byte
+                                                  // header is UNCHANGED: the transform metadata lives in
+                                                  // the tensor index, so the ViT dimensions that
+                                                  // vision_encoder.cpp keeps in reserved[0..5] are untouched.
 
 // ─── Quantization types ────────────────────────────────────────────
 enum OnebpQuant : uint32_t {
@@ -104,6 +110,30 @@ enum OnebpQuant : uint32_t {
     ONEBP_TQ2BS = 8,      // Block-scaled ternary, per-16 FP8 E4M3 scales (5 B/block)
     ONEBP_Q4_ROCMFP4 = 9, // Codebook10 4-bit + dual UE4M3 scales (ROCmFP4, 4.50 bpw)
     ONEBP_Q4_ROCMFP4_FAST = 10, // Codebook10 4-bit + single UE4M3 scale (4.25 bpw)
+
+    // ═══ v5: verbatim Prism ML Bonsai packings (group 128) ═══
+    //  Payloads are stored BYTE-FOR-BYTE as Prism writes them, so converting a
+    //  Prism GGUF is a copy, not a requantisation: no rounding, no scale-type
+    //  change (their scales are fp16 and stay fp16), and the converter's gate is
+    //  byte equality. Our kernels already decode two of the three —
+    //  ONEBP_PQ2_0_G128 == TQ2_0_g128 code order (tests/q1_tq2_vk_ref.h) and
+    //  ONEBP_Q1_0_G128 == Q1_0_g128.
+    //  Layouts (see docs/research/prism-bonsai-27b/P0-findings.md):
+    //   Q1_0_G128   18 B/128 : [fp16 d][16 B sign bits, bit l of byte il -> elem 8*il+l]
+    //   PQ2_0_G128  34 B/128 : [fp16 d][32 B 2-bit codes, LSB-first, 16 per u32]
+    //                          value = code*d - d = {-d,0,+d,+2d}; code 3 never emitted
+    //   PTQ1_0_G128 28 B/128 : [24 B qs][2 B qh][fp16 d], base-3 (1.75 bpw), and the
+    //                          element order is NOT positional — see
+    //                          include/gguf_reader.h's PTQ1_0 dequant case.
+    //  ORDER (important): these three payloads are stored FLAT, row-major per tensor
+    //  (row 0's cols/128 blocks, then row 1's, ...), exactly as the source GGUF has
+    //  them — NOT in the 32x256 tile grid that Q4NX/TQ2/F16 use. The total size is
+    //  identical either way (a 128-block is the atomic unit), so only a reader that
+    //  knows this distinction can decode them; a reader that assumes the tile grid
+    //  would silently permute weights.
+    ONEBP_Q1_0_G128   = 11,
+    ONEBP_PQ2_0_G128  = 12,
+    ONEBP_PTQ1_0_G128 = 13,
 };
 
 // ─── Scale types ───────────────────────────────────────────────────
@@ -325,6 +355,167 @@ static inline long onebp_embed_padding_rows(size_t embed_elems, int vocab, int h
 
 // ─── Compute tiled size for a weight matrix ──────────────────────
 // Returns bytes needed after tiling rows×cols to tile_rows×tile_cols
+// ─── v5: verbatim Prism block geometry ────────────────────────────
+// Bytes per 128-weight block for the verbatim Prism packings; 0 for any
+// other quant. Kept in one place so the converter, the loader and the
+// codec oracle cannot drift apart.
+static inline uint32_t onebp_prism_block_bytes(uint32_t quant) {
+    switch (quant) {
+        case ONEBP_Q1_0_G128:   return 18;
+        case ONEBP_PQ2_0_G128:  return 34;
+        case ONEBP_PTQ1_0_G128: return 28;
+        default: return 0;
+    }
+}
+
+// ─── v5: `__onebp_ext_*` metadata entries ───────────────────────────
+// Some models need metadata that is not a weight and not a header scalar — a
+// rotation basis, for instance. Rather than grow the 256-byte header (whose
+// `reserved[0..5]` bytes are already claimed by vision_encoder.cpp for ViT
+// dimensions), v5 carries such metadata as ordinary 1-D index entries whose
+// name starts with ONEBP_EXT_PREFIX. Weight-binding code must skip them; a
+// loader that ignores them entirely still loads every weight correctly, it just
+// cannot apply the transform (and must then refuse the model — see
+// docs/research/prism-bonsai-27b for the fail-closed rule).
+//
+// Prism ML "folded" packs store W' = W·H (blockwise normalized Sylvester–Walsh
+// Hadamard) and apply the matching transform to activations at runtime, with the
+// inverse transform on the token embedding. Two ext entries describe that:
+//   __onebp_ext_prism_transform : the blob below (kind/axis/block size, the
+//       distinct sign-vector widths, and the folded / inverse tensor indices)
+//   __onebp_ext_prism_signs     : int8 payload, one +1/-1 per sign value, all
+//       widths concatenated in `value_offset` order
+//
+// Representation: an ext entry is ndim==1 with quant ONEBP_I8, and its payload is
+// RAW BYTES of length `bytes` (not f32, unlike ordinary 1-D weight tensors). That is
+// the one place in the format where ndim==1 does not mean "raw f32"; the converter
+// must never emit a weight tensor as ndim==1 + ONEBP_I8, and a loader that reads
+// `__onebp_ext_*` entries must use `bytes`, not dims[0]*4.
+static constexpr uint32_t ONEBP_PRISM_TRANSFORM_MAGIC = 0x48525450;  // "PTRH"
+static constexpr char ONEBP_EXT_PREFIX[]          = "__onebp_ext_";
+static constexpr char ONEBP_EXT_PRISM_TRANSFORM[] = "__onebp_ext_prism_transform";
+static constexpr char ONEBP_EXT_PRISM_SIGNS[]     = "__onebp_ext_prism_signs";
+
+enum OnebpTransformKind : uint32_t {
+    ONEBP_TRANSFORM_NONE = 0,
+    ONEBP_TRANSFORM_HADAMARD_SYLVESTER_WALSH = 1,  // normalized, 1/sqrt(B)
+};
+enum OnebpTransformAxis : uint32_t {
+    ONEBP_TRANSFORM_AXIS_INPUT_LAST = 0,  // rotate the last (input) axis
+};
+
+#pragma pack(push, 1)
+struct OnebpPrismTransformHeader {
+    uint32_t magic;          // ONEBP_PRISM_TRANSFORM_MAGIC
+    uint32_t version;        // 1
+    uint32_t kind;           // OnebpTransformKind
+    uint32_t axis;           // OnebpTransformAxis
+    uint32_t block_size;     // 1024 for Prism Bonsai 2 (power of two)
+    uint32_t gdn_v_grouped;  // 1 = GDN value heads in Prism's grouped layout
+    uint32_t n_widths;       // distinct sign-vector widths
+    uint32_t sign_count;     // total sign values == sum of widths
+    uint32_t n_folded;       // tensors stored folded (W' = W·H)
+    uint32_t n_inverse;      // tensors needing the inverse transform (embedding)
+    uint32_t flags;          // 0
+    uint32_t reserved0;      // 0
+};
+struct OnebpPrismTransformWidth {
+    uint32_t width;         // activation (input) width this vector applies to
+    uint32_t value_offset;  // offset in VALUES into the signs payload
+};
+#pragma pack(pop)
+
+struct OnebpPrismTransformView {
+    const OnebpPrismTransformHeader* hdr = nullptr;
+    const OnebpPrismTransformWidth* widths = nullptr;
+    const int8_t* signs = nullptr;      // sign_count values, +1/-1
+    const uint32_t* folded = nullptr;   // n_folded tensor indices (index order)
+    const uint32_t* inverse = nullptr;  // n_inverse tensor indices (index order)
+
+    // Index of the sign vector for an input width, or -1. Folded matmuls are
+    // keyed by their *input* width (Prism's axis == input-last-dimension).
+    int width_index(uint32_t w) const {
+        for (uint32_t i = 0; hdr && i < hdr->n_widths; i++)
+            if (widths[i].width == w) return (int)i;
+        return -1;
+    }
+    const int8_t* signs_for_width(uint32_t w) const {
+        int i = width_index(w);
+        return i < 0 ? nullptr : signs + widths[i].value_offset;
+    }
+};
+
+// Parse an `__onebp_ext_prism_transform` payload together with its sign payload.
+// Every pointer aliases the caller's buffers; nothing is copied. Rejects a
+// non-contiguous or over-long width table, a non-power-of-two block size, and a
+// sign payload shorter than the declared count.
+static inline bool onebp_prism_transform_parse(const uint8_t* blob, size_t blob_bytes,
+                                              const int8_t* sign_payload, size_t sign_values,
+                                              OnebpPrismTransformView& out) {
+    if (!blob || blob_bytes < sizeof(OnebpPrismTransformHeader)) return false;
+    const auto* h = reinterpret_cast<const OnebpPrismTransformHeader*>(blob);
+    if (h->magic != ONEBP_PRISM_TRANSFORM_MAGIC || h->version != 1) return false;
+    if (h->kind != ONEBP_TRANSFORM_HADAMARD_SYLVESTER_WALSH) return false;
+    if (h->block_size == 0 || (h->block_size & (h->block_size - 1)) != 0) return false;
+    const size_t need = sizeof(OnebpPrismTransformHeader)
+                      + sizeof(OnebpPrismTransformWidth) * (size_t)h->n_widths
+                      + sizeof(uint32_t) * (size_t)(h->n_folded + h->n_inverse);
+    if (blob_bytes < need) return false;
+    if (!sign_payload || sign_values < h->sign_count) return false;
+    const uint8_t* p = blob + sizeof(OnebpPrismTransformHeader);
+    out.hdr = h;
+    out.widths = reinterpret_cast<const OnebpPrismTransformWidth*>(p);
+    p += sizeof(OnebpPrismTransformWidth) * (size_t)h->n_widths;
+    out.folded = reinterpret_cast<const uint32_t*>(p);
+    p += sizeof(uint32_t) * (size_t)h->n_folded;
+    out.inverse = reinterpret_cast<const uint32_t*>(p);
+    out.signs = sign_payload;
+    uint64_t expect = 0;
+    for (uint32_t i = 0; i < h->n_widths; i++) {
+        if (out.widths[i].width == 0) return false;
+        if (out.widths[i].value_offset != expect) return false;  // contiguous by construction
+        if ((uint64_t)out.widths[i].width > (uint64_t)h->sign_count - expect) return false;
+        expect += out.widths[i].width;
+    }
+    return expect == h->sign_count;
+}
+
+// Serialize the transform blob (the signs go in their own entry). Returns the
+// number of bytes written, or 0 when `cap` is too small or the inputs are
+// inconsistent (a zero width, or a width table that is not contiguous).
+static inline size_t onebp_prism_transform_write(
+        uint8_t* dst, size_t cap, uint32_t block_size, uint32_t gdn_v_grouped,
+        const OnebpPrismTransformWidth* widths, uint32_t n_widths,
+        const uint32_t* folded, uint32_t n_folded,
+        const uint32_t* inverse, uint32_t n_inverse) {
+    const size_t need = sizeof(OnebpPrismTransformHeader)
+                      + sizeof(OnebpPrismTransformWidth) * (size_t)n_widths
+                      + sizeof(uint32_t) * (size_t)(n_folded + n_inverse);
+    if (!dst || cap < need) return 0;
+    OnebpPrismTransformHeader h{};
+    h.magic = ONEBP_PRISM_TRANSFORM_MAGIC;
+    h.version = 1;
+    h.kind = ONEBP_TRANSFORM_HADAMARD_SYLVESTER_WALSH;
+    h.axis = ONEBP_TRANSFORM_AXIS_INPUT_LAST;
+    h.block_size = block_size;
+    h.gdn_v_grouped = gdn_v_grouped;
+    h.n_widths = n_widths;
+    h.n_folded = n_folded;
+    h.n_inverse = n_inverse;
+    uint64_t off = 0;
+    for (uint32_t i = 0; i < n_widths; i++) {
+        if (widths[i].width == 0 || widths[i].value_offset != off) return 0;
+        off += widths[i].width;
+    }
+    h.sign_count = (uint32_t)off;
+    memcpy(dst, &h, sizeof(h));
+    uint8_t* p = dst + sizeof(h);
+    if (n_widths)  { memcpy(p, widths,  sizeof(OnebpPrismTransformWidth) * n_widths); p += sizeof(OnebpPrismTransformWidth) * n_widths; }
+    if (n_folded)  { memcpy(p, folded,  sizeof(uint32_t) * n_folded);  p += sizeof(uint32_t) * n_folded; }
+    if (n_inverse) { memcpy(p, inverse, sizeof(uint32_t) * n_inverse); }
+    return need;
+}
+
 static inline uint64_t onebp_tiled_size(
     uint32_t rows, uint32_t cols,
     uint32_t tile_rows, uint32_t tile_cols,
@@ -370,6 +561,17 @@ static inline uint64_t onebp_tiled_size(
             uint32_t blocks_per_row = (tile_cols + 31) / 32;
             tile_bytes = (uint64_t)tile_rows * blocks_per_row *
                          (quant == ONEBP_Q4_ROCMFP4_FAST ? 17 : 18);
+            break;
+        }
+        case ONEBP_Q1_0_G128:
+        case ONEBP_PQ2_0_G128:
+        case ONEBP_PTQ1_0_G128: {
+            // Verbatim Prism payloads: dense group-128 blocks, no regrouping.
+            // 128 divides tile_cols (256) for the shipped tile geometry, so a
+            // tile carries tile_rows*tile_cols/128 whole blocks.
+            uint32_t nb = onebp_prism_block_bytes(quant);
+            if (tile_cols % 128 != 0) return 0;   // caller misconfigured the tile
+            tile_bytes = (uint64_t)tile_rows * (tile_cols / 128) * nb;
             break;
         }
         case ONEBP_F16:

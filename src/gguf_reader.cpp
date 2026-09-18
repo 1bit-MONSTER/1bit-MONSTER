@@ -407,6 +407,9 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         case GGUF_DTYPE_TQ2_0_LLAMA: return {256, 66};  // qs[64]+d[2]
         // Q1_0: fp16 scale (2) + 1-bit sign codes (128/8=16) = 18 bytes
         case GGUF_DTYPE_Q1_0: return {128, 18};
+        // Prism ML Bonsai 27B private ternary packings (group 128)
+        case GGUF_DTYPE_PQ2_0:  return {128, 34};
+        case GGUF_DTYPE_PTQ1_0: return {128, 28};
         // ROCmFP4: Codebook10 4-bit packed 2/byte + UE4M3 scales.
         //   Q4_0_ROCMFP4      : 16 code bytes + 2 scale bytes = 18 B/32 el
         //   Q4_0_ROCMFP4_FAST : 16 code bytes + 1 scale byte  = 17 B/32 el
@@ -487,8 +490,12 @@ bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
             }
             return true;
         }
-        case GGUF_DTYPE_TQ2_0_G128: {
+        case GGUF_DTYPE_TQ2_0_G128:
+        case GGUF_DTYPE_PQ2_0: {
             // TQ2_0 ternary: fp16 scale + 2-bit codes (0=-s, 1=0, 2=+s, 3=0)
+            // Prism PQ2_0 (dtype 142) is the same 34-byte block, d-first, same code order,
+            // with value = code*s - s: identical for codes 0..2 and only code 3 differs
+            // (Prism would say +2s; it is never emitted, so both map it to 0 here).
             for (int i = 0; i < count; i++) {
                 int bi = i / 128, ei = i % 128;
                 const uint8_t* blk = data + (size_t)bi * 34;
@@ -497,6 +504,31 @@ bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
                 if (c == 0) out[i] = -sc;
                 else if (c == 2) out[i] = sc;
                 else out[i] = 0.0f;
+            }
+            return true;
+        }
+        case GGUF_DTYPE_PTQ1_0: {
+            // Prism PTQ1_0 (dtype 143): qs[24] + qh[2] + fp16 d, group 128, 1.75 bpw.
+            // Element order is NOT positional (PrismML-Eng/llama.cpp @ prism,
+            // ggml/src/ggml-vulkan/vulkan-shaders/ptq1_0.glsl):
+            //   ei <  80 : byte qs[ei & 15],           trit exponent n = ei >> 4
+            //   ei < 120 : byte qs[16 + (t & 7)],      n = t >> 3,  t = ei - 80
+            //   else     : byte qh[t & 1],             n = t >> 1,  t = ei - 120
+            // trit = ((v * 3) >> 8) after n rounds of v = (v * 3) & 0xFF; value = (trit - 1) * d.
+            // Cross-checked against Prism's runtime/codec.py: see
+            // tests/prism/oracle_prism_codec.py and tests/prism/test_prism_dequant.cpp.
+            for (int i = 0; i < count; i++) {
+                int bi = i / 128, ei = i % 128;
+                const uint8_t* blk = data + (size_t)bi * 28;
+                float d = read_f16(blk + 26);
+                uint8_t b; int n;
+                if (ei < 80)       { b = blk[ei & 15];            n = ei >> 4; }
+                else if (ei < 120) { int t = ei - 80;  b = blk[16 + (t & 7)]; n = t >> 3; }
+                else               { int t = ei - 120; b = blk[24 + (t & 1)]; n = t >> 1; }
+                unsigned v = b;
+                for (int k = 0; k < n; k++) v = (v * 3u) & 0xFFu;
+                int trit = (int)((v * 3u) >> 8);
+                out[i] = (float)(trit - 1) * d;
             }
             return true;
         }

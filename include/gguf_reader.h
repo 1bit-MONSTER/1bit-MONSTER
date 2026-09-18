@@ -72,6 +72,17 @@ enum GgufDtype : uint32_t {
     // with the GGUF/engine tensor names instead of failing closed.
     GGUF_DTYPE_Q4NX_TILE = 43,
     GGUF_DTYPE_Q1_0     = 41,  // GGML_TYPE_Q1_0 — binary 1-bit: fp16 scale + sign bits, 128/block (18 B, QK1_0=128)
+    // Prism ML Bonsai 27B private ternary packings (group 128). Sources of truth:
+    // docs/research/prism-bonsai-27b/P0-findings.md and Prism's own
+    // Ternary-Bonsai-2-27B-mlx-2bit/runtime/codec.py.
+    GGUF_DTYPE_PQ2_0    = 142, // fp16 d + 32 B of 2-bit codes (34 B/128); value = code*d - d,
+                               // i.e. {-d, 0, +d, +2d}; the model card says code 3 is never emitted
+                               // (verified: 0 code-3 slots in 348k sampled elements) and our decode
+                               // maps it to 0 like GGUF_DTYPE_TQ2_0_G128 does.
+                               // NOT to be confused with dtype 42 above: 42 is upstream Q2_0 at
+                               // group 64, which a Prism dspark-Q4_1 GGUF does use.
+    GGUF_DTYPE_PTQ1_0   = 143, // qs[24] + qh[2] + fp16 d (28 B/128), 1.75 bpw. The element order is
+                               // explicitly NOT positional — see the dequant case in gguf_reader.cpp.
     // llama.cpp native ternary block types (GGML_TYPE values from ggml.h)
     GGUF_DTYPE_TQ1_0_LLAMA = 34,  // GGML_TYPE_TQ1_0 — 1.6875 bpw base-3 ternary
     GGUF_DTYPE_TQ2_0_LLAMA = 35,  // GGML_TYPE_TQ2_0 — 2.0625 bpw 2-bit ternary
