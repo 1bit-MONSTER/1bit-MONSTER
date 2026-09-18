@@ -239,11 +239,20 @@ build`), ends with "1 GATE(S) SKIPPED - THIS IS NOT A GREEN RUN", and exits non-
 independently rejects the same log for an undeclared skip. On the real tree, P3.3 now PASSES on all three packs,
 so the gate is green because it ran, not because nobody noticed it was absent.
 
-**One flake observed and not reproduced.** One run under a heavily loaded box reported `failed=1` with P3.3
-passing on all three packs; three subsequent runs on the same tree were clean at `passed=53 failed=0 skipped=0`.
-The failing gate's name is unknown because I deleted that log before examining it - a process error of mine, and
-the same class of mistake as destroying an instrument's output - so it is recorded as an unexplained flake to
-watch rather than as a resolved item. The counts line is what surfaced it, which is the argument for the change.
+**One flake observed, three hypotheses tested, none surviving - and it stays unexplained because I deleted the
+log that would have settled it.** The kernel owner offered the GDN recurrence race as the owner of this failure, on
+good grounds: a barrier-ordering race presents exactly as a load-dependent probabilistic failure, and this failing
+run was under heavy load. **The timeline refutes it.** The race window ran from the 2-way split to its fix, and the
+failing run is described in a commit made well after that fix, in prose written minutes after the run - and the
+suite rebuilds its binaries from the tree, so the racy kernel cannot have been in it. Two further candidates were
+tested and dropped by inspection rather than argument: no gate carries a wall-clock timeout short enough to flake
+under load (the only ones are an hour long), and no gate writes to a fixed path - every gate output goes to the
+run's own temporary directory - so concurrent runs cannot collide on one. What remains is a single unexplained
+failure, and it is unexplainable **because I deleted that log before reading it**: the failure survived only as
+prose, with no timestamp and no gate name. Rule adopted: **a failure log is kept until its failure is attributed.**
+That is the same rule as not destroying an instrument's output, applied to the one artefact that could have settled
+this. The planned test, when the box next settles, is a repeat sweep of the full suite - safe now that runs are
+serialized - expecting zero failures; until then this record says unexplained, not resolved.
 
 ## 4d. P5 fallback (Vulkan/ZINC) - third column NOT PRODUCED, runtime blocked by a third-party defect
 
