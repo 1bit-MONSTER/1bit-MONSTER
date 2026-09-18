@@ -1098,11 +1098,11 @@
  },
  "declared_dangling": {},
  "generated": {
-  "at": "2026-09-18T02:49:12Z",
+  "at": "2026-09-18T02:53:08Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
   "host": "strixhalo",
-  "ref": "6f9960c29"
+  "ref": "f92337e56"
  },
  "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest --toolchain \"<compiler arm + versions>\" --script-revision \"<git rev of the generating script>\" and land it in the same commit as the artifact change. Those two flags are the point of this file: the artifacts carry no compiler marker to derive them from, so a rebuild that omits --toolchain records build.toolchain as null again (issue #2262).",
  "notes": [
@@ -1257,8 +1257,8 @@
   "distinct_builds_by_uuid": 122,
   "regular_artifacts": 142,
   "top_level_xclbin": 154,
-  "tracked_paths_under_dir": 584,
-  "tracked_top_level_entries": 323,
+  "tracked_paths_under_dir": 582,
+  "tracked_top_level_entries": 321,
   "txt_symlinks": 12,
   "xclbin_symlinks": 12
  },
