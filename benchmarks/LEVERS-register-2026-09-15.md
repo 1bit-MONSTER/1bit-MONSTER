@@ -887,3 +887,43 @@ bash build_bf16_xclbins.sh O:4096:2560:4 D:9728:2560:4                          
 
 Re-committing them would require (ii)'s manifest regeneration in the same commit, which is
 the reason not to treat them as tracked artifacts here.
+
+## 6.4 Correction to 6.3 (verified) — the deletion was 54 paths, and the gate cannot see it
+
+@agent-2f3c1b's correction is right on every number, re-verified here against
+`origin/main`:
+
+- `git show --stat a81662ab8` = **56 files changed, 54 of them `Bin N -> 0 bytes`** —
+  not the eleven 6.3 recorded (that was a partial `grep` of the same stat, and I quoted it
+  as the total). All are bf16 tiles: `final_bf16_{D×6,QKV×5,O×5,GU×5,U×3,G×3}` plus their
+  `insts_bf16_` pairs, ~29.6 MB.
+- `git ls-tree -r origin/main --name-only -- engine/npu/xclbins | grep -c final_bf16`
+  = **0**.
+- Recovery is lossless — the blobs are intact at the parent
+  (`git cat-file -e a81662ab8^:engine/npu/xclbins/final_bf16_QKV_K2048_N4096.xclbin` →
+  present), one command:
+  `git checkout a81662ab8^ -- <paths>`.
+- **`PROVENANCE.json` was never touched by `a81662ab8`, and origin/main's gate is GREEN**
+  (their run: "OK: matches PROVENANCE.json"). The manifest contains **zero** `final_bf16`
+  entries, so the 54 were never manifest-tracked and a later `--write-manifest` simply
+  stopped listing them. **The gate enforces consistency, not continuity** — which means the
+  remedy it prints ("regenerate and land the manifest in the SAME commit") is also the way
+  a silent loss is laundered into a green CI.
+
+Consequence, stated plainly: `git ls-tree -r HEAD | grep <name>` is not merely safer than
+reading your own commit's stat — **it is the only check**. Nothing in CI, red or green,
+will tell you a tracked binary disappeared. Filed upstream as **#2598** (manifest already
+keys by embedded `XclbBinUUID`, so an undeclared disappearance is a set difference; either
+refuse it or auto-write a `removed: [{uuid, paths, reason}]` line so a retirement is always
+visible).
+
+Also carried, since 6.3 quotes the flags: **#2597** makes `build.toolchain` and
+`build.generating_script_revision` non-null (aiecc mlir-aie 1.3.4 install_tmp/LLVM 23.0.0 +
+llvm-aie/Peano 21.0.0.2026080301+c9c5ecb7, aie2p-none-unknown-elf), which is the half
+#2262 asked for. Caveat: those fields are **manifest-level** while the artifact set spans
+many build days, so they name the producer of the regenerated artifact, not of all 122
+builds.
+
+This lane's disposition is unchanged and now *declared* rather than incidental: per-model
+xclbins are **build outputs**, rebuilt with the `build_bf16_xclbins.sh` lines in 6.3, not
+committed artifacts.
