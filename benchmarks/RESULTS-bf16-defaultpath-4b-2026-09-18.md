@@ -62,24 +62,47 @@ bash ~/npu-ab/npu_ab.sh --model <model> --flm-tag <tag> --engine ... --q4nx ... 
   --prompt /tmp/p_<ctx>.txt --ctx-k <k> --decode-tokens 8 --reps 1 --skip-native
 ```
 
-### 1k — GATED, and the verdict stands
+### 1k — GATED, and a decode-measurement correction that changes both verdicts
 
-| lane | prefill t/s | TTFT | decode t/s |
-|---|---:|---:|---:|
-| Qwen3-4B native bf16 | **653** | **1.568 s** | **20.0** |
-| Qwen3-4B FLM on-box (v1.0.4) | 495.95 | 1.979 s | 18.51 |
-| Qwen3-VL-4B native bf16 | **650** | **1.576 s** | 13.9 |
-| Qwen3-VL-4B FLM on-box | 501.91 | 1.946 s | **18.57** |
+The bf16 and runlist arms, on the identical id file, emit the identical stream
+(`[1] 576  [2] 3840  [3] 315  [4] 24231`, bf16 continuing `44295 22148 5812 2973`), so
+the 1k rows carry the gate. Their runlist prefills at 1024 are 59475 ms (Qwen3-4B, 58
+ms/token) and 57420 ms (VL-4B, 56 ms/token) — ~37x the bf16 prefill.
 
-Gate for both native rows: the bf16 arm and the runlist arm, on the identical id file,
-emit the identical stream — `[1] 576  [2] 3840  [3] 315  [4] 24231` (and the bf16 arm
-continues `44295 22148 5812 2973`). Qwen3-4B's runlist prefill at 1024 is 59475 ms
-(58 ms/token) and VL-4B's is 57420 ms (56 ms/token) — 37x the bf16 prefill.
+**The decode figures in the previous version of this document were warm-up artefacts.**
+Measured at **8** decode tokens, the native arms gave 20.0 tok/s (4B) and 13.9 tok/s
+(VL-4B) and I read a 1.08x win for one and a 0.75x deficit for the other. Measured at
+**32** decode tokens, with everything else identical, they are indistinguishable:
 
-Verdict: **Qwen3-4B meets the criterion-(c) clause at 1k** — prefill 1.32x FLM, TTFT faster
-by 0.41 s, decode 1.08x. **Qwen3-VL-4B does not**: prefill 1.29x and TTFT faster by 0.37 s,
-but decode is **0.75x FLM** (13.9 vs 18.57 tok/s). The two H=2560 variants do not behave
-alike on decode.
+```
+Qwen3-4B    32 tok: Prefill 1585 ms (1.548 ms/tok)  === 54.1 ms/tok (18 tok/s) | tokens=32
+Qwen3-VL-4B 32 tok: Prefill 1587 ms (1.550 ms/tok)  === 54.1 ms/tok (18 tok/s) | tokens=32
+```
+
+The first few decode steps include engine warm-up, so an 8-token window measures the
+transient, not the steady state — and for VL-4B the transient was 1.42x slower than 4B's,
+which is the whole of the "VL-4B decode deficit". **That deficit is withdrawn**, and the
+4B "1.08x decode" is withdrawn with it.
+
+Matched at 32 decode tokens (FLM via `npu_ab.sh --skip-native`, same passage/count):
+
+| model | lane | prefill t/s | TTFT | decode t/s | ratio |
+|---|---|---:|---:|---:|---|
+| Qwen3-4B | native bf16 | **646** | **1.585 s** | 18.5 | prefill 1.33x, TTFT −0.43 s, decode **0.99x** |
+| Qwen3-4B | FLM v1.0.4 | 486.87 | 2.016 s | 18.70 | |
+| Qwen3-VL-4B | native bf16 | **645** | **1.587 s** | 18.5 | prefill 1.21x, TTFT −0.24 s, decode **0.99x** |
+| Qwen3-VL-4B | FLM v1.0.4 | 533.87 | 1.829 s | 18.63 | |
+
+Verdict for both H=2560 models at 1k: **prefill and TTFT clauses met; the decode clause is
+NOT met** (0.99x — a hair below, and not a parity claim either way at this resolution).
+
+**This also puts every 8-decode-token row in
+`RESULTS-yardstick-defaultpath-2026-09-16.md` in question.** That document's table (0.6B,
+1.7B, 8B, Llama) states "8 decode tokens" and reports native decode at or above FLM
+throughout; if the same warm-up inflation applies — and for 0.6B it reported 80 vs FLM's
+73.72 with an 8-token window — then those decode clauses need re-measuring at >=32 tokens
+before they are cited. It is recorded here rather than silently fixed, because it affects
+the criterion-(c) verdict for models other than the two measured above.
 
 ### 8k — MEASURED BUT UNGATED; no parity claim is made
 
@@ -119,15 +142,16 @@ raised and the i8 G tile built (or the per-ctx ELF window extended past 8192) wo
 |---|---|---|---|
 | Qwen3-0.6B | yes, 1.01–1.34x @1k–8k | faster 1k–4k, −2% @8k | yes |
 | Qwen3-1.7B | yes, 1.03–1.34x | faster 1k–4k, −2% @8k | no, 0.64–0.98x |
-| Qwen3-4B | **yes @1k** 1.32x; 8k ungated | faster by 0.41 s @1k; 8k ungated | **yes @1k** 1.08x; 8k ungated |
+| Qwen3-4B | **yes @1k** 1.33x; 8k ungated | faster by 0.43 s @1k; 8k ungated | **no @1k** 0.99x; 8k ungated |
 | Qwen3-8B | yes @1k 4.09x, no @8k 0.71x | 3.9x faster @1k, slower @8k | yes |
 | Llama-3.1-8B | yes @1k 3.89x, no @8k 0.62x | 3.8x faster @1k, slower @8k | — |
-| Qwen3-VL-4B | **yes @1k** 1.29x | faster by 0.37 s @1k | **no @1k** 0.75x |
+| Qwen3-VL-4B | **yes @1k** 1.21x | faster by 0.24 s @1k | **no @1k** 0.99x |
 
 Criterion (c) as written remains **unmet**. What this document changes is the *shape* of the
 remaining gap: the H=2560 "blocked by mixed columns" cell is refuted, Qwen3-4B now has a
 **gated** 1k verdict at or above FLM on all three metrics, and Qwen3-VL-4B has a gated 1k
-verdict that **fails the decode clause** (0.75x). The remaining blockers are now: the
-8B/Llama 8k prefill/TTFT inversion (0.71x / 0.62x) with decode ahead; the 4B/VL-4B 8k row,
-which is ungated until `NPU_PROMPT_MAX` and the missing i8 `G_K2560_N9728` tile or the
-per-ctx ELF window are addressed; and VL-4B's decode deficit.
+verdict that fails the decode clause (0.99x, both models). The remaining blockers are now:
+the 8B/Llama 8k prefill/TTFT inversion (0.71x / 0.62x); the 4B/VL-4B 8k row, ungated until
+`NPU_PROMPT_MAX` and the missing i8 `G_K2560_N9728` tile or the per-ctx ELF window are
+addressed; the 0.99x decode at 1k for both H=2560 models; and a re-measurement of every
+other 8-decode-token row in the yardstick doc, whose warm-up content is now unknown.
