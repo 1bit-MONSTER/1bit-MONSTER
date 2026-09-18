@@ -227,7 +227,12 @@ looks like a hang. This document's own earlier sections (lines 63/88) already do
 gate, so the correct action was to re-read them rather than propagate the hang. With an ELF
 dir the model runs on the runlist: `Prefill 40 [runlist]`, 3638 ms, 77.5 ms/tok (13 tok/s).
 
-Status: **Llama-3.1-8B is not re-run under the corrected harness**, and is therefore neither
-verified nor refuted — a re-run is in flight from @agent-c6b96f and may well reproduce the
-20/20 in the addendum. Everything else in this correction (the `layer.xclbin` pin, the
+Status: **Llama-3.1-8B is VERIFIED under the corrected harness — the addendum's 20/20
+reproduces.** @agent-c6b96f's re-run: FLM oracle 20/20, native 20/20, answer-region 20/20,
+**I1 OK=20 MISMATCH=0**, runlist engaged (`Prefill 40 [runlist]`, 3638 ms / 91 ms per prompt
+token, decode 77.5 ms/tok) with `ENGINE_ENV="NPU_RUNLIST=1 NPU_LAYER_ELF_DIR=/tmp/llama-elfs"`
+(`8f83d5521`, `RESULTS-oracle-scoreboard-corrected-2026-09-18.md`). So the "blocked" rows in
+this document's Status table are superseded by the addendum after all — the sole error was
+the hang mechanism, now withdrawn. With this row, criterion (b) is complete: six models,
+I1 OK=120 MISMATCH=0 across all arms. Everything else in this correction (the `layer.xclbin` pin, the
 serialisation requirement, and VL-4B's 20/20 standing) is unaffected.

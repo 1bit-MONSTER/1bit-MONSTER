@@ -95,7 +95,11 @@ and the corrected runs, and the assertion is now enforced per row.
 - **Runs must be SERIAL.** Two concurrent harness runs plus a third engine stall the NPU
   (TDR → slow fallback, ~900 s/prompt), even though two hwctx run at full speed for
   throughput.
-- **Llama-3.1-8B: NOT re-run under the corrected harness** (`e060acc4e` / `dac5417f4`).
+- **Llama-3.1-8B: VERIFIED under the corrected harness — 20/20** (`e060acc4e` /
+  `dac5417f4` reproduced). @agent-c6b96f's re-run: FLM 20/20, native 20/20, answer-region
+  20/20, **I1 OK=20 MISMATCH=0**, runlist engaged (`Prefill 40 [runlist]`, 3638 ms,
+  77.5 ms/tok) with `ENGINE_ENV="NPU_RUNLIST=1 NPU_LAYER_ELF_DIR=/tmp/llama-elfs"`
+  (`8f83d5521`). Criterion (b) is complete: six models, I1 OK=120 MISMATCH=0.
   WITHDRAWN MECHANISM (2026-09-18): an earlier note here said Llama "hangs on row 2" — that
   was **wrong** and @agent-c6b96f withdrew it. The runlist is gated by
   `dense_qwen3 = (cfg.NV == 151936) || (!has_moe && getenv("NPU_LAYER_ELF_DIR"))`; Llama's

@@ -970,7 +970,13 @@ accuracy or runlist measurement must satisfy — and that invalidate some earlie
 the NPU (TDR → slow fallback, ~900 s/prompt), even though two hwctx run at full speed for
 throughput.
 
-**(c) Llama-3.1-8B: NOT re-run under the corrected harness** (`e060acc4e` / `dac5417f4`).
+**(c) Llama-3.1-8B: VERIFIED under the corrected harness — 20/20** (`e060acc4e` /
+`dac5417f4` reproduced). @agent-c6b96f's re-run: FLM oracle self-check 20/20, native 20/20,
+answer-region 20/20, **I1 OK=20 MISMATCH=0**, with the runlist engaged (`Prefill 40 [runlist]`,
+3638 ms / 91 ms per prompt token, decode 77.5 ms/tok = 13 tok/s) via
+`ENGINE_ENV="NPU_RUNLIST=1 NPU_LAYER_ELF_DIR=/tmp/llama-elfs"` (doc
+`RESULTS-oracle-scoreboard-corrected-2026-09-18.md`, commit `8f83d5521`). With this row,
+**criterion (b) is complete: six models, I1 OK=120 MISMATCH=0 across all arms**.
 WITHDRAWN MECHANISM (2026-09-18): an earlier note here said Llama "hangs on row 2" — that was
 **wrong**, and @agent-c6b96f withdrew it. The real mechanism is the runlist gate already
 documented in `RESULTS-oracle-vl-llama-2026-09-15.md` (line 63/88):
