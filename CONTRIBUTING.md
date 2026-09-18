@@ -159,14 +159,23 @@ make -C ~/torch2aie/examples/gemm_asymmetric_tile_buffering/config1 \
   kernelsrc=mm_ternary_tq2.cc aie_py_src=n1_core_tq2_placed.py \
   build/final_<M>x<K>x<N>_128x64x128.xclbin
 
-# Build the engine
+# Build the engine. It is its own CMake project (engine/npu/CMakeLists.txt:
+# project(npu-engine)), so configure it explicitly rather than reusing the
+# repo-root build/ from the zaya_server section above. These are the same two
+# commands the release and CI use — packaging/prebuilt/manifest.json records
+# them verbatim as this project's build_command.
+#
+# This step used to be a hand-written g++ line compiling a source file that no
+# longer exists anywhere in the tree (issue #2592), so it failed before it
+# started. The target builds more than one TU (it also pulls npu_runlist_bridge.cpp
+# and the npu-infer sources) — its own list is NPU_ENGINE_SOURCES in
+# engine/npu/CMakeLists.txt: npu_engine_universal.cpp, dequant_q4nx.cpp,
+# gemm_npu_instructions.cpp and zaya_decode.cpp, the last of which needs -mavx2,
+# already set by the CMake target.
 cd ../..
-g++ -std=c++23 -O3 -o build/npu_engine \
-  engine/npu/src/npu_engine_i8.cpp \
-  engine/npu/build/dequant_q4nx.o \
-  -I/opt/xilinx/xrt/include \
-  -L/opt/xilinx/xrt/lib64 \
-  -lxrt_coreutil -luuid -lm -ldl
+cmake -S engine/npu -B engine/npu/build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
+cmake --build engine/npu/build --target npu_engine_universal -j"$(nproc)"
+ls -lh engine/npu/build/npu_engine_universal
 ```
 
 See [docs/guides/building.md](docs/guides/building.md#step-3-build-int8-xclbins-one-time) for detailed xclbin generation steps.
@@ -362,8 +371,8 @@ cmake --build build -j$(nproc)
 ./build/test_bonsai_e2e
 ./build/zaya_e2e
 
-# NPU engine (Strix Halo only)
-./build/npu_engine
+# NPU engine (Strix Halo only) — built from engine/npu, not the repo-root build/
+./engine/npu/build/npu_engine_universal
 ```
 
 ### Benchmarking
