@@ -845,6 +845,14 @@
    "sha256": "6f4278672021cdc05c27e0db9f731e9aac2e7ca39200c20f85450e1e1675f421",
    "timestamp_utc": "2026-09-14T12:35:48Z"
   },
+  "a3caf364d3785018e7a0a15551e17ba0": {
+   "aliases": [],
+   "paths": [
+    "final_i8_MOE_GUSILU_zaya.xclbin"
+   ],
+   "sha256": "3eaac8f96dc0c01ed1ec3dc69ecc0601d2acd29a5a56e9c3c2d04d4f2180d143",
+   "timestamp_utc": "2026-09-18T13:13:36Z"
+  },
   "a3cdb924dac4ab3915cd91c808b9cec1": {
    "aliases": [],
    "paths": [
@@ -991,14 +999,6 @@
    ],
    "sha256": "8661373f06c5cfeebe9d818af422f88a206b81f140682f4437accf0c73e0adf7",
    "timestamp_utc": "2026-09-18T10:52:09Z"
-  },
-  "c4d1a7151b13adf9ec5cc28d0f54a0da": {
-   "aliases": [],
-   "paths": [
-    "final_i8_MOE_GUSILU_zaya.xclbin"
-   ],
-   "sha256": "e61ec9bdd5ba07af66fdc4324f98eba37629c859c28d8973ca3ca85eb085009c",
-   "timestamp_utc": "2026-08-28T14:29:48Z"
   },
   "c5d0bb9880e2f6f38655b2e6b62c84dc": {
    "aliases": [],
@@ -1254,7 +1254,7 @@
   }
  },
  "build": {
-  "generating_script_revision": "engine/npu/generators/n1_core_fused_gu_silu_d_p2.py @ 5e7309cba (D-phase B descriptor offset made nt-major)",
+  "generating_script_revision": "engine/npu/generators/n1_core_fused_gu_silu_d_p1.py @ cc2df0cdc (GU-phase B descriptor offset made nt-major)",
   "toolchain": "aiecc: mlir-aie 1.3.4 (/home/bcloud/mlir-aie install_tmp pairing, aiecc LLVM 23.0.0); core compiler: llvm-aie (Peano) 21.0.0.2026080301+c9c5ecb7, clang 21.0.0, target aie2p-none-unknown-elf, flags --peano --no-xchesscc --no-xbridge; XRT 2.26.0",
   "toolchain_note": "Recorded from the build that produced these artifacts, not read out of them: the AXLF metadata carries no chesscc/peano/llvm/aiecc/clang marker and PlatformVBNV is empty, so this value is only as good as the build that wrote it. Pass --toolchain to replace it."
  },
@@ -1271,7 +1271,6 @@
    "2026-08-21": 2,
    "2026-08-22": 4,
    "2026-08-27": 1,
-   "2026-08-28": 1,
    "2026-08-29": 5,
    "2026-08-30": 3,
    "2026-08-31": 1,
@@ -1282,12 +1281,12 @@
    "2026-09-14": 24,
    "2026-09-15": 9,
    "2026-09-16": 25,
-   "2026-09-18": 1
+   "2026-09-18": 2
   },
   "distinct_builds": 149,
-  "payload_bytes": 14213047,
+  "payload_bytes": 14201847,
   "redundant_bytes": 1713220,
-  "redundant_percent": 12.05,
+  "redundant_percent": 12.06,
   "timezone": "UTC (embedded AXLF TimeStamp, never mtime)",
   "top_days_utc": [
    {
@@ -1315,17 +1314,18 @@
  },
  "declared_dangling": {},
  "generated": {
-  "at": "2026-09-18T12:16:49Z",
+  "at": "2026-09-18T13:21:48Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
   "host": "strixhalo",
-  "ref": "7c132157e"
+  "ref": "cc2df0cdc"
  },
- "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest --toolchain \"<compiler arm + versions>\" --script-revision \"<git rev of the generating script>\" and land it in the same commit as the artifact change. Those two flags are the point of this file: the artifacts carry no compiler marker to derive them from, so a rebuild that omits --toolchain records build.toolchain as null again (issue #2262).",
+ "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest --toolchain \"<compiler arm + versions>\" --script-revision \"<git rev of the generating script>\" and land it in the same commit as the artifact change. Those two flags are the point of this file: the artifacts carry no compiler marker to derive them from, so a rebuild that omits --toolchain records build.toolchain as null again (issue #2262). A write that would DROP a recorded artifact refuses unless --allow-removals is passed, which records it in `removed` (issue #2598).",
  "notes": [
   "population.dangling_symlinks and population.alias_symlinks_in_tree are HOST-DEPENDENT: they were observed on generated.host. Installing fastflowlm at /opt/fastflowlm makes third-party links resolve, which says nothing about the repo. They are the only two keys compare() excludes - every other recorded field is compared against the tree, so a counter that drifts turns the gate red instead of sitting in this file unread (issue #2513). Symlink TARGETS are asserted (the symlinks and declared_dangling maps), never this split.",
   "declared_dangling lists the third-party targets that did not resolve on generated.host. It is a target map, not a resolution requirement.",
-  "streams records every tracked top-level *.txt: sha256 and bytes, or the target when the entry is an alias. These are what the engine uploads to the NPU, and the one payload a rebuild reproduces byte for byte (issue #2262). They were counted in population.tracked_top_level_entries and hashed nowhere: on 2026-09-18 appending TAMPER to insts_i8_G_qwen3_4b.txt left this gate at exit 0. census.payload_bytes still counts the xclbin bytes alone."
+  "streams records every tracked top-level *.txt: sha256 and bytes, or the target when the entry is an alias. These are what the engine uploads to the NPU, and the one payload a rebuild reproduces byte for byte (issue #2262). They were counted in population.tracked_top_level_entries and hashed nowhere: on 2026-09-18 appending TAMPER to insts_i8_G_qwen3_4b.txt left this gate at exit 0. census.payload_bytes still counts the xclbin bytes alone.",
+  "removed records artifacts that were in an earlier manifest and are no longer in the tree, with the hash they had and the reason given. It exists because compare() is a consistency check, so without it a deletion is absorbed by the very regeneration this file instructs you to perform - how 54 tracked artifacts left main in a81662ab8 with the gate green (issue #2598)."
  ],
  "observed": {
   "note": "host/path-variant facts, reported not asserted",
@@ -1478,6 +1478,18 @@
   "tracked_top_level_entries": 375,
   "txt_symlinks": 12,
   "xclbin_symlinks": 12
+ },
+ "removed": {
+  "c4d1a7151b13adf9ec5cc28d0f54a0da": {
+   "at": "2026-09-18T13:21:48Z",
+   "paths": [
+    "final_i8_MOE_GUSILU_zaya.xclbin"
+   ],
+   "reason": "rebuilt final_i8_MOE_GUSILU_zaya.xclbin + insts with the nt-major GU tile order fix (#2600); old artifact replaced, not dropped",
+   "ref": "cc2df0cdc",
+   "sha256": "e61ec9bdd5ba07af66fdc4324f98eba37629c859c28d8973ca3ca85eb085009c",
+   "timestamp_utc": "2026-08-28T14:29:48Z"
+  }
  },
  "schema": 1,
  "streams": {
@@ -1888,8 +1900,8 @@
    "sha256": "9ce6c2267c30844b8e0a3fc5908a4ad1136f34213e305cd070ded2cb217d8033"
   },
   "insts_i8_MOE_GUSILU_zaya.txt": {
-   "bytes": 296528,
-   "sha256": "60000ade2e59ea095cd6b10e3883f287276fabb7e400d0b67beb4e93cab5cccf"
+   "bytes": 199440,
+   "sha256": "15f00b08d39271f238d0b9f9b3ece23b6408043ea2cd6859a54bfb28864a279a"
   },
   "insts_i8_MOE_GU_qwen3.6-moe_35b.txt": {
    "bytes": 514320,
