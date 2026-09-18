@@ -1,3 +1,5 @@
+> **CORRECTION (2026-09-18): the decode column is WARM-UP (8-token window) and (c) decode fails for 0.6B too.** See the CORRECTION section at the end.
+
 # Criterion (c): the DEFAULT (bf16-prefill) path vs FLM, 1k..8k — Qwen3-0.6B
 
 The independent auditor is right that the previous "yardstick green" re-run did NOT
@@ -215,3 +217,61 @@ Criterion (c) as written — a yardstick re-run showing prefill/TTFT/decode >= F
 are (i) fix the two shape issues (a per-context column count for H=2560; an attention term
 that does not grow 20x by 8k) or (ii) renegotiate the criterion to name the models and
 metrics it actually covers (0.6B all three; 1.7B prefill; 8B/Llama prefill+TTFT at 1k).
+
+
+
+# CORRECTION (2026-09-18): the decode column below is WARM-UP, and (c)'s decode clause fails for 0.6B too
+
+Every row in this document used an **8-decode-token** window. @agent-c6b96f showed
+(`dbc1dc824`, `benchmarks/RESULTS-decode-window-warmup-2026-09-18.md`) that this window
+measures **engine warm-up**, not steady-state decode, and that the inflation is
+model-dependent.
+
+At a matched **32-token** window:
+
+| model | 8-token (this doc) | 32-token | note |
+|---|---:|---:|---|
+| Qwen3-0.6B | 80 tok/s | **69.9 tok/s** | the "80 vs FLM 73.72" row below was an artefact |
+| Qwen3-4B | 20.0 | **18.5** | its "1.08x win" was transient |
+| Qwen3-VL-4B | 13.9 | **18.5** | its "0.75x deficit" was transient too |
+
+Matched 32-token comparisons against FLM v1.0.4 (`dbc1dc824`):
+
+| model | ctx | prefill ratio | TTFT | decode ratio |
+|---|---:|---:|---|---:|
+| Qwen3-0.6B | 1k | **1.33x** | faster | **0.93x** |
+| Qwen3-0.6B | 8k | 1.01x | — | **0.99x** |
+| Qwen3-4B | 1k | 1.33x | faster | **0.99x** |
+| Qwen3-VL-4B | 1k | 1.21x | — | **0.99x** |
+
+**So the conclusion drawn below — "0.6B is the only model that satisfies prefill + TTFT +
+decode at 1k-8k" — is SUPERSEDED: the decode clause fails for 0.6B too** (0.93x at 1k, 0.99x
+at 8k) once the warm-up window is removed. Nothing in this document satisfies (c)'s decode
+clause as written; the prefill column (1.01-1.34x) and the TTFT column are the parts that hold.
+
+## The shortfall is localised, and recoverable (`57de78912`)
+
+Same binary, same prompt, 1024 ctx, 16 decode tokens, `NPU_RUNLIST_STATS=1`:
+
+| arm | exec | build | total |
+|---|---:|---:|---:|
+| bf16 prefill + runlist decode | 15.46-15.94 ms/tok | 1.5 ms/tok | **59 tok/s** |
+| runlist prefill + runlist decode | 12.48-12.50 ms/tok | 1.5 ms/tok | **82 tok/s** |
+
+Host build time is identical, so the **3.3 ms/token is device-side in the bf16 → runlist KV
+handoff**. At 32 tokens the pure runlist decode is **80 tok/s vs FLM's 75.25 — it beats FLM**;
+it is the default path's 69.9 that does not. **Recovering it would close (c) for 0.6B** while
+keeping prefill 1.33x and TTFT faster.
+
+`benchmarks/RESULTS-unified-decode-penalty-2026-09-18.md` specifies the next diagnostic (not
+run): dump the first 4 KB of the KV BO after each prefill for the same prompt/position and
+compare byte streams — candidates being KV layout/quantisation, the `NPU_PROMPT_MAX`-clamped
+length, and BO residency. That is the `(c)` decode target, and @agent-c6b96f has left it to
+this lane.
+
+## What is unaffected
+
+The prefill ratios, the TTFT direction, and the **gate** (the bf16 arm's token stream matching
+the byte-exact `NPU_RUNLIST=1` arm at 1k) are all unaffected — those were not warm-up
+measurements. The `layer.xclbin` pin requirement stands, and is now engine-level
+(`resolve_layer_xclbin()`, `2101ec20e`).
