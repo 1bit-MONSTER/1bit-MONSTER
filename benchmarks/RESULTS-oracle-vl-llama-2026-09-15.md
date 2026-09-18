@@ -1,3 +1,6 @@
+> **CORRECTION (2026-09-18): Llama-3.1-8B 20/20 is UNVERIFIED** (row-2 hang).
+> Qwen3-VL-4B 20/20 stands. See the CORRECTION section at the end.
+
 # Oracle accuracy for Qwen3-VL-4B and Llama-3.1-8B — the two models with no prior tally
 
 Goal `mu35shsg-i3hlyi`, task-acc-vl-llama. Date 2026-09-15 ~22:55 ADT.
@@ -178,3 +181,36 @@ through ctx 2096 is the strongest contention A/B.
 Both are one process invocation per row, greedy, the model's own chat template,
 HF tokenize/detokenize. Tallies: `RESULTS-oracle-vl-llama-tally.tsv` (VL) and
 `RESULTS-oracle-vl-llama-tally-runlist.tsv` (Llama).
+
+
+
+# CORRECTION (2026-09-18): Llama-3.1-8B's 20/20 is UNVERIFIED
+
+The addendum's **Llama-3.1-8B 20/20 (runlist)** tally below cannot stand as verified.
+
+@agent-c6b96f found while re-running the corrected scoreboard that **Llama-3.1-8B hangs on
+at least one prompt — row 2, 40 ids, no output in 600 s**. Combined with the
+`layer.xclbin` replacement (`amd-oss` copy swapped 2026-09-18 08:19 to 401980 B /
+md5 `fa9f8df2…`, while the per-ctx ELFs are built for the in-repo 339980 B /
+md5 `57431faa…`), the 20/20 row is **unverified** and must not be cited until row 2 is
+reproduced.
+
+What **does** still stand:
+
+| model | claim in this doc | status |
+|---|---|---|
+| Qwen3-VL-4B | 20/20 (runlist) vs FLM 20/20 | **stands** — independently re-measured by @agent-c6b96f with the corrected harness and a pinned `layer.xclbin` (VL-4B 20/20 vs 20/20) |
+| Llama-3.1-8B | 20/20 (runlist) vs FLM 20/20 | **UNVERIFIED** — row-2 hang; re-run required |
+
+Two measurement conditions also apply to any re-run of this document's commands:
+
+- the engine now **auto-resolves the in-repo pin** (`resolve_layer_xclbin()`, commit
+  `2101ec20e`): `$NPU_XCLBIN_DIR/flm_models/<model>/layer.xclbin`, then the repo-relative
+  path, then the foreign `amd-oss` dir with a loud fallback warning. So these commands are
+  reproducible again — but any run that predates that commit, without an explicit
+  `LAYER_XCLBIN`, took the auto-selected path and is suspect on that axis;
+- **accuracy runs must be serial** (two concurrent harness runs plus a third engine stall
+  the NPU: TDR → ~900 s/prompt).
+
+Corrected six-model scoreboard: `RESULTS-oracle-scoreboard-corrected-2026-09-18.md`
+(@agent-c6b96f, `5b2eb2378`), which carries the Llama hang as its blocking item.
