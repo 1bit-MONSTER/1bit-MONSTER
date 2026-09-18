@@ -85,6 +85,18 @@ __global__ void gemv_dense_kernel(const float* __restrict__ W, const float* __re
     if (threadIdx.x == 0) y[r] = s[0];
 }
 
+// Split the fused full-attn q projection [NH*2*HD] into contiguous q and gate. The store
+// layout is per-head [q_head | gate_head] (src/qwen3_5.cpp and prism_forward.cpp both do
+// qs[hh*HD+d]=qbuf[hh*2*HD+d], gt[hh*HD+d]=qbuf[hh*2*HD+HD+d]).
+__global__ void split_qgate_kernel(const float* __restrict__ qbuf, float* __restrict__ q,
+                                   float* __restrict__ gate, int NH, int HD) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= NH * HD) return;
+    const int hh = i / HD, d = i % HD;
+    q[i] = qbuf[(size_t)hh * 2 * HD + d];
+    gate[i] = qbuf[(size_t)hh * 2 * HD + HD + d];
+}
+
 }  // namespace
 
 extern "C" int prism_l2norm_heads_f32(float* x, int n_heads, int hd, void* stream) {
@@ -135,6 +147,16 @@ extern "C" int prism_gemv_dense_f32(const float* W, const float* x, float* y, in
     if (!W || !x || !y || rows <= 0 || cols <= 0) return 1;
     hipLaunchKernelGGL((gemv_dense_kernel), dim3(rows), dim3(256), 0, (hipStream_t)stream,
                        W, x, y, rows, cols);
+    HIP_CHECK(hipGetLastError());
+    return 0;
+}
+
+extern "C" int prism_split_qgate_f32(const float* qbuf, float* q, float* gate, int NH, int HD,
+                                    void* stream) {
+    if (!qbuf || !q || !gate || NH <= 0 || HD <= 0) return 1;
+    const int n = NH * HD, threads = 256, blocks = (n + threads - 1) / threads;
+    hipLaunchKernelGGL((split_qgate_kernel), dim3(blocks), dim3(threads), 0, (hipStream_t)stream,
+                       qbuf, q, gate, NH, HD);
     HIP_CHECK(hipGetLastError());
     return 0;
 }

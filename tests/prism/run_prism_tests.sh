@@ -131,6 +131,19 @@ if [ -x "$HIPCC" ]; then
   fi
 fi
 
+# Optional P3.3 gate: full 64-layer device forward (needs hipcc + the device).
+PFHIP=""
+if [ -x "$HIPCC" ]; then
+  if "$HIPCC" --offload-arch=gfx1151 -O3 -std=c++17 -I "$REPO/include" -I "$REPO/src" \
+      "$REPO/tests/prism/prism_forward_hip.hip" "$REPO/kernels/prism_hadamard_fwht.hip" \
+      "$REPO/kernels/prism_gemv.hip" "$REPO/kernels/prism_gdn.hip" "$REPO/kernels/prism_attn.hip" \
+      "$REPO/kernels/prism_ops.hip" "$REPO/src/onebp_model.cpp" -o "$TMP/pfhip" >/dev/null 2>&1; then
+    PFHIP="$TMP/pfhip"
+  else
+    echo "  (hipcc present but the full device forward failed to build — skipping)"
+  fi
+fi
+
 echo "== container / codec gates (no model file needed) =="
 run "1BP v5 transform blob + Prism geometry" "$TMP/t5"
 run "Prism codec round-trip (synthetic)" python3 "$REPO/tests/prism/roundtrip_prism_codec.py"
@@ -186,6 +199,10 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
     if [ -n "$PGDNL" ]; then
       run "$base: layer-0 DEVICE driver vs CPU reference" bash -c \
         "\"$PGDNL\" \"$bp\" 1000 > \"$TMP/drv.txt\" 2>&1 && python3 \"$REPO/tests/prism/compare_prism_layer0.py\" \"$TMP/drv.txt\" \"$TMP/l0_cpp.txt\""
+    fi
+    if [ -n "$PFHIP" ]; then
+      run "$base: DEVICE 64-layer forward vs fork oracle" \
+        python3 "$REPO/tests/prism/check_oracle_agreement.py" "$PFHIP" "$bp" "$base"
     fi
   fi
   if [ -f "$bp" ]; then
