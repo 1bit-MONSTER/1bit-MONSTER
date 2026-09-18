@@ -6,6 +6,36 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-16 (late) — strixhalo: the fused engine's K/V staging race, fixed; #2213 stays open
+
+State for whoever picks up the NPU/attention lane, so this is not re-derived.
+
+- **The pinned-source overwrite race the #2344 reproducer points at was live in
+  `engine/npu/src/npu_engine_fused.hip`**, and is now fixed in **PR #2436**
+  (`fix/2213-pinned-kv-staging-alias`, commit `5df955594`). K and V shared one
+  `hipHostMalloc` staging buffer; K was handed to `hipMemcpyAsync` and the same
+  buffer was refilled with V before anything synchronized, so the K cache could be
+  written with V. Re-measured on this box: **100.00%** corrupted at the engine's own
+  2 KB K row, 1.50% at a 5 us refill delay, 0.00% at 100 us. K and V now get one
+  pinned buffer each, both staged before either copy is issued; the reproducer's
+  previously *asserted* "correct caller" closing line is now measured as a control
+  and reads **0.00%**.
+- **#2213 does not close on this.** That issue's own status update rules the GPU/NPU
+  handoff out for the engine it measures ("the overlap design is a *different file*")
+  and leaves the device-side NPU/xclbin path as the remaining suspect. The fix is
+  real and independent; whether it is #2213's measured cause is still open.
+- **Correcting a merged claim**, because it is what deferred this fix: #2344's message
+  says "No committed recipe builds that file (nothing references it but docs) … a
+  change there cannot be built or verified from this tree." **`scripts/build_gpu_engine.sh`
+  does build it** — re-verified for this change, rc=0, binary produced. Anyone who
+  read that line and moved on should know the recipe was there.
+- **No NPU window was consumed** for this work: it is GPU-only (the reproducer needs
+  `/dev/kfd`, not `/dev/accel`), so rule 4 is untouched. `flm serve :8098` was left
+  running throughout.
+- Still **unclaimed and host-side**: #2307 (non-fused p1/p2 split int4 silently
+  corrupt — the decision it asks for is "fix or fail closed"), and #2113/#2150/#2152
+  have no worktree.
+
 ## 2026-09-15 (~06:30 ADT) — strixhalo: the AIE kernel route, and a source bug I reported that was already fixed
 
 Second entry from the post-reboot systems session. This one is mostly for **anyone building AIE
@@ -195,7 +225,7 @@ stay host-side otherwise. Device work is serialized, one invocation at a time.
 
 | issue | state |
 |---|---|
-| **#2307** | measured from `engine/npu/build/npu_engine`; my A/B/C "fused" row was invalid and I corrected it twice on the issue: the label was wrong, not the binary — at 2 tokens the same script-built binary does take the fused path (`[MoE L1 single dbg] corr=0.998469`, matching the 10:35Z table), while my table used 8 tokens plus a prompt argument and got the non-fused path (`[MoE L1 dbg] corr=0.999342`). Path selection is sensitive to the argv shape as well as the env, so an NPU number is only comparable with the full invocation quoted — the 10:35Z table from the cmake binary is the reference. **#2380** is open and covers the int4-split C2 gate only; `NPU_FUSED_SPLIT=1` has no C2 gate to chain to and is **not** covered |
+| **#2307** | measured from `engine/npu/build/npu_engine`; my A/B/C "fused" row was invalid and I corrected it twice on the issue: the label was wrong, not the binary — at 2 tokens the same script-built binary does take the fused path (`[MoE L1 single dbg] corr=0.998469`, matching the 10:35Z table), while my table used 8 tokens plus a prompt argument and got the non-fused path (`[MoE L1 dbg] corr=0.999342`). Path selection is sensitive to the argv shape as well as the env, so an NPU number is only comparable with the full invocation quoted — the 10:35Z table from the cmake binary is the reference. **#2380** is open and covers the int4-split C2 gate only; `NPU_FUSED_SPLIT=1` has no C2 gate to chain to and is **not** covered — **corrected 2026-09-16**: on current `main` the same `[C2gate]` block *is* reached by **both** two-launch paths (`NPU_FUSED_I4=1`, and `NPU_FUSED_SPLIT=1` via the `else` branch); only `FUSED_SINGLE` leaves early via `goto fused_single_done` (`zaya_decode.cpp:905`), which is why the default path is untouched. Do not add a second gate for the split path. Evidence in the #2307 issue comment |
 | **#2193** | the last facet (parent's embed pre-load reading floats from a quantized store) fixed in **#2379**, merged as `65f6b428b` |
 | **#2377** | filed by me: 6-way concurrency exhausts NPU host memory and the engine blames heap corruption; threshold bracketed, contention caveat above |
 | **#2213** | I posted one path-localisation result (17/17 identical on the i8-MoE path, which *supports* the fused-KV race finding rather than competing with it) and hold no further claim; the runlist lane's current work is not mine |

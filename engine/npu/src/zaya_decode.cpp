@@ -284,6 +284,21 @@ int zaya_decode_main(int argc, char** argv) {
     //   NPU_FUSED_I4=1     → int4 GU (always split; no int4 single-launch).
     const bool FUSED_SINGLE = FUSED && !FUSED_I4 &&
         !(getenv("NPU_FUSED_SPLIT") && atoi(getenv("NPU_FUSED_SPLIT")) == 1);
+    // Say which MoE path was resolved, once, before any of it runs. The dense
+    // engine announces `GU_split=%d`; this one announced nothing, and that is
+    // not academic: two lanes produced conflicting tables for issue #2307 and
+    // spent a round attributing the difference to the argv shape, because the
+    // only evidence of which path ran was the probe tag in the log - and the
+    // probes are shared between branches. Measured 2026-09-17 on zaya1-8b:
+    // the path follows the env alone; `$M 2` and `$M 8 prompt.txt` agree at a
+    // fixed env. One line removes the inference entirely.
+    fprintf(stderr, "[MoE path] %s  (resolved: fused=%d single=%d split=%d i4=%d)\n",
+            FUSED_SINGLE ? "fused single-launch (final_i8_MOE_FUSED_zaya.xclbin)"
+                         : FUSED_I4 ? "int4 split (final_i8_MOE_GUSILU_i4_zaya.xclbin)"
+                         : FUSED ? "int8 split (final_i8_MOE_GUSILU_zaya.xclbin)"
+                         : "non-fused, host-driven p1/p2 (final_i8_MOE_GUSILU_zaya.xclbin)",
+            (int)FUSED, (int)FUSED_SINGLE,
+            (int)(FUSED && !FUSED_SINGLE && !FUSED_I4), (int)FUSED_I4);
     std::vector<Layer> L(NC);
     char key[256];
     // Parallelize the per-layer model load (dequant ~15s single-threaded):
@@ -1396,14 +1411,26 @@ int zaya_decode_main(int argc, char** argv) {
                                         // keeps the old report-and-continue behaviour for diagnostics.
                                         if (bad && !(getenv("NPU_FUSED_I4_ALLOW_BAD") &&
                                                      atoi(getenv("NPU_FUSED_I4_ALLOW_BAD")) == 1)) {
+                                            // Name the path actually taken (issue #2307). This gate is
+                                            // shared by BOTH two-launch variants, but the message below was
+                                            // written when only the int4 one was known-broken: on
+                                            // NPU_FUSED_SPLIT=1 it named a path the operator was not on and
+                                            // pointed at an int4-only escape hatch. Verified on strixhalo
+                                            // 2026-09-17 that both variants reach this block and refuse
+                                            // (NPU_FUSED_SPLIT=1 -> rc=2 corr=0.022310956 bad=2048/2048;
+                                            // NPU_FUSED_I4=1 -> rc=2 corr=0.028206284 bad=2048/2048).
+                                            const char* gate_path = FUSED_I4
+                                                ? "int4 split path (NPU_FUSED=1 NPU_FUSED_I4=1)"
+                                                : "int8 split path (NPU_FUSED=1 NPU_FUSED_SPLIT=1)";
                                             fprintf(stderr,
                                                     "[C2gate] REFUSING to continue: %lld/%d int32 C2 elements "
-                                                    "mismatch (worst=%lld). The int4 split path is known-broken "
+                                                    "mismatch (worst=%lld). The %s is known-broken "
                                                     "(issue #2307) and would emit tokens it has just disproved. "
-                                                    "Use the fused path (NPU_FUSED=1, without NPU_FUSED_I4=1) or "
-                                                    "the int8 split path (no NPU_FUSED); set "
-                                                    "NPU_FUSED_I4_ALLOW_BAD=1 to continue anyway.\n",
-                                                    bad, d.H, worst);
+                                                    "Use the single-launch fused path (NPU_FUSED=1) or the "
+                                                    "non-fused split path (no NPU_FUSED); set "
+                                                    "NPU_FUSED_I4_ALLOW_BAD=1 (this gate's escape hatch, "
+                                                    "despite the int4 name) to continue anyway.\n",
+                                                    bad, d.H, worst, gate_path);
                                             exit(2);
                                         }
                                     }

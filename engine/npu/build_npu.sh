@@ -51,6 +51,14 @@ NPU_INFER_INC="$REPO_ROOT/npu-infer/include"
 # XRT headers at /usr/include, libs at system default path
 XRT_INC="/usr/include"
 
+# Create the build dir up front: its FIRST use is the one-time compiles directly
+# below, not the model loop. With `set -e` and no dir, a tree that has never been
+# built died on the very first gcc with
+#   Fatal error: can't create .../build/dequant_q4nx.o: No such file or directory
+# so a fresh clone could not build the engine at all. It only ever worked because
+# the directory happened to already exist on this box.
+mkdir -p "$BUILDDIR"
+
 # One-time: compile dequantizer
 if [ ! -f "$DEQUANT_O" ] || [ "$DEQUANT" -nt "$DEQUANT_O" ]; then
     echo "gcc -c -O3 -o $DEQUANT_O $DEQUANT"

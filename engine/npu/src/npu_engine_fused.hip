@@ -1196,9 +1196,14 @@ int main(int argc, char** argv) {
     // ── Persistent pinned staging (2026-08-15 restructure): replaces the
     // per-token std::vector allocs + pageable (synchronous) hipMemcpyAsync
     // copies with pinned buffers → true async H2D/D2H. ──
-    __half *q_f16 = nullptr, *kv_staging = nullptr, *attn_f16 = nullptr;
+    // K and V get SEPARATE pinned staging buffers. One buffer cannot hold both,
+    // and a pinned H2D source is a live DMA — refilling it for V while the K copy
+    // is still in flight corrupts the K cache (1bit-MONSTER#2213, reproducer #2344).
+    __half *q_f16 = nullptr, *kv_staging_k = nullptr, *kv_staging_v = nullptr,
+           *attn_f16 = nullptr;
     hipHostMalloc(&q_f16, (size_t)cfg.NH * cfg.HD * sizeof(__half));
-    hipHostMalloc(&kv_staging, (size_t)cfg.NKV * cfg.HD * sizeof(__half));
+    hipHostMalloc(&kv_staging_k, (size_t)cfg.NKV * cfg.HD * sizeof(__half));
+    hipHostMalloc(&kv_staging_v, (size_t)cfg.NKV * cfg.HD * sizeof(__half));
     hipHostMalloc(&attn_f16, (size_t)cfg.NH * cfg.HD * sizeof(__half));
     std::vector<float> residual(cfg.H);  // persistent per-layer residual copy
 
@@ -1255,20 +1260,24 @@ int main(int argc, char** argv) {
                           (size_t)cfg.NH * cfg.HD * sizeof(__half),
                           hipMemcpyHostToDevice, gpu_stream);
 
-            // Upload K
+            // Upload K and V — stage BOTH halves before issuing either copy.
+            // kv_staging_{k,v} are pinned (hipHostMalloc, above), so each H2D is a
+            // real DMA: the stream argument orders the two copies against each
+            // other, but it does not stop the host from overwriting a source one of
+            // them is still reading. Sharing a single buffer here loses the K
+            // upload to the V refill essentially every time — measured ~100%
+            // (engine/npu/tests/hip_pinned_src_overwrite_race.cpp, #2344).
             size_t kv_off = (size_t)context_len * cfg.NKV * cfg.HD;
             for (int kvh = 0; kvh < cfg.NKV; kvh++)
                 for (int d = 0; d < cfg.HD; d++)
-                    kv_staging[kvh * cfg.HD + d] = __float2half(qkv_out[cfg.NH * cfg.HD + kvh * cfg.HD + d]);
-            hipMemcpyAsync(&d_K_cache[kv_off], kv_staging,
-                          (size_t)cfg.NKV * cfg.HD * sizeof(__half),
-                          hipMemcpyHostToDevice, gpu_stream);
-
-            // Upload V
+                    kv_staging_k[kvh * cfg.HD + d] = __float2half(qkv_out[cfg.NH * cfg.HD + kvh * cfg.HD + d]);
             for (int kvh = 0; kvh < cfg.NKV; kvh++)
                 for (int d = 0; d < cfg.HD; d++)
-                    kv_staging[kvh * cfg.HD + d] = __float2half(qkv_out[cfg.NH * cfg.HD + cfg.NKV * cfg.HD + kvh * cfg.HD + d]);
-            hipMemcpyAsync(&d_V_cache[kv_off], kv_staging,
+                    kv_staging_v[kvh * cfg.HD + d] = __float2half(qkv_out[cfg.NH * cfg.HD + cfg.NKV * cfg.HD + kvh * cfg.HD + d]);
+            hipMemcpyAsync(&d_K_cache[kv_off], kv_staging_k,
+                          (size_t)cfg.NKV * cfg.HD * sizeof(__half),
+                          hipMemcpyHostToDevice, gpu_stream);
+            hipMemcpyAsync(&d_V_cache[kv_off], kv_staging_v,
                           (size_t)cfg.NKV * cfg.HD * sizeof(__half),
                           hipMemcpyHostToDevice, gpu_stream);
 
@@ -1339,7 +1348,8 @@ int main(int argc, char** argv) {
 
     lm_head.destroy();
     if (q_f16) hipHostFree(q_f16);
-    if (kv_staging) hipHostFree(kv_staging);
+    if (kv_staging_k) hipHostFree(kv_staging_k);
+    if (kv_staging_v) hipHostFree(kv_staging_v);
     if (attn_f16) hipHostFree(attn_f16);
 
     double gen_s = std::chrono::duration<double>(

@@ -122,6 +122,21 @@ else
     printf '%s\n' "$docs_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# Version manifest sync: Version consistency is a REQUIRED check (ruleset 19117606), and its
+# script began with `[ -f "$file" ] || return 0` — so a manifest that moved out of the tree
+# took its version check with it, silently. Two of its entries named a Homebrew formula that
+# has never existed here, and with every manifest deleted it still exited 0 (issue #2488).
+# The fix gives absence a failure path; these cases are what keeps it one.
+echo "== version manifest sync =="
+total=$((total+1))
+if vsync_out=$(bash Testing/version_sync_selfcheck.sh 2>&1); then
+    printf '%s\n' "$vsync_out" | sed 's/^/  /'
+    echo "✓ version_sync"
+else
+    echo "✗ version_sync"
+    printf '%s\n' "$vsync_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # Census diagnostics: one repo root, one policy set. Three scripts pinned ROOT
 # to the shared checkout and two carried a stale NON_TEXT_GEN copy (#2387), so a
 # worktree run read the wrong inputs and wrote the wrong tree — invisible,
@@ -132,6 +147,20 @@ if census_out=$("$PYTHON" Testing/census_scripts_selfcheck.py 2>&1); then
 else
     echo "✗ census_scripts"
     printf '%s\n' "$census_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+# The family manifest's declared mappings. `Testing/bringup_runner.sh` step 1 does
+# exactly this comparison and nothing invokes bringup_runner.sh (its step 3 needs
+# fixtures and torch), which is how two families came to declare MIMO and GLM —
+# tokens that do not exist in the enum (#2511). This runs the half that needs
+# neither fixtures nor a device.
+total=$((total+1))
+if manifest_out=$("$PYTHON" Testing/manifest_mapping_selfcheck.py 2>&1); then
+    echo "✓ manifest_mappings"
+    printf '%s\n' "$manifest_out" | grep -E "^  " | sed 's/^/  /'
+else
+    echo "✗ manifest_mappings"
+    printf '%s\n' "$manifest_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
 # Published coverage claims must equal the census. seo_sync rewrites them in the
@@ -167,6 +196,54 @@ else
     echo "✗ dedup converter: build/generate failed"
     [ $gen_rc -ne 0 ] && printf '%s\n' "$gen_log" | tail -5 | sed 's/^/    fixture:  /'
     [ $cc_rc -ne 0 ] && printf '%s\n' "$cc_log" | tail -5 | sed 's/^/    compiler: /'
+    fail=$((fail+1))
+fi
+
+# NPU engine build script: nothing in CI invokes engine/npu/build_npu.sh, so a
+# fresh clone could not build the NPU engine at all — it used its build dir 30
+# lines before creating it — and no job noticed until someone cloned (#2440).
+# A real build needs XRT, which a hosted runner has not got; this needs none,
+# because it stubs the compilers and tests the script's own file handling.
+echo "== NPU engine build script (stubbed compilers) =="
+total=$((total+1))
+if npu_build_out=$(bash Testing/npu_build_script_selfcheck.sh 2>&1); then
+    printf '%s\n' "$npu_build_out" | sed 's/^/  /'
+    echo "✓ npu_build_script"
+else
+    echo "✗ npu_build_script"
+    printf '%s\n' "$npu_build_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
+# NPU artifact lookup: the engine resolves an xclbin (xp) and an instruction
+# file (ip) per tensor slot. When ip() had no dimension-keyed fallback while
+# xp() did, slots whose instructions are committed under their shape rather than
+# a model tag silently fell back to the runtime generator, whose output is
+# single-core-row and wrong against a multi-row xclbin. Qwen3-4B's QKV and O hit
+# this. Needs no device and no compiler; has a built-in pre-fix control.
+echo "== NPU insts/xclbin lookup parity =="
+total=$((total+1))
+if insts_lookup_out=$(PYTHON="$PYTHON" bash Testing/npu_insts_lookup_selfcheck.sh 2>&1); then
+    printf '%s\n' "$insts_lookup_out" | sed 's/^/  /'
+    echo "✓ npu_insts_lookup"
+else
+    echo "✗ npu_insts_lookup"
+    printf '%s\n' "$insts_lookup_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
+# Provenance writer: build.toolchain can only come from the build that produced the
+# artifacts, and the committed manifest is null because the last rebuild ran the
+# documented command without --toolchain (#2262). The write path now refuses that,
+# so the omission cannot silently repeat; this pins the refusal and its escape hatches.
+echo "== xclbin provenance toolchain guard =="
+total=$((total+1))
+if toolchain_out=$(bash Testing/xclbin_toolchain_gate_selfcheck.sh 2>&1); then
+    printf '%s\n' "$toolchain_out" | sed 's/^/  /'
+    echo "✓ xclbin_toolchain_guard"
+else
+    echo "✗ xclbin_toolchain_guard"
+    printf '%s\n' "$toolchain_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
 

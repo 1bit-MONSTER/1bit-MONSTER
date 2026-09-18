@@ -459,10 +459,20 @@ static inline float softplus_f(float x){return x>20.0f?x:log1pf(expf(x));}
 // SIGABRT handler: prints diagnostic, then re-raises for default core dump
 // so the heap corruption root cause can be debugged. The measured results
 // are flushed to stderr before the re-raise.
+//
+// It must NOT assert a cause it cannot know. SIGABRT also arrives from an
+// uncaught C++ exception (std::terminate -> abort), and this handler used to
+// print "likely heap corruption from free(): invalid size" for those too. On
+// 2026-09-17 that cost a reader a detour into free() while the actual cause — an
+// xrt_core::system_error from an XRT ENOMEM — was printed two lines above it
+// (issue #2377). terminate_handler below now reports that case explicitly, and
+// this message points at the cause instead of naming one.
 static void sigabrt_handler(int sig) {
     // Async-signal-safe only (issue #1433): fprintf/fflush can deadlock when
     // SIGABRT fires from heap corruption while stdio/arena locks are held.
-    static const char m1[] = "\n[NPU engine] caught SIGABRT (likely heap corruption from free(): invalid size)\n";
+    static const char m1[] = "\n[NPU engine] caught SIGABRT — see the lines above for the cause.\n"
+                             "[NPU engine] (reported above as an uncaught exception? then it is not a heap\n"
+                             "[NPU engine]  problem. Nothing named a cause? then suspect a libc heap check.)\n";
     static const char m2[] = "[NPU engine] re-raising for core dump — see core.{pid} for backtrace\n";
     ssize_t r1 = write(2, m1, sizeof(m1) - 1);
     ssize_t r2 = write(2, m2, sizeof(m2) - 1);
@@ -470,6 +480,42 @@ static void sigabrt_handler(int sig) {
     // Reset handler to default and re-raise to get a core dump
     signal(SIGABRT, SIG_DFL);
     raise(SIGABRT);
+}
+
+// An uncaught C++ exception reaches SIGABRT through std::terminate, which is
+// indistinguishable from a libc heap abort at the signal level — so the only way
+// to report it honestly is from here, where the exception is still available.
+// Reports the exception type and what(), then aborts.
+//
+// write(2)-only by construction, for the same reason as sigabrt_handler (#1433):
+// this fires during OOM, when stdio locks may be held. The type name is the
+// mangled one — demangling needs __cxa_demangle, which allocates, and allocating
+// on the way to an OOM abort is exactly what must be avoided.
+static void terminate_handler() {
+    const char* what = "<unavailable>";
+    const char* type = "<non-std exception>";
+    try {
+        if (std::exception_ptr ep = std::current_exception()) {
+            try { std::rethrow_exception(ep); }
+            catch (const std::exception& ex) {
+                what = ex.what() ? ex.what() : "<null>";
+                type = typeid(ex).name();
+            }
+        }
+    } catch (...) {
+        // Reporting must never itself throw; keep the defaults and abort.
+    }
+    static const char p1[] = "\n[NPU engine] uncaught exception — this is NOT a heap-corruption abort\n"
+                             "[NPU engine]   type: ";
+    static const char p2[] = "\n[NPU engine]   what(): ";
+    static const char p3[] = "\n";
+    ssize_t r = 0;
+    r = write(2, p1, sizeof(p1) - 1); (void)r;
+    r = write(2, type, strlen(type)); (void)r;
+    r = write(2, p2, sizeof(p2) - 1); (void)r;
+    r = write(2, what, strlen(what)); (void)r;
+    r = write(2, p3, sizeof(p3) - 1); (void)r;
+    std::abort();
 }
 
 // ── GatedDeltaNet attention (single-token, CPU, ported from llama.cpp ggml-cpu/ops.cpp) ──
@@ -648,6 +694,9 @@ int main(int argc,char**argv){
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESETHAND; // allow one handler invocation; re-trigger = default (core dump)
     sigaction(SIGABRT, &sa, nullptr);
+    // An uncaught exception arrives at the same SIGABRT, so report that case
+    // where the exception is still reachable (issue #2377).
+    std::set_terminate(terminate_handler);
 
     if(argc<2){fprintf(stderr,"Usage: %s model.q4nx [decode_tokens] [input_tokens_file|-]\n",argv[0]);return 1;}
     // Check for --worker flag (subprocess protocol mode)
@@ -1326,7 +1375,10 @@ int main(int argc,char**argv){
         }
         return xd+"/final_i8_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";
     };
-    auto ip=[&](const char*t, int K=-1, int N=-1){
+    auto ip=[&](const char*t, int K=-1, int N=-1) -> std::string {
+        // Mirror xp(): try the full model_tag, then progressively strip leading
+        // underscore-separated vendor/format tokens, so vendor-prefixed model
+        // dirs find their per-model instruction file with no --model-tag.
         std::string base=xd+"/insts_i8_"+t, tag=cfg.model_tag;
         while(true){
             std::string tp=base+"_"+tag+".txt";
@@ -1334,6 +1386,16 @@ int main(int argc,char**argv){
             size_t u=tag.find('_'); if(u==std::string::npos||u==tag.size()-1) break;
             tag=tag.substr(u+1);
         }
+        // Then the dimension-keyed name, exactly as xp() falls back to the
+        // dimension-keyed xclbin.  Without this the two halves of a context can
+        // resolve from different names: a committed insts_i8_<t>_K<K>_N<N>.txt is
+        // never found, so init_i8() drops to the runtime generator -- and that
+        // generator emits single-core-row instructions, which per
+        // init_with_generator's own warning silently computes the WRONG result
+        // when paired with a multi-row (v27) xclbin.  Qwen3-4B hit exactly this
+        // for QKV and O: no insts_i8_QKV_qwen3_4b.txt / insts_i8_O_qwen3_4b.txt
+        // exists, while the committed insts_i8_QKV_K2560_N6144.txt and
+        // insts_i8_O_K4096_N2560.txt were present and never tried.
         if (K > 0 && N > 0) return base+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".txt";
         return base+"_"+cfg.model_tag+".txt";
     };
@@ -1506,7 +1568,13 @@ int main(int argc,char**argv){
             std::string xp_s=xp(t,K,N), ip_s=ip(t,K,N);
             FILE* f=fopen(ip_s.c_str(),"rb");
             if(f){fclose(f); return ctx.init(dev,xp_s.c_str(),ip_s.c_str(),4,NC);}
-            fprintf(stderr,"  No insts for %s, using runtime generator\n",t);
+            fprintf(stderr,
+                "  No insts for %s, using runtime generator\n"
+                "    WARN: %s does not exist. That generator emits SINGLE-CORE-ROW\n"
+                "    instructions; against a multi-row (v27) xclbin it silently computes\n"
+                "    the WRONG result, not merely a slower one. Commit or generate the\n"
+                "    instruction file rather than letting this pass (#2456).\n",
+                t, ip_s.c_str());
             return ctx.init_with_generator(dev,xp_s.c_str(),XM,K,N,NC);
         };
         fprintf(stderr,"  cq before init: MD=%d KD=%d ND=%d\n", cq.MD, cq.KD, cq.ND);
@@ -1521,7 +1589,8 @@ int main(int argc,char**argv){
             auto present=[](const std::string& p){
                 std::error_code ec; return std::filesystem::exists(p,ec);
             };
-            const std::string gx=xp("G",cfg.xclbin_g_k,cfg.xclbin_g_n), gi=ip("G");
+            const std::string gx=xp("G",cfg.xclbin_g_k,cfg.xclbin_g_n),
+                              gi=ip("G",cfg.xclbin_g_k,cfg.xclbin_g_n);
             fprintf(stderr,
                 "FAIL G: the split-G FFN artifacts are missing or unusable.\n"
                 "  why split-G : IM=%d; gu_split is selected when IM*2 > 14336 (here %d)\n"
@@ -1586,6 +1655,19 @@ int main(int argc,char**argv){
         // swapped for the single GU+SiLU launch. Opt-in (NPU_QWEN_I4=1) until
         // its per-weight fused corr gate passes. Geometry pinned from the p1_i4
         // generator (-M 8 -K H -N_GU 2*IM -N_D H): P1 KD=H ND=H bC_nd=N_GU.
+        // #2307: the int4 fused context below is built only for the COMBINED-GU
+        // geometry, so on a split-G model this flag cannot be honoured. It used
+        // to be dropped in silence: the request is read here, the `!cfg.gu_split`
+        // conjunct fails, and the engine runs the int8 G/U path without a word.
+        // A flag that is quietly ignored is the same class of defect this issue
+        // was opened for, so name it instead. One line, at init, not per layer.
+        if (cfg.gu_split && getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1) {
+            fprintf(stderr,
+                "NPU_QWEN_I4=1 is not available for this model and is being ignored: "
+                "IM=%d selects split-G (gu_split when IM*2 > 14336), and the int4 fused "
+                "GU->SiLU context is only built for the combined-GU geometry. "
+                "Continuing on the int8 G/U path (issue #2307).\n", IM);
+        }
         if (!cfg.gu_split && getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1) {
             cg_fused_i4 = std::make_unique<I8Ctx>();
             cg_fused_i4->MD = 8; cg_fused_i4->KD = H; cg_fused_i4->ND = H;
@@ -1598,7 +1680,7 @@ int main(int argc,char**argv){
                 && atoi(getenv("NPU_GUSILU_BF16PAIR")) == 1;
             cg_fused_i4->bf16_pair = bf16pair;   // so packB_into_fused_i4 uses the SAME B'' layout the bf16pair xclbin dequants
             std::string gx = xp("GUSILU_i4", H, 2 * IM);
-            std::string gi = ip("GUSILU_i4");
+            std::string gi = ip("GUSILU_i4", H, 2 * IM);
             if (bf16pair) {
                 gx = xd + "/final_i8_GUSILU_i4_" + cfg.model_tag + "_bf16pair.xclbin";
                 gi = xd + "/insts_i8_GUSILU_i4_" + cfg.model_tag + "_bf16pair.txt";

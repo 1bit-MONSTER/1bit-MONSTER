@@ -329,6 +329,96 @@ request when the model is sharded.
 
 ---
 
+## Reviewed 2026-09-17 — the next four un-reviewed classes by instance count
+
+`Testing/census_coverage.py` reports 184 uncovered instances across 77 classes on
+`main` at `d7e9aac7c`. The daily watcher only names classes inside its rolling
+100-model window, so most of those 77 are never surfaced to anyone. These are the
+four largest un-reviewed ones, in decreasing order, reviewed from their live
+configs and HF metadata.
+
+**On the standard**: the rule above is to decide an alias on the checkpoint's
+*tensors*. All four now have that check. For `blockmtp` and `canopy` the config was
+already decisive (a vocabulary of 82; a `text-to-speech` pipeline tag) and the tensor
+layout is consistent with it. For `jarvistitanmoe` and `zgcm` the tensor index was
+read on 2026-09-17 — `model.safetensors.index.json`, no weights downloaded — and both
+are **not aliases**, for the per-entry reasons below. The earlier version of this
+section recorded those two as "tensor check outstanding"; that is now closed.
+
+### `blockmtp` / `looped_block_mtp` — `violetxi/hparam-92m-block-mtp-…` (12)
+
+**Not a text LM. Not an alias, and not a coverage gap.**
+
+* **Class / model_type**: `BlockMTPForCausalLM` / `looped_block_mtp`, 12 instances,
+  a single aggregate entry.
+* **What it is**: `violetxi/hparam-92m-block-mtp-truncated-peak_lr-1e-5-wu-0p05-s42`
+  and its siblings — an experiment grid (`hparam-*`, `chess-*`, `...-4xh100`) over a
+  looped / block multi-token-prediction transformer.
+* **The decisive number is `vocab_size: 82`**, against 100k+ for every text family
+  the engine serves. A model whose entire vocabulary is 82 tokens is not a chat LM
+  and cannot be one; the class is an artefact of one uploader's sweep.
+* **Verdict**: no implementation is warranted. This sits in the same category as the
+  already-excluded experiment uploads (`helloworld`, `mbztestmodel`, `myfirstllm`),
+  but it has not been added to an exclusion set here, because that changes the
+  published denominator and is a policy call rather than a review outcome.
+
+### `jarvistitanmoe` / `jarvis_titan_moe` — `dhanesh-hf/Jarvis-Titan-V12-MoE-14B` (9)
+
+**A real causal text LM, a genuine coverage gap, and NOT an alias — tensor check
+done 2026-09-17.**
+
+* **Class / model_type**: `JarvisTitanMoEForCausalLM` / `jarvis_titan_moe`.
+* **Config**: `vocab_size` 152064, `hidden_size` 3584, `num_hidden_layers` 28, and
+  MoE. A genuine text-generation family from a community uploader
+  (`Jarvis-Titan-V10-SFT-Merged`, `V12-MoE-14B`, `V12-MoE-Adapted`).
+* **Tensors** (451 in the index): `self_attn.{q,k,v}_proj` **carry biases** (a
+  Qwen2-era trait, not Qwen3), and the FFN is a **packed** MoE layout —
+  `mlp.router.weight` plus `mlp.routed_gate` / `mlp.routed_up` / `mlp.routed_down`
+  and `mlp.shared_gate` / `mlp.shared_up` / `mlp.shared_down`.
+* **Why that is decisive**: `routed_gate`, `routed_up` and `routed_down` have **zero
+  hits** across `src/` and `include/`. The engine's shared-expert vocabulary is
+  DeepSeek's (`shared_up` in `include/deepseek.h`), which is a different scheme, and
+  nothing reads a `routed_*` packed expert weight. A checkpoint whose MoE weights are
+  packed under names the loader does not know is not a rename of a family we serve.
+* **Verdict**: implement, do not alias. The gap is real and the layout is distinct.
+
+### `canopy` — `canopylabs/orpheus-3b-0.1-ft` (7)
+
+**Text-to-speech, not a causal text decoder. Not an alias, and not a coverage gap.**
+
+* **Class**: `CanopyForCausalLM`, 7 instances.
+* **What it is**: Canopy Labs **Orpheus**, whose HF `pipeline_tag` is
+  `text-to-speech` and which is llama-architecture underneath. The name says
+  `ForCausalLM`; the model is a speech synthesiser with a text backbone.
+* **Verdict**: the engine has no TTS path — the `NON_TEXT_GEN` comment states the
+  plan put TTS out of scope beside `parlertts` and `kosine`. Recording it here, not
+  excluding it, for the same denominator reason as `blockmtp`.
+
+### `zgcm` — `zgcagi/ZGCM-1-7B` (6)
+
+**A real causal text LM, a genuine coverage gap, and NOT an alias — tensor check
+done 2026-09-17.**
+
+* **Class / model_type**: `ZgcmForCausalLM` / `zgcm`.
+* **Config**: `vocab_size` 155136, `hidden_size` 4096, `num_hidden_layers` 32 —
+  a 7B-class text LM with a full text vocabulary, and a trainer's own architecture
+  name (`ZGCM-1-7B`, plus `-Pretrain-Curriculum`, `-Midtrain-Staged-16K/256K`).
+* **Tensors** (382 in the index): a *modern* dense layout, not Qwen2 —
+  `self_attn.{q,k,v,o}_proj.weight` with **no biases**, `self_attn.q_norm` and
+  `self_attn.k_norm` (Qwen3-style), `mlp.{gate,up,down}_proj`,
+  `post_attention_layernorm` **and** `post_feedforward_layernorm` — plus
+  **`self_attn.g_proj.weight`**, an attention output gate.
+* **Why that is decisive**: `g_proj` has **zero hits** across `src/` and `include/`.
+  The engine handles `q_norm`/`k_norm` and `post_feedforward_layernorm`, so most of
+  this layout would line up with a Qwen3-class path — but nothing produces or consumes
+  an attention output gate, and a checkpoint carrying one is not the family it
+  otherwise resembles.
+* **Verdict**: implement, do not alias. This is the closest of the four to an existing
+  family and the one most likely to be mistaken for an alias, which is exactly why the
+  tensor check was worth running: the shell matches, the gate does not.
+
+---
+
 ## Unverifiable: gated configs
 
 `WaveMatrix/Qwen3-VL-8B-Instruct-GPTQ-Int4` is counted as **unverifiable** on
