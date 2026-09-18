@@ -127,6 +127,22 @@ run npu_keys  Testing/npu_key_contract_selfcheck.cpp src/q4nx_reader.cpp --
 # not be used (a stale NPU_XCLBIN_DIR in the shell silently broke every NPU run).
 run npu_paths Testing/npu_paths_selfcheck.cpp --
 
+# NPU fused-weight packing: transpose_pack's `in_f` is the ROW STRIDE of its source, so an
+# offset that names a row block has to be scaled by it. The GDN K and V blocks passed a row
+# count unscaled, so every row past 0 was read from a sliding window inside q's first rows —
+# invisible to every other check, because the packing runs inside a 4000-line function and a
+# wrong block still has the right shape (#2451). Source-level, no device needed.
+echo "== npu pack stride =="
+total=$((total+1))
+if pack_stride_out=$("$PYTHON" Testing/npu_pack_stride_selfcheck.py 2>&1); then
+    printf '%s\n' "$pack_stride_out" | sed 's/^/  /'
+    echo "✓ npu_pack_stride"
+else
+    echo "✗ npu_pack_stride"
+    printf '%s\n' "$pack_stride_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # CLI dispatch coverage: tools/onebit.cpp's whole command set (chat, pull, list,
 # status, …) is compiled into the single ELF, but tools/onebin.cpp declared
 # onebit_main and never called it — so the documented `./run.sh chat` printed the
@@ -179,6 +195,21 @@ else
     printf '%s\n' "$docs_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# Version manifest sync: Version consistency is a REQUIRED check (ruleset 19117606), and its
+# script began with `[ -f "$file" ] || return 0` — so a manifest that moved out of the tree
+# took its version check with it, silently. Two of its entries named a Homebrew formula that
+# has never existed here, and with every manifest deleted it still exited 0 (issue #2488).
+# The fix gives absence a failure path; these cases are what keeps it one.
+echo "== version manifest sync =="
+total=$((total+1))
+if vsync_out=$(bash Testing/version_sync_selfcheck.sh 2>&1); then
+    printf '%s\n' "$vsync_out" | sed 's/^/  /'
+    echo "✓ version_sync"
+else
+    echo "✗ version_sync"
+    printf '%s\n' "$vsync_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # Census diagnostics: one repo root, one policy set. Three scripts pinned ROOT
 # to the shared checkout and two carried a stale NON_TEXT_GEN copy (#2387), so a
 # worktree run read the wrong inputs and wrote the wrong tree — invisible,
@@ -191,6 +222,20 @@ else
     printf '%s\n' "$census_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# The family manifest's declared mappings. `Testing/bringup_runner.sh` step 1 does
+# exactly this comparison and nothing invokes bringup_runner.sh (its step 3 needs
+# fixtures and torch), which is how two families came to declare MIMO and GLM —
+# tokens that do not exist in the enum (#2511). This runs the half that needs
+# neither fixtures nor a device.
+total=$((total+1))
+if manifest_out=$("$PYTHON" Testing/manifest_mapping_selfcheck.py 2>&1); then
+    echo "✓ manifest_mappings"
+    printf '%s\n' "$manifest_out" | grep -E "^  " | sed 's/^/  /'
+else
+    echo "✗ manifest_mappings"
+    printf '%s\n' "$manifest_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # Published coverage claims must equal the census. seo_sync rewrites them in the
 # daily apply workflows, but that is not a gate — four false-claim shapes
 # survived for months in wordings its patterns did not know (#2389 -> #2397).
@@ -201,6 +246,21 @@ if claims_out=$("$PYTHON" Testing/seo_claim_selfcheck.py 2>&1); then
 else
     echo "✗ seo_claims"
     printf '%s\n' "$claims_out" | tail -10 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+# The claim gate itself must be able to fail. validate_claims.py --check-readme
+# scanned README.md for five engine names; the figures moved to the wiki and the
+# README became a landing page, so the scan read zero rows and returned [] for
+# months while the page that inherited the numbers stamped a quarantined tok/s
+# figure "validated" (#2476). A zero-row scan is not an error, so nothing failed.
+# This injects a bad row into each claim page and requires the gate to catch it.
+total=$((total+1))
+if gate_out=$("$PYTHON" Testing/claims_gate_selfcheck.py 2>&1); then
+    echo "✓ claims_gate"
+    printf '%s\n' "$gate_out" | grep -E "^  note" | sed 's/^/  /'
+else
+    echo "✗ claims_gate"
+    printf '%s\n' "$gate_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
@@ -295,6 +355,23 @@ if "$CXX" $FLAGS -c src/backend_generic.cpp -o "$BIN/bg.o" 2>/dev/null; then
     echo "✓ backend_generic.cpp"; else echo "✗ backend_generic.cpp"; fail=$((fail+1)); fi
 
 echo "== e2e (needs model fixtures in /tmp/onebit-e2e — skipped if absent) =="
+
+# The manifest's own runner: 29 of the 32 families in Testing/models_manifest.json carry
+# `validated`, and Testing/bringup_runner.sh is what those statuses name — but nothing invoked
+# it, and on a box without the host fixtures it reported "0/4 generation gates passed" with the
+# other 25 families missing from the denominator entirely (with no gate commands and no
+# fixtures it printed 0/0 and exited 0). Its verdict helpers are what this pins; see #2520.
+echo "== manifest gate runner =="
+total=$((total+1))
+if bringup_out=$(bash Testing/bringup_runner_selfcheck.sh 2>&1); then
+    printf '%s\n' "$bringup_out" | sed 's/^/  /'
+    echo "✓ bringup_runner"
+else
+    echo "✗ bringup_runner"
+    printf '%s\n' "$bringup_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 e2e() {  # e2e <name> <model_dir> <oracle.gguf> [expect-torch-string]
     local name="$1" dir="$2" gguf="$3"
     if [ ! -f "$gguf" ]; then echo "  - $name: fixtures absent, skipped"; total=$((total+1)); skip=$((skip+1)); return; fi

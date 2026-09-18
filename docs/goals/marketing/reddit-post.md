@@ -16,10 +16,10 @@ Alternating SSM + MoE layers, full autoregressive decode, single binary.
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-monster && source env.sh
 cmake -B build -G Ninja
-cmake --build build --target unified_server -j$(nproc)
+cmake --build build --target onebin -j$(nproc)
 
 # Load any GGUF — it auto-detects the architecture and routes to the right backend:
-./build/unified_server -w /path/to/models/ -p 8088
+./build/1bit unified -w /path/to/models/ -p 8088
 ```
 
 ### What's new

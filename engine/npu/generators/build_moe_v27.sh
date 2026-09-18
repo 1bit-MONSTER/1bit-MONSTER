@@ -2,9 +2,9 @@
 # Build MOE_GU/MOE_D/MOE_SGU/MOE_SD xclbins with the v27 multi-row flow.
 set -euo pipefail
 PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
-AIECC=/home/bcloud/mlir-aie/build_tmp/bin/aiecc
+AIECC=/home/bcloud/mlir-aie/install_tmp/bin/aiecc
 PEANO=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
-AIETOOLS=/home/bcloud/mlir-aie/build_tmp
+AIETOOLS=/home/bcloud/mlir-aie/install_tmp
 export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
 KERNEL_O="$(cd "$(dirname "$0")" && pwd)/mm_32x64x128.o"
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages

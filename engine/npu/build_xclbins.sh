@@ -444,7 +444,12 @@ build_qwen3_vl_4b() {
 
 build_llama() {
     echo "=== Llama-3.1-8B (H=4096, NH=32, NKV=8, HD=128, IM=14336) ==="
-    local TAG="llama"
+    # Tag carries the full model identity: the resolver tries cfg.model_tag first,
+    # which for this model is derived from the dir name (Llama-3.1-8B-NPU2 ->
+    # llama_3_1_8b). A bare "llama" tag cannot be reached by that lookup, and it is
+    # ambiguous against the other deployed Llama variants (3.2-1B, 3.2-3B), whose
+    # tags share the leading token. See #2329 and xp()/ip() in npu_engine_universal.cpp.
+    local TAG="llama_3_1_8b"
     build "$TAG" 128 4096 6144   QKV
     build "$TAG" 128 4096 4096   O
     build "$TAG" 128 4096 14336  G

@@ -198,9 +198,14 @@ jobs:
         with:
           scandir: '.'
           severity: warning
-          # vendored deps pulled in by the cmake build (mbedtls, cpp_httplib)
-          # ship shell scripts that fail SC warnings — never our code.
-          ignore_paths: 'build _deps third_party packaging'
+          # Vendored trees ONLY: deps pulled in by the cmake build (mbedtls,
+          # cpp_httplib) ship shell scripts that fail SC warnings — never our code.
+          # `packaging` was listed here as though it were vendored, but all 13 shell
+          # scripts under it are first-party, and the exclusion was hiding a real
+          # SC2155 in packaging/model-download.sh (fixed in the same change). Lifting
+          # it costs nothing: at severity=warning the whole first-party tree is clean
+          # — 147 scripts scanned, 0 findings.
+          ignore_paths: 'build _deps third_party'
 
   lint:
     name: Lint (clang-format)
@@ -208,18 +213,27 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      # The `| head -20` below discards the xargs status, so this step could never
-      # fail regardless of its label — a latent trap for whoever promotes it by
-      # deleting "(informational)", because the masking does not go away with the
-      # label. `continue-on-error` makes the intent EXPLICIT so removing the label is
-      # no longer what keeps it non-blocking. (Audited by @agent-ec855d.)
+      # The `| head -20` below discarded the xargs status (the default shell here is
+      # `bash -e {0}`, without pipefail, so a pipeline reports head's status), which
+      # meant this step could never fail regardless of its label — a latent trap for
+      # whoever promotes it by deleting "(informational)". `continue-on-error` makes
+      # the intent EXPLICIT, and the status is now captured rather than discarded, so
+      # removing the label really is the only thing that would make it blocking.
+      # (Trap described by @agent-ec855d; masking fixed under #2486.)
       - name: clang-format check (informational)
         continue-on-error: true
         run: |
           sudo apt-get install -y -qq clang-format
-          find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' | \
+          # Cap the OUTPUT, keep the STATUS. `... | head -20` alone is not enough:
+          # without pipefail the pipeline reports the cap's success, so a real
+          # formatting failure would read as a green step. Assigned in a command
+          # substitution with `|| rc=$?` so `set -e` does not abort before the cap.
+          rc=0
+          out=$(find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' | \
             grep -v build/ | grep -v _deps/ | grep -v '.git/' | \
-            xargs clang-format --dry-run --Werror 2>&1 | head -20
+            xargs clang-format --dry-run --Werror 2>&1) || rc=$?
+          printf '%s\n' "$out" | head -20
+          exit "$rc"
 
   version:
     name: Version consistency

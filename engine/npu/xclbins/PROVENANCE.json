@@ -133,7 +133,7 @@
   "2a51fc15a43bd95289c2f9c17d0345e1": {
    "aliases": [],
    "paths": [
-    "final_i8_G_llama.xclbin"
+    "final_i8_G_llama_3_1_8b.xclbin"
    ],
    "sha256": "be4a46dc49fa31fbe42af675877bb78fdff917f8f3a7b332eeb8e1633615075f",
    "timestamp_utc": "2026-08-05T14:23:05Z"
@@ -360,7 +360,7 @@
   "768e5495701e425689a6e6cbd6b10f99": {
    "aliases": [],
    "paths": [
-    "final_i8_U_llama.xclbin"
+    "final_i8_U_llama_3_1_8b.xclbin"
    ],
    "sha256": "b312ef0728ecab31bd30cc7dc7d6521b307cd451d642c098e5139427e69dc4b1",
    "timestamp_utc": "2026-08-05T14:23:14Z"
@@ -395,7 +395,7 @@
   "82fd6702ae3a2b983ac3758da589abd7": {
    "aliases": [],
    "paths": [
-    "final_i8_O_llama.xclbin"
+    "final_i8_O_llama_3_1_8b.xclbin"
    ],
    "sha256": "b0359e751ef8d72e24e856927da334e0c27b4bf73b748a00f12a50d766570ba1",
    "timestamp_utc": "2026-08-05T14:22:56Z"
@@ -586,7 +586,7 @@
   "b5a84ca6f3f621f2925cfaa487919a47": {
    "aliases": [],
    "paths": [
-    "final_i8_QKV_llama.xclbin"
+    "final_i8_QKV_llama_3_1_8b.xclbin"
    ],
    "sha256": "ab9ed923ad416e688d83c2394290dc7ddabd62fa944729aef1dca100d364edd0",
    "timestamp_utc": "2026-08-05T14:22:53Z"
@@ -664,7 +664,7 @@
   "d7990f6e582c25bbe51da23609c1bcc4": {
    "aliases": [],
    "paths": [
-    "final_i8_D_llama.xclbin"
+    "final_i8_D_llama_3_1_8b.xclbin"
    ],
    "sha256": "42a6b55638e9e75e2ef70293eafb3e572628f97d41962b1a5a0f650c876a5ba0",
    "timestamp_utc": "2026-08-05T14:23:23Z"
@@ -800,7 +800,7 @@
  "build": {
   "generating_script_revision": null,
   "toolchain": null,
-  "toolchain_note": "Empty by design: the artifacts record no compiler arm or version (no chesscc/peano/llvm/aiecc/clang marker in the AXLF metadata; PlatformVBNV is empty). A build that regenerates these artifacts must fill this in - that is the missing half of the provenance."
+  "toolchain_note": "Empty by design, and written only because --allow-null-toolchain was passed explicitly (issue #2262). The artifacts record no compiler arm or version (no chesscc/peano/llvm/aiecc/clang marker in the AXLF metadata; PlatformVBNV is empty), so this tool cannot derive one, and it now REFUSES to write this blank by default. The build that regenerates these artifacts is the only thing that can fill it in - that is the missing half of the provenance."
  },
  "census": {
   "days_utc": {
@@ -856,13 +856,13 @@
  },
  "declared_dangling": {},
  "generated": {
-  "at": "2026-09-14T13:45:00Z",
+  "at": "2026-09-17T18:16:07Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
   "host": "strixhalo",
-  "ref": "5735f9c38"
+  "ref": "02b4e04a3"
  },
- "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest and land it in the same commit as the artifact change.",
+ "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest --toolchain \"<compiler arm + versions>\" --script-revision \"<git rev of the generating script>\" and land it in the same commit as the artifact change. Those two flags are the point of this file: the artifacts carry no compiler marker to derive them from, so a rebuild that omits --toolchain records build.toolchain as null again (issue #2262).",
  "notes": [
   "population.dangling_symlinks and population.alias_symlinks_in_tree are HOST-DEPENDENT: they were observed on generated.host. Installing fastflowlm at /opt/fastflowlm makes the four third-party links resolve, which says nothing about the repo. The check asserts symlink TARGETS (the symlinks and declared_dangling maps), never this split.",
   "declared_dangling lists the third-party targets that did not resolve on generated.host. It is a target map, not a resolution requirement."
@@ -878,7 +878,7 @@
    "D_K9728_N2560",
    "D_gemma4_e2b",
    "D_gemma4_e4b",
-   "D_llama",
+   "D_llama_3_1_8b",
    "D_nanbeige4_1_3b",
    "D_phi4_mini_4b",
    "D_qwen3.6-moe_35b",
@@ -907,7 +907,7 @@
    "G_K2560_N9728",
    "G_K3072_N8192",
    "G_gemma4_e4b",
-   "G_llama",
+   "G_llama_3_1_8b",
    "G_nanbeige4_1_3b",
    "G_phi4_mini_4b",
    "G_qwen3.6-moe_35b",
@@ -939,7 +939,7 @@
    "O_K4096_N2560",
    "O_gemma4_e2b",
    "O_gemma4_e4b",
-   "O_llama",
+   "O_llama_3_1_8b",
    "O_nanbeige4_1_3b",
    "O_phi4_mini_4b",
    "O_qwen3.6-moe_35b",
@@ -954,7 +954,7 @@
    "QKV_K3072_N5120",
    "QKV_gemma4_e2b",
    "QKV_gemma4_e4b",
-   "QKV_llama",
+   "QKV_llama_3_1_8b",
    "QKV_nanbeige4_1_3b",
    "QKV_phi4_mini_4b",
    "QKV_qwen3.6-moe_35b",
@@ -970,7 +970,7 @@
    "U_K2560_N9728",
    "U_K3072_N8192",
    "U_gemma4_e4b",
-   "U_llama",
+   "U_llama_3_1_8b",
    "U_nanbeige4_1_3b",
    "U_phi4_mini_4b",
    "U_qwen3.6-moe_35b",
@@ -990,8 +990,8 @@
   "distinct_builds_by_uuid": 89,
   "regular_artifacts": 117,
   "top_level_xclbin": 129,
-  "tracked_paths_under_dir": 519,
-  "tracked_top_level_entries": 258,
+  "tracked_paths_under_dir": 520,
+  "tracked_top_level_entries": 259,
   "txt_symlinks": 12,
   "xclbin_symlinks": 12
  },

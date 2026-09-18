@@ -66,9 +66,35 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.TOKEN }}
         run: |
+          # No `set -o pipefail` here on purpose: hf_new_models.py exits 1 when
+          # there are uncovered classes, which is exactly when the autopr has
+          # work to do, so pipefail would fail this step routinely. The two
+          # explicit checks below cover what pipefail would have caught.
+          #
+          # census_autopr commits through `git commit`, so this step needs an
+          # identity. Without one every commit died with "Author identity
+          # unknown / fatal: empty ident name" and the step still exited 0:
+          # it found candidates on 09-13 (haiku), 09-14 (han2han) and 09-17
+          # (language, picolm) and opened a PR for none of them, while the run
+          # reported success. The poster step below set its own identity, which
+          # is why the breakage stayed invisible.
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           # CENSUS_SKIP_PR stays UNSET so census_autopr may file draft PRs.
           python3 Testing/hf_new_models.py --limit 120 2>&1 | tee /tmp/census-autopr.log
           echo "--- (draft PRs for plausible aliases; SIGNIFICANT/manual left as alerts) ---"
+          # A candidate the autopr could not file must not pass silently; that
+          # is how the missing identity went unnoticed across five runs.
+          if grep -q '\[autopr\] cmd failed' /tmp/census-autopr.log; then
+            echo "::error::the alias autopr found a candidate but failed to file it — see the [autopr] lines above"
+            exit 1
+          fi
+          # `tee` hides the watcher's exit status (it is the pipeline's last
+          # command), so a crashed run reads green. Say so when it crashed.
+          if grep -q 'Traceback (most recent call last)' /tmp/census-autopr.log; then
+            echo "::error::the watcher crashed — see the traceback above"
+            exit 1
+          fi
 
       - name: Generate blog posts for significant arrivals (announce + covered)
         id: sigpost
@@ -125,7 +151,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add site/ Testing/significant_posts.json Testing/significant_arrivals.json
-          git commit -m "post: significant model-architecture arrival ($DATE)"
+          # Commit ONLY these paths. A bare `git commit` takes every staged path,
+          # and on 2026-09-17 that swept in two alias lines the autopr step above
+          # had staged but could not commit (no identity), planting
+          # `language` -> OBILANGUAGE and `picolm` -> PICO inside a blog-post PR
+          # (#2450) where no reviewer would think to look for an engine mapping.
+          # An explicit pathspec makes this step unable to commit anything else.
+          git commit -m "post: significant model-architecture arrival ($DATE)" -- \
+            site/ Testing/significant_posts.json Testing/significant_arrivals.json
           # A transient GitHub refusal must not cost a day of the post. On
           # 2026-09-13 this push died with `remote: fatal error in commit_refs`:
           # no ruleset blocks the branch shape (the only active ruleset targets

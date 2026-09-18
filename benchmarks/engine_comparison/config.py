@@ -137,7 +137,10 @@ VLLM_BASE_URL = str(_env_or("BENCH_VLLM_URL",
                             _paths.get("vllm_base_url", "http://127.0.0.1:8000")))
 
 # 1bit-monster zaya_server (the primary engine in this fork of the harness).
-# Built from the repo root with:  cmake --build build --target zaya_server
+# Built from the repo root with:  cmake --build build --target onebin  (→ build/1bit)
+# The path below is the `zaya_server` argv[0] symlink; the dispatcher inside
+# build/1bit needs it because the launch command is `<exe> --model … --port …`
+# with no subcommand. install.sh creates it; a bare cmake build does not.
 ZAYA_SERVER_EXE = (
     _path(_paths.get("zaya_server_exe"), "BENCH_ZAYA_SERVER")
     or (REPO_ROOT / "build" / "zaya_server"))

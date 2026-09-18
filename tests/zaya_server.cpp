@@ -8,8 +8,8 @@
 // 6 routing strategies: auto, cascade, spec_decode, content, parallel_moe, passthrough.
 // OpenAI-compatible API: POST /v1/chat/completions
 //
-// Build: cmake --build . --target zaya_server -j8
-// Run:   ./build/zaya_server --model model.h1b --port 8088
+// Build: cmake --build . --target onebin -j8
+// Run:   ./build/1bit zaya --model model.h1b --port 8088
 
 #include "backends/backend.h"
 #include "backends/token_router.h"
