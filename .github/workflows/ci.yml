@@ -221,6 +221,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Needed by the no-new-diagnostics step below: it compares each changed file
+          # against the same file at the merge base, and a depth-1 clone has neither the
+          # base commit nor the ancestry to compute one. 554 commits, so this is cheap.
+          fetch-depth: 0
       # The `| head -20` below discarded the xargs status (the default shell here is
       # `bash -e {0}`, without pipefail, so a pipeline reports head's status), which
       # meant this step could never fail regardless of its label — a latent trap for
@@ -265,6 +270,34 @@ jobs:
           echo "clang-format: $diags diagnostic(s) in $files of $considered file(s) - $(clang-format --version)"
           echo "::notice::clang-format: $diags diagnostics in $files of $considered files (informational; see #2486)"
           exit "$rc"
+
+      # The gate #2486 needs, and the reason the sweep above can never be it: with
+      # 184,118 diagnostics in 740 of 744 files, "fail on any diagnostic" is either a
+      # tree-wide reformat or nothing, and plain diff-gating fails any touched file that
+      # already had violations — it would have blocked #2554, a comment-only change.
+      # This compares each file the change touches against the same file at the MERGE
+      # BASE and fails only on an INCREASE, so it is able to fail without making the
+      # existing backlog every author's problem on every edit.
+      #
+      # Still installed behind `continue-on-error` on purpose: whether it becomes
+      # blocking is the open decision in #2486, and the first runs are what that
+      # decision needs. Deleting the label is the whole change if the answer is yes.
+      - name: 'clang-format: no new diagnostics (informational)'
+        continue-on-error: true
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -n "$base" ] || base="${{ github.event.merge_group.base_sha }}"
+          [ -n "$base" ] || base="${{ github.event.before }}"
+          # An unknown or all-zero base means there is nothing sound to compare against;
+          # say so instead of inventing a comparison that could fail for the wrong reason.
+          case "$base" in
+            ""|0000000000000000000000000000000000000000)
+              echo "no base commit for this event (${{ github.event_name }}) — skipping the comparison"
+              exit 0 ;;
+          esac
+          if mb=$(git merge-base "$base" HEAD 2>/dev/null); then base="$mb"; fi
+          echo "comparing against $(git rev-parse --short "$base") (merge base with ${{ github.event_name }} base)"
+          bash Testing/lint-new-diagnostics.sh "$base"
 
   version:
     name: Version consistency
