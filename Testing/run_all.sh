@@ -421,6 +421,16 @@ elif [ "$shared_rc" -ne 0 ]; then
     fail=$((fail+1))
 fi
 
+echo "== capture gates: documented vs implemented (interposer) =="
+if cap_out=$(python3 Testing/capture_gates_selfcheck.py 2>&1); then
+    printf '%s\n' "$cap_out" | sed 's/^/  /'
+    echo "✓ capture_gates_selfcheck"
+else
+    echo "✗ capture_gates_selfcheck"
+    printf '%s\n' "$cap_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # ── MiMo-V2 gate (mini fixture, vendored remote modeling oracle) ──
 total=$((total+1))
 mimo_dir=/tmp/onebit-mimo
