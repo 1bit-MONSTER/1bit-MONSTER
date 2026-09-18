@@ -474,6 +474,16 @@ else
     echo "  - mesh: mesh_peer binary absent, skipped (cmake --build build --target mesh_peer)"; skip=$((skip+1))
 fi
 
+echo "== census alias autopr: branch base (#2498) =="
+if autopr_out=$(python3 Testing/census_autopr_selfcheck.py 2>&1); then
+    printf '%s\n' "$autopr_out" | sed 's/^/  /'
+    echo "✓ census_autopr_selfcheck"
+else
+    echo "✗ census_autopr_selfcheck"
+    printf '%s\n' "$autopr_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # ── JARVIS fleet dispatch (optional — needs build/1bit + build/mesh_peer) ──
 total=$((total+1))
 if [ -x build/1bit ] && [ -x build/mesh_peer ]; then
