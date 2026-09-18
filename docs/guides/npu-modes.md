@@ -37,7 +37,7 @@ artifacts the commit *carries*. Two guards now exist:
 
 * `engine/npu/tests/check_artifact_families.py` — discovers the construction
   sites and fails any family with **zero tracked members** unless it is declared
-  `build_only` in `engine/npu/xclbins/ARTIFACT_FAMILIES.json`. Run by
+  `build_only` in `engine/npu/ARTIFACT_FAMILIES.json`. Run by
   `Testing/run_all.sh`; its fixtures live in
   `Testing/artifact_family_coverage_selfcheck.sh`.
 * a non-`.q4nx` model container is rejected with a diagnostic instead of

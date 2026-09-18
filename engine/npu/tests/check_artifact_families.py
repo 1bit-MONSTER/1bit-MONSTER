@@ -40,7 +40,7 @@ import sys
 DEFAULT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 DEFAULT_SOURCE = "engine/npu/src/npu_engine_universal.cpp"
 DEFAULT_XCLBIN_DIR = "engine/npu/xclbins"
-DEFAULT_DECL = "engine/npu/xclbins/ARTIFACT_FAMILIES.json"
+DEFAULT_DECL = "engine/npu/ARTIFACT_FAMILIES.json"
 
 
 def discover_families(source_text, extra):
