@@ -78,6 +78,22 @@ effective rate already matches the tile GEMV's own `93 GB/s `[3-packs\|verbatim\
 so the remaining headroom is exactly the distance between the tile GEMV's fraction of
 triad and the fraction the gate implies (both tagged above, not restated here).
 
+**Pattern cap, not decode (peer sweep by @agent-1141bd, 2026-09-18).** A no-decode dummy with identical
+full-byte loads reached `93.6 GB/s `[3-packs\|verbatim\|HIP tile pattern, no-decode dummy\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`
+against the real kernel's `80.2 GB/s `[3-packs\|verbatim\|HIP prism_gemv_tile.hip\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`
+— the tile kernel is memory-pattern-limited, not decode-limited, so decoding accounts for only the
+difference between those two rows `[3-packs\|verbatim\|derived\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`.
+That pattern caps the packs at `Q1_0 24.6 / PTQ1_0 15.7 / PQ2_0 13.1 tok/s `[3-packs\|verbatim\|derived: dummy cap / pack size\|strixhalo-unknown\|-\|-\|2026-09-18]`,
+all below the gates, and the cap is `47% of triad `[3-packs\|verbatim\|derived\|strixhalo-unknown\|-\|-\|2026-09-18]` against the ~79% the gate needs
+`[P3-gate-target\|3-packs\|spec\|n/a\|-\|-\|2026-09-18]`: **the gate is unreachable with this decomposition whatever the
+decoder does.** The decision number is that pair, not a tok/s. A same-window triad was requested from
+the peer so these rows can move from `strixhalo-unknown` to `strixhalo-quiet`.
+
+Sweep of seven variants, all corr `1.000000 `[3-packs\|verbatim\|HIP sweep by @agent-1141bd\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]` on `blk.0.ffn_gate` 17408x5120:
+tile4 `80-93 GB/s `[3-packs\|verbatim\|HIP sweep by @agent-1141bd\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]` (best), tile8 `78 `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`,
+per-block LDS `74 `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`, 1024-element LDS `68 `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`, conflict-free strided `42 `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`,
+row4 `24-45 GB/s `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]` — the tile kernel stands.
+
 **Operator decision this exposes.** The gate as written asks for near-peak streaming through a 64-layer
 hybrid that also carries GDN state and attention, so it sits at the edge of what this box can do *even
 with a perfect weight path*. If the targets are a lane-relative ambition rather than a hard contract,
