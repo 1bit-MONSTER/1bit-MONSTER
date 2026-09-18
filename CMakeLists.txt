@@ -434,6 +434,7 @@ set(RCPP_SOURCES
     kernels/iq_gemv.hip
     kernels/rotorquant_pack.hip
     kernels/hadamard_rotate_butterfly.hip
+    kernels/prism_hadamard_fwht.hip
     kernels/zaya_moe_ternary_gemv.hip
     kernels/zaya_moe_tiled_gemv.hip
     kernels/zaya_moe_wmma_batched.hip

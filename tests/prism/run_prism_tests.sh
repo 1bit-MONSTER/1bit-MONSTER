@@ -58,6 +58,18 @@ if [ -x "$HIPCC" ]; then
   fi
 fi
 
+# Optional P3.1 gate: Prism signed FWHT device parity (needs hipcc + the device).
+PHADM=""
+if [ -x "$HIPCC" ]; then
+  if "$HIPCC" --offload-arch=gfx1151 -O3 -std=c++17 -I "$REPO/include" -I "$REPO/src" \
+      "$REPO/tests/prism/test_prism_hadamard_hip.hip" "$REPO/kernels/prism_hadamard_fwht.hip" \
+      -o "$TMP/phadm" >/dev/null 2>&1; then
+    PHADM="$TMP/phadm"
+  else
+    echo "  (hipcc present but the Prism FWHT parity tool failed to build — skipping)"
+  fi
+fi
+
 echo "== container / codec gates (no model file needed) =="
 run "1BP v5 transform blob + Prism geometry" "$TMP/t5"
 run "Prism codec round-trip (synthetic)" python3 "$REPO/tests/prism/roundtrip_prism_codec.py"
@@ -65,6 +77,7 @@ run "Prism codec round-trip (synthetic)" python3 "$REPO/tests/prism/roundtrip_pr
 python3 "$REPO/tests/prism/dump_prism_fwht.py" 2048 1024 > "$TMP/py_fwht.txt"
 run "FWHT vs independent matrix reference" python3 "$REPO/tests/prism/compare_prism_fwht.py" \
     "$TMP/cpp_fwht.txt" "$TMP/py_fwht.txt"
+[ -n "$PHADM" ] && run "Prism FWHT device parity (P3.1, gfx1151)" "$PHADM"
 
 echo "== per-model gates (source GGUF required) =="
 for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit-gguf/Bonsai-27B-Q1_0.gguf; do
