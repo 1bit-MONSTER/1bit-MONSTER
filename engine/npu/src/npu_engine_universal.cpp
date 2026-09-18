@@ -1422,7 +1422,15 @@ int main(int argc,char**argv){
 
     // GEMM contexts: I8Ctx (legacy) or HybridFlmCtx (FLM path)
     bool flm_xclbin_available = false;
-    bool cpu_gemm_fallback = false;  // set when NPU GEMM can't init (MoE models)
+    // NEVER ASSIGNED anywhere in this repository: the initialiser is the only write, so
+    // this is always false and everything it guards is dead code today. The comment that
+    // used to sit here said "set when NPU GEMM can't init (MoE models)", describing a
+    // mechanism that has never existed — no setter appears on any ref (
+    // `git log -S'cpu_gemm_fallback = true' --all` is empty). The guarded region holds
+    // the only call sites of sync_weights (5/5), dq( (8/8) and 15/16 transpose_pack, so
+    // removing it is not a cleanup either. #2527 tracks the wire-or-delete decision; this
+    // states the fact rather than making it.
+    bool cpu_gemm_fallback = false;
     std::string flm_mm_path;
     if (use_flm_xclbin) {
         // Try to find mm.xclbin. Priority:
