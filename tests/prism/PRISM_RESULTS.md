@@ -332,6 +332,34 @@ So the Q1_0 GEMV chase and the PTQ1_0 dot chase are the same chase - the many-ro
 that merges the two targets into one. It also refines the two-chase frame above: the GEMV half is not "get the
 dot uniformly faster", it is "fix the shallow-reduction shape", which is where the next gain most plausibly lives.
 
+### gdn_recurrence isolated A/B (5baa93ff3) - the neutral call is REVERSED, and an in-situ tax appears on both kernels
+
+| measurement | value | tag |
+|---|---|---|
+| isolated A/B, same geometry, both kernels built from this tree, alternated via git stash | pre-split 46.143 us/layer = 2.215 ms/token; split 28.452 us/layer = 1.366 ms/token; 1.62x, 0.85 ms/token saved | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP gdn_recurrence isolated A/B \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+| correctness of the split | fork oracle 5/5 and compare_gen 11/11 on all three packs, suite GDN gates pass; per-thread traversal order unchanged, so per-element fp32 arithmetic is bit-identical | `[3-packs \| verbatim \| HIP GDN split vs pre-split \| strixhalo-quiet \| 11 \| capital-of-France \| 2026-09-18]` |
+| what the aggregate said about the same change | 30.2 ms against 29.6-31.5 before - inside the noise band, so the aggregate alone would have discarded the optimisation | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP backend, split vs pre-split \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| in-situ tax, now measured on two kernels | gdn_recurrence runs 40% slower inside the loop than standalone (3.11 vs 2.215 ms); the GEMV runs 17% over its memory floor (21.2 vs 18.1 ms) | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3 in situ vs isolated \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| updated chase arithmetic, Q1_0 | the gate gap was 5.79 ms; this win addresses 0.85; non-GEMV predicted at 7.55 ms (UNMEASURED) gives 34.8 tok/s, and even with the GEMV at its 18.1 ms floor it is 39.0 tok/s - still short; clearing the gate needs non-GEMV at 5.71 ms with the GEMV at floor | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| gate state after the win | UNCHANGED: Q1_0 32-34, PTQ1_0 23-24, PQ2_0 24 tok/s against 42/27/22, PQ2_0 MET | `[3-packs \| verbatim \| HIP backend \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+
+**The reversal is recorded as a reversal, and the methodological reason is the durable part.** The aggregate
+could not resolve the change, so the isolated kernel A/B was necessary and the earlier neutral call was a limit
+of the instrument rather than a failure of judgement. The rule that follows is now in this record: **an isolated
+A/B is the instrument for kernel-level claims; the aggregate is the instrument for gate claims** - and this lane
+does not move a gate on kernel-level evidence, which is why the gate row above still reads unchanged.
+
+**A second data point for the in-situ tax, which is now the largest named block of time in the model.** The same
+tax appears on two different kernels (rows above): both are materially slower inside the loop than standalone.
+That is one problem rather than two, which is the same conclusion the shape penalty produced from the other
+direction, and it means the remaining distance is not "GEMV versus non-GEMV" so much as "the loop taxes every
+kernel that runs in it" (the two measured rates are in the row above).
+
+**The two-chase frame survives the win and is now sharper** (arithmetic row above): even with this gain and a
+GEMV at its memory floor the pack remains short of its gate, so the distance still has to come from both halves.
+The decisive next number is the **post-split in-situ** measurement of gdn_recurrence: it tests whether the
+isolated gain survives inside the loop, which is exactly where the tax lives.
+
 **One part of this round is still an estimate, and is recorded as an estimate.** The lost-to-dispatch figure is
 inferred from an assumed per-dispatch cost, and the sum of the measured terms leaves a remainder of about that
 size - suggestive, not proof. The direct measurement is cheap: per-token wall time minus the sum of per-token
