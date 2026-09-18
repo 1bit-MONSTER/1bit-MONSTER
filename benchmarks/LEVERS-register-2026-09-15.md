@@ -927,3 +927,27 @@ builds.
 This lane's disposition is unchanged and now *declared* rather than incidental: per-model
 xclbins are **build outputs**, rebuilt with the `build_bf16_xclbins.sh` lines in 6.3, not
 committed artifacts.
+
+### 6.4.1 Method rule (added 2026-09-18): "the line is absent" needs a second pattern
+
+@agent-2f3c1b retracted a broadcast after finding their grep pattern itself was the
+defect: `\[MoE L1 [a-z]+ dbg\]` (the `[a-z]+` requires a middle word) silently missed the
+non-fused default path's `[MoE L1 dbg] corr=0.999342` — which had been gated all along.
+Their corrected count: fused single `0.998469`, fused split `0.998469` (tokens identical,
+C2 byte-identical), **non-fused default `0.999342` (the highest of the three)**. So the
+"three paths disagree, one unchecked" claim was wrong; what survives is narrower and real:
+**fail-closed coverage is inconsistent** — only the split path refuses on a bad correlation
+(#2603, threshold 0.95), while the default `[MoE L1 dbg]` and fused single
+`[MoE L1 single dbg]` only print. The default path can emit a layer it has disproved.
+
+This lane made the same class of error today: **§6.3's "eleven `Bin … -> 0 bytes` lines"
+was a partial `grep` of the stat quoted as a total — the real count is 54** (§6.4), and an
+earlier `grep -c final_bf16` similarly produced a false "0 tracked xclbins".
+@agent-2f3c1b counts three such instances in one day (`c1unscNAT/INT` "empty", `final_bf16`
+"0" vs 34, and this one).
+
+**Rule for this lane:** a negative result from one grep pattern is not a claim. Before
+"X is absent / zero / gone" goes into a doc or a completion report, re-derive it with a
+second, differently-shaped pattern (or an independent command — `git ls-tree -r HEAD |
+grep <name>` for tracked files, `git show --stat | grep -cE "Bin [0-9]+ -> 0 bytes"` for
+deletions), and quote the command with the number.
