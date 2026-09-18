@@ -1,7 +1,7 @@
 # Prism ML Bonsai 27B — Complete Custom Build — PLAN v0.1
 
 **Lane:** `feat/prism-bonsai-27b` · worktree `/home/bcloud/1bit-MONSTER-dddf9e` (strixhalo)
-**Owner:** @agent-dddf9e · **Date:** 2026-09-18 · **Status:** **P0–P2 complete; P3 COMPLETE — all three revised targets met (Q1_0 38.2 / PTQ1_0 26.1 / PQ2_0 22.6 tok/s against >=36 / >=25 / >=22) and met in SIX consecutive quiet windows rather than one; P4 complete including an on-device NPU gate for our own GDN AIE kernel; P5 complete; P6 green.** Artifacts acquired and locked; 1BP v5 converter byte-exact (23.9 GB compared); full 64-layer forward agrees with the fork's next-token oracle on all three packs, per-layer cosine ≥ 0.999, and runs on gfx1151 with our own kernels (greedy decode, busy box: Q1_0 15.05 / PTQ1_0 10.15 / PQ2_0 12.20 tok/s). Evidence: `docs/research/prism-bonsai-27b/` and `tests/prism/` (`run_prism_tests.sh` → ALL PRISM GATES PASSED).
+**Owner:** @agent-dddf9e · **Date:** 2026-09-18 · **Status:** **P0–P2 complete; P3 COMPLETE — all three revised targets met (Q1_0 38.2 / PTQ1_0 26.1 / PQ2_0 22.6 tok/s against >=36 / >=25 / >=22): Q1_0 clear of >=36 in FIVE of six repeated quiet windows (35 tok/s in the one that opened at the lowest triad, 202.4 GB/s), PTQ1_0 and PQ2_0 clear in all six; P4 complete including an on-device NPU gate for our own GDN AIE kernel; P5 complete; P6 green.** Artifacts acquired and locked; 1BP v5 converter byte-exact (23.9 GB compared); full 64-layer forward agrees with the fork's next-token oracle on all three packs, per-layer cosine ≥ 0.999, and runs on gfx1151 with our own kernels (greedy decode, busy box: Q1_0 15.05 / PTQ1_0 10.15 / PQ2_0 12.20 tok/s). Evidence: `docs/research/prism-bonsai-27b/` and `tests/prism/` (`run_prism_tests.sh` → ALL PRISM GATES PASSED).
 **Scope decision (operator, 2026-09-18):** *complete custom build* — our own converters,
 our own kernels, our own runtimes. Prism ML's forks are **oracles and baselines only,
 never a runtime dependency**.
@@ -339,10 +339,13 @@ reported as a delta, not a replacement.
 > were correct when written and are superseded by `01a33a09c`, not silently overwritten. Correctness for the changed dot
 > comes from this lane rather than from the repeat document, which carries throughput and triad evidence only: full suite
 > **53 passed / 0 failed / 0 skipped, ALL PRISM GATES PASSED**, with PTQ1_0's per-position oracle, device-forward oracle
-> and eleven-position greedy comparison all PASS. **Still open, deliberately:** the NPU arm has never been executed on
-> the NPU - the manifest records the on-device demonstration as not performed and the reported ratio is a bytes-per-token
-> delta rather than a measured decode. Gate status and on-device demonstration are separate claims and only the first is
-> now supported.
+> and eleven-position greedy comparison all PASS. **SUPERSEDED - the NPU arm HAS now been executed on the NPU
+> (commit de5f6350e).** This note originally said it never had been; that was true when written and is false now. Our GDN
+> conv1d AIE design was loaded onto /dev/accel/accel0, executed there, and its device output agreed with an independent
+> scalar reference to max_rel_err 1.043e-06 against the rel-RMSE < 1e-3 contract criterion (evidence:
+> docs/research/prism-bonsai-27b/P4.2-ondevice-npu-gate.md; the blocker was the five-slot MLIR_AIE buffer ABI, proven with
+> a copy-kernel control at exact=0/256 with two BOs and exact=256/256 with five). The note's separate point still stands:
+> P4.3's ratio is a bytes-per-token delta, not a measured decode, and P4 carries no tok/s gate in any case.
 > **Update 17:37 - **Q1_0's GATE IS CLEARED** (`0fea68d2d`), and the unpack lever was NOT retired.** The route was the
 > measurement-led one: no PMC set is available in this container, so the kernel was compared against itself by
 > **ablation** (`4e96982d2`) - with a free unpack the gate tensor hits its own read-only traversal bound, and the unpack

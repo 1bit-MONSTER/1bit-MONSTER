@@ -13,6 +13,6 @@
   "artifacts_when_built": ["prism_gdn_conv1d_aie.o", "design.mlir", "out.xclbin", "insts.txt", "main_core_0_2.elf", "runlist_entry.json"],
   "correctness": {
     "host_math_gate": "conv1d+silu rel-RMSE 3.839e-06, state update 0.0, delta step 0.0 (contract < 1e-3)",
-    "on_device": "NOT PERFORMED - /dev/accel/accel0 was busy with a peer campaign when the design was ready; the host gate verifies the kernel body's maths, not the NPU run"
+    "on_device": "PERFORMED 2026-09-18 (commit de5f6350e): our GDN conv1d AIE design was loaded onto /dev/accel/accel0, executed there, and its device output agreed with an independent scalar reference to max_rel_err 1.043e-06 against the rel-RMSE < 1e-3 contract criterion (engine/npu/kernels/prism_gdn_devrun.cpp, device lock held/released; evidence: docs/research/prism-bonsai-27b/P4.2-ondevice-npu-gate.md)"
   }
 }

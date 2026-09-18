@@ -67,7 +67,8 @@ cat > "$B/runlist_entry.json" <<EOF
   "per_ctx_elf": "$(basename "$ELF")",
   "abi": "one run per submission; RuntimeLayerEngine submits one runlist per token, so this entry is a single node in that runlist",
   "built_by": "engine/npu/kernels/build_prism_gdn_npu.sh",
-  "correctness": "host math gate: conv1d+silu rel-RMSE 3.839e-06, state 0.0, delta step 0.0 (engine/npu/kernels/prism_gdn_refcheck.cc); on-device run NOT yet performed"
+  "correctness": "host math gate: conv1d+silu rel-RMSE 3.839e-06, state 0.0, delta step 0.0 (engine/npu/kernels/prism_gdn_refcheck.cc)",
+  "on_device": "PERFORMED 2026-09-18 (de5f6350e): our GDN conv1d AIE design was loaded onto /dev/accel/accel0, executed there, and its device output agreed with an independent scalar reference to max_rel_err 1.043e-06 against the rel-RMSE < 1e-3 contract criterion (engine/npu/kernels/prism_gdn_devrun.cpp, device lock held/released; evidence docs/research/prism-bonsai-27b/P4.2-ondevice-npu-gate.md)"
 }
 EOF
 echo "entry: $B/runlist_entry.json"

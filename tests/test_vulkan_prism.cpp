@@ -14,8 +14,8 @@
 //   Q1_0   (18 B): [f16 d][16 B sign bits]      value = bit ? +d : -d
 //   PQ2_0  (34 B): [f16 d][32 B 2-bit codes]    value = code*d - d   (code 3 never emitted)
 //   PTQ1_0 (28 B): [24 B qs][2 B qh][f16 d]     base-3, non-positional order
-// This tool covers the two the shader declares with a plain block size (Q1_0, PQ2_0) and reports
-// PTQ1_0 as not-covered rather than pretending.
+// This tool covers all three Prism layouts the shader declares: Q1_0 and PQ2_0 (plain block sizes) and
+// PTQ1_0 (its base-3 trit branch, SPEC_Q=13), each checked against a codec-faithful CPU reference.
 //
 // Build:  g++ -O2 -std=c++17 -DVK_SHADER_DIR=\"/path/to/spv\" tests/test_vulkan_prism.cpp -lvulkan
 // Run:    ./a.out            (expects dmmv_prism.spv in VK_SHADER_DIR)

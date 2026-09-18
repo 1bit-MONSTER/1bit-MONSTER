@@ -598,10 +598,14 @@ device-forward comparison against the fork oracle, and the eleven-position CPU-v
 The mechanism is worth one line because it is the same identity that closed Q1_0: the folded pack stores a shifted
 digit, so summing the raw digit and subtracting the per-32 activation sum removes a per-4 fixup that was pure overhead.
 
-**And one objection from the completion auditor is left standing, deliberately:** the NPU arm has still never been
-executed on the NPU - the manifest records the on-device demonstration as not performed and the reported ratio is a
-bytes-per-token delta rather than a measured decode. Nothing in this section changes that, and it should not: the gate
-status and the on-device demonstration are separate claims, and only the first is now supported.
+**CORRECTION - the NPU arm HAS now been executed on the NPU (commit de5f6350e).** The sentence that stood here said it
+never had been; that was true when written and is not true now. Our GDN conv1d AIE design is loaded onto and executed by
+/dev/accel/accel0, and its device output agrees with an independent scalar reference to max_rel_err 1.043e-06 against the
+rel-RMSE < 1e-3 contract criterion, under the device lock. The blocker was ours: the MLIR_AIE kernel ABI takes FIVE
+buffer slots (bo0..bo4) and passing two produced the documented silent no-op - proven by a copy-kernel control at
+exact=0/256 with two BOs and exact=256/256 with five. Evidence:
+docs/research/prism-bonsai-27b/P4.2-ondevice-npu-gate.md. What stays separate and unclaimed: P4.3's ratio is a
+bytes-per-token delta, not a measured decode, and P4 is a correctness/portfolio arm with no tok/s gate.
 
 ### dp4a round (2026-09-18, commit ca8f8bb13) - **PQ2_0 MEETS ITS GATE**; PTQ1_0 needs a new dot, not tuning
 
