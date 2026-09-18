@@ -167,6 +167,10 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
         "\"$TMP/pf\" \"$bp\" 1000 --dump-layers \"$TMP/cpp_layers.bin\" --quiet > /dev/null 2>&1 && python3 \"$REPO/tests/prism/dump_prism_layers.py\" \"$bp\" 1000 \"$TMP/py_layers.bin\" > /dev/null && python3 \"$REPO/tests/prism/compare_prism_layers.py\" \"$TMP/cpp_layers.bin\" \"$TMP/py_layers.bin\""
     fi
   fi
+  if [ -f "$bp" ] && [ "$base" = "Ternary-Bonsai-2-27B-PTQ1_0" ]; then
+    run "$base: layer-0 GDN block vs numpy reference" bash -c \
+      "\"$TMP/l0\" \"$bp\" 1000 > \"$TMP/l0_cpp.txt\" && python3 \"$REPO/tests/prism/dump_prism_layer0.py\" \"$bp\" 1000 > \"$TMP/l0_py.txt\" && python3 \"$REPO/tests/prism/compare_prism_layer0.py\" \"$TMP/l0_cpp.txt\" \"$TMP/l0_py.txt\""
+  fi
   if [ -f "$bp" ]; then
     run "$base: converted .1bp is a byte-exact repack" \
         python3 "$REPO/tests/prism/verify_prism_1bp.py" "$g" "$bp"

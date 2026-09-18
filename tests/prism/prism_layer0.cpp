@@ -121,14 +121,17 @@ static void rmsnorm_1pw(std::vector<float>& x, const std::vector<float>& w, floa
     double ss = 0.0;
     for (float v : x) ss += (double)v * v;
     const float r = 1.0f / std::sqrt((float)(ss / x.size()) + eps);
-    for (size_t i = 0; i < x.size(); i++) x[i] = x[i] * r * (1.0f + w[i]);
+    // GGUF/llama.cpp LLM_NORM_RMS stores PLAIN weights: y = x/rms * w. The HF (1+w)
+    // convention was the pre-P2.3 bug (it inflated every norm ~2x); prism_forward.cpp
+    // and dump_prism_layer0.py both use plain weights, so this file must too.
+    for (size_t i = 0; i < x.size(); i++) x[i] = x[i] * r * w[i];
 }
 static double l2(const std::vector<float>& v) {
     double s = 0; for (float x : v) s += (double)x * x; return std::sqrt(s);
 }
 static void l2norm_inplace(float* p, int n) {
     double s = 0; for (int i = 0; i < n; i++) s += (double)p[i] * p[i];
-    const float r = 1.0f / (float)(std::sqrt(s) + 1e-6);
+    const float r = 1.0f / (float)std::sqrt(s + 1e-6);
     for (int i = 0; i < n; i++) p[i] *= r;
 }
 static inline float silu(float x) { return x / (1.0f + std::exp(-x)); }
@@ -246,6 +249,21 @@ int main(int argc, char** argv) {
     std::printf("core_l2 %.9e\n", l2(core));
 
     std::vector<float> cr = core;
+    // ssmo-out head permutation (FOLDED basis only): the store uses the grouped
+    // [hd,rep,nk] fold while the activation is tiled [hd,nk,rep]. Omitting it was a
+    // real, silent divergence from prism_forward.cpp / the fork (layer_out_l2 502 vs 9.9).
+    {
+        const int rep = NV / NK;
+        std::vector<float> pm(cr.size());
+        for (int rr = 0; rr < rep; rr++)
+            for (int kk = 0; kk < NK; kk++)
+                for (int hd = 0; hd < HV; hd++) {
+                    const size_t dst = (size_t)hd + (size_t)HV * rr + (size_t)HV * rep * kk;
+                    const size_t src = (size_t)hd + (size_t)HV * kk + (size_t)HV * NK * rr;
+                    pm[dst] = cr[src];
+                }
+        cr.swap(pm);
+    }
     M.rotate(cr);
     std::vector<float> out = M.matvec("blk.0.ssm_out.weight", cr);
     std::printf("gdn_out_l2 %.9e\n", l2(out));

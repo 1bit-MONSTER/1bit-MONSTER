@@ -210,7 +210,14 @@ def main() -> int:
     print(f"state_l2 {l2(state.reshape(-1)):.9e}")
     print(f"core_l2 {l2(core.reshape(-1)):.9e}")
 
-    out = bp.w("blk.0.ssm_out.weight") @ bp.hadamard_forward(core.reshape(-1))
+    crf = core.reshape(-1)
+    rep = NV // NK
+    pm = np.empty_like(crf)
+    for rr in range(rep):
+        for kk in range(NK):
+            for hd in range(HV):
+                pm[hd + HV * rr + HV * rep * kk] = crf[hd + HV * kk + HV * NK * rr]
+    out = bp.w("blk.0.ssm_out.weight") @ bp.hadamard_forward(pm)
     print(f"gdn_out_l2 {l2(out):.9e}")
     h = h + out
 
