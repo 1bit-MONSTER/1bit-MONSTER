@@ -7,9 +7,22 @@
 # of our machines, and the script never mkdir'd it, so every write failed against a
 # nonexistent directory. Same "declared vs effective path" class as issue #1913.
 #
-# PEANO-only by construction: this script passes --no-xchesscc explicitly, for which
-# mlir-aie's build_tmp is the legitimate --aietools value (the chess arm needs the
-# Vitis aietools ROOT instead - see generators/check_chess_aietools.sh).
+# PEANO-only by construction: this script passes --no-xchesscc explicitly.
+#
+# The toolchain root below must be the SAME one the bindings come from. This file
+# used to take aiecc from build_tmp while exporting PYTHONPATH=install_tmp/python,
+# so the generator emitted one dialect form and aiecc parsed another, and every
+# build died on its first artifact with a bare
+#
+#     loc("design.mlir":171:45): error: expected ')'
+#
+# which reads like a generator bug. Measured 2026-09-17 on one shape, same design
+# and same command in both arms, varying only the root:
+#     build_tmp   (AIECC+AIETOOLS=build_tmp, PYTHONPATH=install_tmp) -> rc=1, 0 bytes
+#     install_tmp (both)                                            -> rc=0, 27738 bytes
+# install_tmp is also what engine/npu/build_xclbins.sh:19 documents as the
+# known-good toolchain setup. The old comment here claimed build_tmp was "the
+# legitimate --aietools value"; that is not true for this pairing.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,13 +33,23 @@ XDIR="${XDIR:-$SCRIPT_DIR/../xclbins}"
 mkdir -p "$XDIR"
 
 export PYTHON="${PYTHON:-$MLIR_AIE/.venv/bin/python3}"
-export AIECC="${AIECC:-$MLIR_AIE/build_tmp/bin/aiecc}"
+export AIECC="${AIECC:-$MLIR_AIE/install_tmp/bin/aiecc}"
 export PEANO="${PEANO:-$MLIR_AIE/.venv/lib/python3.14/site-packages/llvm-aie}"
-export AIETOOLS="${AIETOOLS:-$MLIR_AIE/build_tmp}"
+export AIETOOLS="${AIETOOLS:-$MLIR_AIE/install_tmp}"
 export KERNEL="${KERNEL:-$SCRIPT_DIR/mm_32x64x128.o}"
 export GEN="${GEN:-$SCRIPT_DIR}"
 export PYTHONPATH="${PYTHONPATH:-$MLIR_AIE/install_tmp/python:$MLIR_AIE/.venv/lib/python3.14/site-packages}"
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-$MLIR_AIE/install_tmp/python/aie/_mlir_libs}"
+
+# Guard the pairing rather than trusting the two variables to agree later.
+if [ ! -x "$AIECC" ]; then
+    echo "build_all.sh: aiecc not executable at $AIECC" >&2; exit 1
+fi
+if [ "$(dirname "$(dirname "$AIECC")")" != "$AIETOOLS" ]; then
+    echo "build_all.sh: AIECC ($AIECC) and AIETOOLS ($AIETOOLS) are different roots." >&2
+    echo "  The generating bindings and the parsing aiecc must come from the same one." >&2
+    exit 1
+fi
 
 build_one() {
     local tag="$1" proj="$2" K="$3" N="$4" cols="$5"
@@ -39,28 +62,47 @@ build_one() {
     cp "$KERNEL" "$workdir/"
     
     cd "$workdir"
+    # Build into the workdir and verify before writing through to the tracked set.
+    # Writing straight to $XDIR and checking `[ -f ]` afterwards could not tell a
+    # fresh xclbin from a stale one left by an earlier run, so a failed aiecc could
+    # report ✅; and a failure here must not damage a committed artifact.
     $AIECC --peano="$PEANO" --aietools="$AIETOOLS" \
         --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
         --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \
         --aie-generate-npu-insts \
-        --xclbin-name="$XDIR/final_i8_${proj}_${tag}.xclbin" \
+        --xclbin-name="$workdir/out.xclbin" \
         --npu-insts-name="$workdir/insts.txt" \
-        design.mlir > /dev/null 2>&1
-    
-    if [ -f "$XDIR/final_i8_${proj}_${tag}.xclbin" ]; then
+        design.mlir > "$workdir/aiecc.log" 2>&1
+    local rc=$?
+
+    local ok=0
+    if [ "$rc" -eq 0 ] && [ -f "$workdir/out.xclbin" ] \
+       && [ "$(head -c8 "$workdir/out.xclbin" 2>/dev/null | tr -d '\0')" = "xclbin2" ]; then
+        cp -f "$workdir/out.xclbin" "$XDIR/final_i8_${proj}_${tag}.xclbin"
         local sz; sz=$(stat -c%s "$XDIR/final_i8_${proj}_${tag}.xclbin" 2>/dev/null)
         echo "  ✅ $proj $tag ($(numfmt --to=iec "$sz"))"
+        ok=1
     else
-        echo "  ❌ $proj $tag"
+        # Say WHY. aiecc's output used to go to /dev/null, so a build that failed on
+        # its first artifact printed only "❌" and the actual error was discarded.
+        echo "  ❌ $proj $tag (aiecc rc=$rc)"
+        sed 's/^/       /' "$workdir/aiecc.log" | tail -6
     fi
     
     cd "$GEN"
     rm -rf "$workdir"
     sleep 2
+    return $(( 1 - ok ))
 }
 
 ok=0
 fail=0
+
+# BUILD_ALL_FILTER limits the run to entries containing the given substring, so one
+# shape can be rebuilt — and this script verified — without running all 23. Mirrors
+# SHAPES_FILTER in run_build.sh and MODELS_FILTER in build_new_xclbins.sh. Example:
+#   BUILD_ALL_FILTER="moe_35b:O:" ./build_all.sh
+BUILD_ALL_FILTER="${BUILD_ALL_FILTER:-}"
 
 for entry in \
     "qwen3.6-moe_35b:O:4096:2048:8" \
@@ -88,6 +130,9 @@ for entry in \
     "nanbeige4.1_3b:D:8192:2560:4"; do
     
     IFS=':' read -r tag proj K N cols <<< "$entry"
+    if [ -n "$BUILD_ALL_FILTER" ] && [[ "$entry" != *"$BUILD_ALL_FILTER"* ]]; then
+        continue
+    fi
     if build_one "$tag" "$proj" "$K" "$N" "$cols"; then
         ((ok++))
     else

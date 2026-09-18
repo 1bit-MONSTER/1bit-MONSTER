@@ -309,15 +309,96 @@ dynamic DMA/BD tests, strix AOT lit tests, and submodule bumps
 Upstreaming to Xilinx/mlir-aie is deferred: the patches are WIP
 ("wip(toolchain): local NPU2-40 patches" — commit `1e6b70af0`), the npu2_40
 build path is not the production path, and the Xilinx repo is not one we
-contribute CI to. Recovery on a fresh box:
+contribute CI to.
 
-```bash
-# canonical backup (verified present on strixhalo):
-git clone ~/1bit-MONSTER-backups/mlir-aie-local-patches-2026-08-29.bundle mlir-aie
-# or apply the flat patch:
-cd mlir-aie && git apply ~/1bit-MONSTER-backups/mlir-aie-local-patches-2026-08-29.patch
+**Premise now in doubt (2026-09-17, round 22) — read this before treating the
+snapshot as precious.** The three files this section names are **verbatim
+upstream code**, not local work:
+
+```
+BdLowering.cpp / .h          md5 == upstream @ 0fb8b8712 (2026-07-20)
+AIELowerDynamicBDPool.cpp    md5 == upstream @ 0fb8b8712 (2026-07-20)
 ```
 
-Re-verify before relying on it (the bundle is a full clone; the patch is the
-same content as commit `1e6b70af0`). If the npu2_40 path ever becomes
-production, upstream the patches as a PR to Xilinx/mlir-aie first.
+They were first added upstream by `135f931c7` (dyn-seq P6, 2026-07-16) and
+`ddb8c614a` (dyn-seq P5, 2026-07-20), and none of those is an ancestor of
+`1e6b70af0` — the local branch's base simply predates them, so the commit
+carries its own copy of the same content. Across all 70 files in that commit,
+**41 are byte-identical to `origin/main` and 0 are absent from it**; nothing in
+it is local-only by path.
+
+**Two different things, and they must not be confused** (an earlier revision of
+this text called upstream "the canonical copy" and then handed you the bundle,
+which reads as a contradiction):
+
+- **Recovering this snapshot — the bundle is required.** `npu2_40_toolchain/` was
+  built from upstream `main` at 2026-07-21, and this snapshot is that window's
+  code: the three bd-pool files are byte-identical to upstream `0fb8b8712`
+  (2026-07-20). The `.complete.bundle` below is the only self-contained copy of it.
+- **Upstream is a forward-looking reference, not a substitute.** It has moved on:
+  `AIELowerDynamicBDPool.cpp` grew 11 → 21 functions, and the shim-BD API changed
+  from per-tile arguments (`emitDynamicShimBdWordOverrides(…, tileCol, tileRow, bdId, …)`)
+  to a `BdTemplateFields` struct (`buildShimBdWords(…, const BdTemplateFields &f, …)`).
+  A tree cloned from current upstream therefore will **not** match the patched
+  bd-pool host path this section describes, so using it means re-validating the
+  npu2_40 path — it is not a drop-in replacement.
+
+Whether the npu2_40 path still needs anything upstream's current dyn-seq code
+lacks — i.e. whether this snapshot can be retired in favour of tracking upstream —
+is the open P0.3 question, and it has **not** been decided. Details: #1948.
+
+```bash
+# canonical recovery path — the COMPLETE bundle (self-contained; required for the
+# npu2_40 build path described above):
+git clone ~/1bit-MONSTER-backups/mlir-aie-local-patches-2026-08-29.complete.bundle mlir-aie
+```
+
+**Correction 2026-09-17 (round 20/21) — the original `.bundle` cannot be used as
+this section used to say.** The thin bundle is **not** a full clone:
+
+```bash
+$ git bundle verify …2026-08-29.bundle
+The bundle contains this ref:  1e6b70af0…
+The bundle requires this ref:  e473a7248…        # a prerequisite, not content
+$ git clone …2026-08-29.bundle mlir-aie          # the old documented step
+error: Repository lacks these prerequisite commits: e473a7248…
+fatal: remote transport reported error
+```
+
+`e473a7248` ("npu2: HW context pool is 16 not 32", the parent of `1e6b70af0`) is
+itself local-only, so a fresh box has no way to satisfy it — the clone fails.
+Cause: `~/mlir-aie` is a **shallow** clone (`.git/shallow`, graft `1e1eaf22a`),
+and the bundle was created as a *range*, so its base was recorded as a
+prerequisite instead of being shipped. Size is the fingerprint — 135,947 B
+(thin) vs 111,841,382 B (complete).
+
+The flat patch has the same dependency: its own header reads
+`Base: e473a7248`, and it does **not** contain that commit's diff
+(`hostruntime.py`, the only file it touches, appears 0 times). So neither
+original artifact reconstructs the state on its own.
+
+Verify rather than assume — this is what "present" failed to catch:
+
+```bash
+git bundle verify <bundle> | grep -E 'complete history|requires'
+#   "records a complete history" -> standalone-clonable
+#   "requires this ref"          -> thin; the named commit must already exist
+```
+
+The `.complete.bundle` above was verified both ways: `git bundle verify` reports
+*"records a complete history"*, and a rehearsed `git clone` succeeds and yields
+`BdLowering.cpp` **and** `e473a7248`. The thin bundle is kept beside it for
+provenance only. A preservation ref also holds the commit locally, since it was
+previously reachable from no ref at all (only `refs/stash` held its parent):
+
+```
+refs/heads/preserve/npu2-40-toolchain-20260829 -> 1e6b70af0   (in ~/mlir-aie)
+```
+
+If the npu2_40 path ever becomes production, upstream the patches as a PR to
+Xilinx/mlir-aie first.
+
+**Note on the working tree:** `~/mlir-aie` currently *deletes* two of the files
+`1e6b70af0` adds (`AIELowerDynamicBDPool.cpp`, `BdLowering.cpp`). A build from
+that tree therefore lacks the bd-pool host path this section describes — check
+`git -C ~/mlir-aie status --porcelain` before assuming the patches are applied.

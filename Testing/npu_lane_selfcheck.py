@@ -62,8 +62,19 @@ site_installer = text(SITE_INSTALLER)
 for label, src in (("src/backend_npu.cpp", native),
                    ("tests/backends/backend_npu.cpp", harness),
                    ("src/backend_npu_flm.cpp", flm),
-                   ("install.sh", installer)):
+                   ("install.sh", installer),
+                   ("site/install.sh", site_installer)):
     check(bool(src), f"{label} is readable")
+
+# Each doc is asserted individually. text() returns "" for a missing file, and the
+# docs are then scanned as one blob, so a doc that MOVES used to fail nothing: the
+# other two still satisfied the positive assertions, and the negative one
+# (`bad not in docs_blob`) silently stopped covering the file that went away.
+# Measured before this loop existed: removing docs/wiki/npu-architecture.md alone
+# left the run at exit 0 with "31 checks ... OK"; removing all three failed. A
+# target that can vanish without a signal is the #2476 failure mode.
+for _doc in DOCS:
+    check(_doc.is_file(), f"{_doc.relative_to(ROOT)} is readable")
 
 # ── 1. the native lane is the engine's own worker ─────────────────────────────
 check("NPU_ENGINE_BIN" in native and "npu_engine_universal" in native,

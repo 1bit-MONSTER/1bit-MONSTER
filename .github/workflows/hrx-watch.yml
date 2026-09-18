@@ -1,0 +1,61 @@
+name: HRX watch
+
+# Intent: #1945 is a watch issue with two named re-engage signals — a stable
+# ROCm/hrx-system release, or llama.cpp PR #27218 moving past draft. It has been
+# hand-refreshed about nine times, once by a lane that then corrected its own refresh
+# as a duplicate of eight earlier ones. This runs the same two queries on a schedule
+# so a comment on the issue can carry a *change* instead of a repetition.
+#
+# The check is scripts/hrx-watch-check.sh, which is three-valued on purpose:
+#   exit 0  neither signal moved            -> green
+#   exit 1  a signal moved                  -> RED, this is the alert
+#   exit 2  could not determine (no auth, network, missing repo) -> RED, and the log
+#           says which of the two it was. Exit 2 must never be read as "no move";
+#           that conflation is the defect class this repo keeps finding.
+#
+# Read-only by design: two GETs, no issue comment, no writes, so there is nothing to
+# misfire. A red scheduled run is the notification (GitHub notifies the user who last
+# edited a cron schedule when that workflow fails). If the noise ever becomes a
+# problem in the other direction — a signal that moves and stays moved — the fix is a
+# recorded baseline in the script, not a comment loop here.
+#
+# NOTE: scheduled runs only fire on the default branch. workflow_dispatch is the
+# manual trigger, and the pull_request path re-checks when the script changes.
+
+on:
+  schedule:
+    - cron: "10 5 * * *"   # 05:10 UTC daily, after the 04:30 census watch
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "scripts/hrx-watch-check.sh"
+      - ".github/workflows/hrx-watch.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hrx-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: HRX upstream signals (#1945)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Check the two re-engage signals
+        env:
+          GH_TOKEN: ${{ github.token }}   # read-only: public repos, two GETs
+        run: |
+          set -uo pipefail
+          bash scripts/hrx-watch-check.sh
+          rc=$?
+          case "$rc" in
+            0) echo "::notice::neither #1945 signal moved" ;;
+            1) echo "::error::an #1945 signal moved — re-engage (docs/research/hrx-engine-goal.md §P2)" ;;
+            2) echo "::error::could not determine — NOT 'no move'; see the log line naming the failing read" ;;
+          esac
+          exit "$rc"

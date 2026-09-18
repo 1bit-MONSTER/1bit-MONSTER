@@ -15,9 +15,16 @@ GEN="$REPO/engine/npu/generators"
 TESTS="$REPO/engine/npu/tests"
 CLANG=~/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie/bin/clang++
 PYTHON=~/mlir-aie/.venv/bin/python3
-AIECC=~/mlir-aie/build_tmp/bin/aiecc
-PEANO=~/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
-AIETOOLS=~/mlir-aie/build_tmp
+# Overridable, and $HOME rather than ~ because tilde does not expand inside
+# "${VAR:-...}". The chess arm below REQUIRES --aietools to be the Vitis aietools
+# root (see the #1913 note); with these as bare assignments that instruction could
+# not be followed at all -- the environment was ignored, and USE_XCHESSCC=1 always
+# died at the guard naming build_tmp:
+#   ERROR (#1913): --xchesscc requested but chess-llvm-link not found at
+#     /home/bcloud/mlir-aie/build_tmp/tps/.../chess-llvm-link
+AIECC="${AIECC:-${HOME}/mlir-aie/build_tmp/bin/aiecc}"
+PEANO="${PEANO:-${HOME}/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie}"
+AIETOOLS="${AIETOOLS:-${HOME}/mlir-aie/build_tmp}"
 # Issue #1913 guard: AIETOOLS=~/mlir-aie/build_tmp is only valid because this
 # script defaults to --no-xchesscc. Set USE_XCHESSCC=1 to enable the chess arm
 # (--xchesscc --xbridge) — then --aietools MUST be the Vitis aietools root, or
@@ -31,7 +38,7 @@ XCHESS_ARGS=("--no-xchesscc" "--no-xbridge")
 if [ "$USE_XCHESSCC" = "1" ]; then
     XCHESS_ARGS=("--xchesscc" "--xbridge")
 fi
-export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
+export PATH=/home/bcloud/Xilinx/2026.1/Vitis/aietools/bin:/home/bcloud/Xilinx/2026.1/Vitis/bin:$PATH
 export PYTHONPATH=~/mlir-aie/install_tmp/python:~/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=~/mlir-aie/install_tmp/python/aie/_mlir_libs
 
@@ -52,7 +59,7 @@ cd "$W"
 # (aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll) belongs to the aiecc tree,
 # not to --aietools, and an aiecc without it silently skips the link step (#3690).
 if ! check_chess_aietools "$AIETOOLS" "$([ "$USE_XCHESSCC" = "1" ] && echo true || echo false)" \
-    "/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin" "$AIECC"; then
+    "/home/bcloud/Xilinx/2026.1/Vitis/aietools/bin" "$AIECC"; then
     exit 1
 fi
 "$PYTHON" "$GEN/n1_core_i8_v27.py" -M 128 -K 2048 -N 8192 -m 32 -k 64 -n 128 -c 8 -r 4 -b 5 \

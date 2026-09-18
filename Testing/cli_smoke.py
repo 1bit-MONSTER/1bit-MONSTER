@@ -90,6 +90,25 @@ def main() -> int:
         return 1 if a.require else 0
 
     subs, links = advertised_entries()
+    # These two lists drive every probe below, and both come from files read through
+    # read(), which turns a missing path into "". So if either source moves out of the
+    # tree the corresponding loop runs zero times, no probe is executed, and this
+    # check prints "ok: 0 subcommand(s) and 0 symlink(s)" and exits 0 — a check that
+    # verified nothing, reported as success (the #2476 class). Measured before this
+    # guard: with build/1bit present, moving tools/onebin.cpp and packaging/Makefile
+    # away left `cli_smoke.py --require` at exit 0 while the same stub binary failed
+    # the run when they were present. Neither list is legitimately empty — the binary
+    # always advertises subcommands and packaging/Makefile always declares the
+    # legacy symlinks — so an empty one means a source moved, not that all is well.
+    missing = [src for src, got in (("tools/onebin.cpp", subs),
+                                    ("packaging/Makefile", links)) if not got]
+    if missing:
+        print("cli_smoke FAILED — nothing to probe: no entries from "
+              + ", ".join(missing))
+        print(f"  subcommands={len(subs)} symlinks={len(links)}; the source file(s) "
+              "moved, or stopped declaring entries")
+        return 1
+
     failures: list[str] = []
     notes: list[str] = []
 
