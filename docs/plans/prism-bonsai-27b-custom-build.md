@@ -307,6 +307,8 @@ third honest tok/s column, not a priority path.
 
 ### P6 — Validation, docs, catalog (continuous, closes the lane)
 
+> **Progress (2026-09-18):** a token-level PPL harness (`tests/prism/test_prism_ppl.hip`, PrismEngine + the `.htok` tokenizer) scores the WS-00 gate corpus with our own forward: **Q1_0 PPL 5.93, PQ2_0 PPL 6.08** at 128 tokens. PPL is timing-immune, so the busy box does not affect the number. The folded PTQ1_0 pack has no `.htok` in `~/models/prism/1bp/`, so it is not yet scored. Absolute PPL is only comparable on the same corpus; the plan's 1bp-vs-FP16-unpacked-vs-fork comparison still needs those two rows.
+
 - ppl: `research/ws00-baseline/ppl_generic.cpp` on a fixed corpus, **1bp vs FP16-unpacked vs Prism fork**.
 - Quality: the 35-question suite in `benchmarks/bonsai/` for comparability with existing RESULTS.md.
 - Update `docs/model-families/bitnet-bonsai.md` (new row for the 27B hybrid family), `benchmarks/`,
