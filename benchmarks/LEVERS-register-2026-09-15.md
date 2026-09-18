@@ -951,3 +951,38 @@ earlier `grep -c final_bf16` similarly produced a false "0 tracked xclbins".
 second, differently-shaped pattern (or an independent command — `git ls-tree -r HEAD |
 grep <name>` for tracked files, `git show --stat | grep -cE "Bin [0-9]+ -> 0 bytes"` for
 deletions), and quote the command with the number.
+
+## 6.5 Measurement conditions for accuracy and runlist numbers (2026-09-18)
+
+Three conditions, all found by @agent-c6b96f (same lane, same worktree), that any future
+accuracy or runlist measurement must satisfy — and that invalidate some earlier rows.
+
+**(a) Pin `LAYER_XCLBIN`.** The engine auto-selects
+`/home/bcloud/amd-oss/fastflowlm/src/xclbins/<Model>/layer.xclbin` (`91cfc0fd6`), which is
+**not** the file the per-ctx ELFs are built for. On 2026-09-18 08:19 that path was replaced
+(401980 B, md5 `fa9f8df2f2b5618a560fd5470104aade`) while the coherent copy lives in-repo at
+`engine/npu/xclbins/flm_models/<Model>/layer.xclbin` (339980 B, md5
+`57431faab8593fadbffb5b9d5a9a0735`). Unpinned, the runlist arm silently emits garbage
+(measured: native 0/20 with FLM 18/20 and I1 OK=20). Both oracle harnesses now set the pin
+(`oracle_accuracy_model.sh:38-48`, `oracle_accuracy_0_6b.sh:39`).
+
+**(b) Accuracy runs must be SERIAL.** Two concurrent harness runs plus a third engine stall
+the NPU (TDR → slow fallback, ~900 s/prompt), even though two hwctx run at full speed for
+throughput.
+
+**(c) Llama-3.1-8B is UNVERIFIED.** It hangs on at least one prompt (row 2, 40 ids, no
+output in 600 s), so the 20/20 claim in task-acc-vl-llama (`e060acc4e` / `dac5417f4`) cannot
+stand as verified until that row is reproduced.
+
+**Rows invalidated:** `RESULTS-oracle-4b-8b-2026-09-16.md`'s 1.7B 10/20, 4B 8/20, 8B 6/20
+(unpinned + old extraction window) — corrected to 1.7B 20/20, 4B 19-20/20, 8B 18-19/20 in
+the CORRECTION section of that file (`832dffbee`), with a SUPERSEDED pointer at its top.
+
+**Rows NOT invalidated:** this lane's `(c)` bf16-default-path numbers
+(`RESULTS-yardstick-defaultpath-2026-09-16.md`), which were taken **2026-09-16** — before the
+08:19 replacement — and whose prefill/decode come from the bf16 path, not the runlist
+`layer.xclbin`. Their gate arm (`NPU_RUNLIST=1` + `~/npu-ab/elfs-4k`) did use the
+auto-selected copy, but at that date it was the coherent one. **Any re-run of that gate
+now needs the pin**, or it will reproduce the 0/20 garbage instead of the coherent stream.
+The I1 assertion is unaffected throughout: OK=20/MISMATCH=0 in both the original and the
+corrected runs.
