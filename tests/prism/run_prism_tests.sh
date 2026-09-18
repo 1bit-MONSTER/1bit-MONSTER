@@ -20,6 +20,18 @@ TMP="$(mktemp -d)"
 # wanted, and record that it was raised.
 export OMP_NUM_THREADS="${PRISM_CPU_THREADS:-4}"
 
+# Serialize suite runs. The per-run CPU cap below bounds one run, but nothing bounded a *stream* of them:
+# five invocations in five minutes from this worktree multiplied the host load and cost a peer their
+# measurement attempts. A second invocation now waits for the first instead of piling on.
+# PRISM_NO_SERIALIZE=1 bypasses this for deliberate concurrent work.
+if [ -z "${PRISM_NO_SERIALIZE:-}" ] && command -v flock >/dev/null 2>&1; then
+  exec 200>/tmp/prism-suite.runlock
+  if ! flock -n 200; then
+    echo "== another prism suite is running; waiting for it to finish (PRISM_NO_SERIALIZE=1 to bypass) =="
+    flock 200
+  fi
+fi
+
 # Declare the run in the shared advisory device lock, if no other lane holds it, and release on exit.
 LOCK=/tmp/1bit-npu-device.lock
 LOCK_TAKEN=0

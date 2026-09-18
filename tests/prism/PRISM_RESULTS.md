@@ -182,6 +182,26 @@ device lock when that lock is free, releases it on exit, and prints a startup ba
 lock state - so a peer sees us rather than inferring us from /proc. Note the lock logic is advisory and refuses to
 clobber: the verification run correctly reported "held by another lane" while the kernel owner held it.
 
+**Fourth contamination, and the first caused by concurrency rather than by one design flaw.** Five suite
+invocations started within five minutes from this worktree (start times verified), each spawning its own CPU floor.
+The per-run thread cap bounded **one** run; nothing bounded the stream, so the host load sat near the low teens with
+spikes near fifty and a peer's last measurable rows kept being refused by their load gate. Fix: the runner now takes
+an `flock` and makes a second invocation **wait** instead of piling on - verified by launching two concurrently, where
+the second printed the waiting line and ran no gates at all - with `PRISM_NO_SERIALIZE=1` as the deliberate bypass.
+
+**And a process error of mine in the middle of fixing it, recorded because it is the same class I have been flagging
+in others.** My concurrency test ended with a broad `pkill -f run_prism_tests.sh`, intended for my own two test
+invocations but equally capable of catching another lane's run in that window. I checked *afterwards* rather than
+before; the surviving suite turned out not to be mine (its environment lacks the host-only flag that mine carried),
+so I left it alone and killed nothing else. Rule adopted, and it is the process-level twin of the sentence this lane
+keeps repeating: **on a shared box, kill exact pids you have attributed - never a pattern you have not checked.**
+"Verify the instrument before believing the reading" applies to `pkill` as much as to a timer.
+
+**Peer finding recorded, because it says which rows this lane's noise actually blurs:** their load sensitivity is
+model-dependent - a 4B prefill moved only slightly at high load because most of its time is device attention, while a
+0.6B prefill was dominated by host work - so **small-model prefill numbers are the ones a host-saturating neighbour
+invalidates first.**
+
 **Operating rules this lane now carries, all three earned today:** cap the CPU for every parallel gate, declare
 the device for every device run, and print the load with every host-bound number.
 
