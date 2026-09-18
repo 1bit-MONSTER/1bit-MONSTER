@@ -65,8 +65,28 @@ def sync_numbers_json(today: str) -> tuple[bool, float]:
     return changed, bm["prefill_tflops_i8apre"]
 
 
+def read_page(path: Path) -> str | None:
+    """The page's text, or None when the tree does not carry that file.
+
+    Absent is not an error. The 2026-08-22 redesign (#1780) renamed the pages to
+    site/1bit-*.html and deleted site/benchmarks.html; before this, the read raised
+    FileNotFoundError, and packaging/services/daily-benchmark-validate.sh runs this
+    script under `set -e`, so the pipeline died at the step before its commit — no
+    PR, no drift issue, nothing published since (#2587). Syncing numbers.json is
+    what this script is for; a page that is not in the tree must not take that with
+    it. The caller's own anchor check is unchanged: a page that IS present but no
+    longer has the sentence this script patches still warns and skips.
+    """
+    if not path.is_file():
+        print(f"WARN: {path.name} is not in this tree -- skipping", file=sys.stderr)
+        return None
+    return path.read_text(encoding="utf-8")
+
+
 def patch_index_html(new_value: str, today: str) -> bool:
-    text = INDEX_HTML.read_text(encoding="utf-8")
+    text = read_page(INDEX_HTML)
+    if text is None:
+        return False
     m = re.search(r"measured (\d{4}-\d{2}-\d{2})\. Plus ([\d.]+) TFLOPS INT8 prefill\.", text)
     if not m:
         print("WARN: site/index.html anchor sentence not found -- skipping", file=sys.stderr)
@@ -81,7 +101,9 @@ def patch_index_html(new_value: str, today: str) -> bool:
 
 
 def patch_benchmarks_html(new_value: str) -> bool:
-    text = BENCHMARKS_HTML.read_text(encoding="utf-8")
+    text = read_page(BENCHMARKS_HTML)
+    if text is None:
+        return False
     m = re.search(r"<b>([\d.]+)</b><span>TFLOPS int8 prefill \(WMMA\)</span>", text)
     if not m:
         print("WARN: site/benchmarks.html anchor not found -- skipping", file=sys.stderr)

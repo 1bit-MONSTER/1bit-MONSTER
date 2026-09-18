@@ -88,12 +88,18 @@ fi
 
 python3 tools/sync_numbers.py
 
-if git diff --quiet -- benchmarks/latest.json site/numbers.json site/index.html site/benchmarks.html; then
+# site/benchmarks.html is NOT listed: the 2026-08-22 redesign (#1780) deleted it and
+# renamed the pages to site/1bit-*.html. `git diff` ignores a pathspec that matches
+# nothing, but `git add` on one exits 128 ("did not match any files") — and this
+# script is `set -e`, so naming it here would abort the publish even after
+# sync_numbers.py stopped raising on the same missing file (#2587). The replacement
+# page carries no TFLOPS anchor, so it is not listed either — nothing writes it.
+if git diff --quiet -- benchmarks/latest.json site/numbers.json site/index.html; then
     echo "no change vs current origin/main -- nothing to publish"
     exit 0
 fi
 
-git add benchmarks/latest.json site/numbers.json site/index.html site/benchmarks.html "${MANAGED_FILES[@]}"
+git add benchmarks/latest.json site/numbers.json site/index.html "${MANAGED_FILES[@]}"
 git commit -m "chore(benchmarks): daily re-measure $TODAY
 
 Automated via tools/validate_claims.py --update. All published claims
