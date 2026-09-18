@@ -685,14 +685,6 @@
    "sha256": "67760790342fe528ad3ebc8ceff6aed26c1048c212f6c7df03789404a1b941a7",
    "timestamp_utc": "2026-08-09T18:02:26Z"
   },
-  "985a73fa933965874b49be42d7bb5dee": {
-   "aliases": [],
-   "paths": [
-    "final_i8_MOE_D_zaya_m8h2.xclbin"
-   ],
-   "sha256": "1d4e4d0fe22ef83c7af9dadc4165497ede283f98ec7aab1d34c600a7ff602b83",
-   "timestamp_utc": "2026-08-23T08:13:40Z"
-  },
   "9f20fbd5ecc290fd06fe3fbe39edd931": {
    "aliases": [],
    "paths": [
@@ -831,6 +823,14 @@
    ],
    "sha256": "c232c1d08b10962a8c9e62653f710e7ec767a23557c80ca9f8deb2d7a260a190",
    "timestamp_utc": "2026-08-09T23:49:07Z"
+  },
+  "c02e966464527d8c4d2cc43e7bf4e23e": {
+   "aliases": [],
+   "paths": [
+    "final_i8_MOE_D_zaya_m8h2.xclbin"
+   ],
+   "sha256": "8661373f06c5cfeebe9d818af422f88a206b81f140682f4437accf0c73e0adf7",
+   "timestamp_utc": "2026-09-18T10:52:09Z"
   },
   "c4d1a7151b13adf9ec5cc28d0f54a0da": {
    "aliases": [],
@@ -1038,9 +1038,9 @@
   }
  },
  "build": {
-  "generating_script_revision": null,
-  "toolchain": null,
-  "toolchain_note": "Empty by design, and written only because --allow-null-toolchain was passed explicitly (issue #2262). The artifacts record no compiler arm or version (no chesscc/peano/llvm/aiecc/clang marker in the AXLF metadata; PlatformVBNV is empty), so this tool cannot derive one, and it now REFUSES to write this blank by default. The build that regenerates these artifacts is the only thing that can fill it in - that is the missing half of the provenance."
+  "generating_script_revision": "engine/npu/generators/n1_core_fused_gu_silu_d_p2.py @ 5e7309cba (D-phase B descriptor offset made nt-major)",
+  "toolchain": "aiecc: mlir-aie 1.3.4 (/home/bcloud/mlir-aie install_tmp pairing, aiecc LLVM 23.0.0); core compiler: llvm-aie (Peano) 21.0.0.2026080301+c9c5ecb7, clang 21.0.0, target aie2p-none-unknown-elf, flags --peano --no-xchesscc --no-xbridge; XRT 2.26.0",
+  "toolchain_note": "Recorded from the build that produced these artifacts, not read out of them: the AXLF metadata carries no chesscc/peano/llvm/aiecc/clang marker and PlatformVBNV is empty, so this value is only as good as the build that wrote it. Pass --toolchain to replace it."
  },
  "census": {
   "days_utc": {
@@ -1054,7 +1054,6 @@
    "2026-08-10": 2,
    "2026-08-21": 2,
    "2026-08-22": 4,
-   "2026-08-23": 1,
    "2026-08-27": 1,
    "2026-08-28": 1,
    "2026-08-29": 5,
@@ -1065,7 +1064,8 @@
    "2026-09-12": 1,
    "2026-09-13": 5,
    "2026-09-14": 24,
-   "2026-09-16": 7
+   "2026-09-16": 7,
+   "2026-09-18": 1
   },
   "distinct_builds": 122,
   "payload_bytes": 10383303,
@@ -1098,11 +1098,11 @@
  },
  "declared_dangling": {},
  "generated": {
-  "at": "2026-09-18T02:53:08Z",
+  "at": "2026-09-18T11:29:16Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
   "host": "strixhalo",
-  "ref": "f92337e56"
+  "ref": "7d7462bfe"
  },
  "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest --toolchain \"<compiler arm + versions>\" --script-revision \"<git rev of the generating script>\" and land it in the same commit as the artifact change. Those two flags are the point of this file: the artifacts carry no compiler marker to derive them from, so a rebuild that omits --toolchain records build.toolchain as null again (issue #2262).",
  "notes": [
@@ -1541,7 +1541,7 @@
   },
   "insts_i8_MOE_D_zaya_m8h2.txt": {
    "bytes": 97104,
-   "sha256": "8d1bff3654431dd3dad961859aacf3303e23e46dc3f0e6699db95cd64afb2e0c"
+   "sha256": "5e54190d9be7877cefafa04848cfb5224013beb8c054da6e9e3ddba1704bc548"
   },
   "insts_i8_MOE_FUSED_zaya.txt": {
    "bytes": 52496,

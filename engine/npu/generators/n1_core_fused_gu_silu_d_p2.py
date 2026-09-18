@@ -191,7 +191,13 @@ def my_fused_p2(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                             n_tile = cg2 * n_aie_cols + c
                             bt = shim_dma_single_bd_task(
                                 B_s[c], B_d,
-                                offset=(ki * (N_D // n) + n_tile) * (k * n),
+                                # nt-major, i.e. the same convention the working fused
+                                # design uses (n1_core_fused_gu_silu_d.py: offset=n_tile*(K//k)*(k*n))
+                                # and the one the host packB_into_fused_d writes
+                                # ((nt*n_k + ki)*8192). It was (ki*(N_D//n)+n_tile), the
+                                # transpose -> every D B-tile read from the wrong slot, C2
+                                # wrong in 2048/2048 elements (issue #2307).
+                                offset=(n_tile * (K // k) + ki) * (k * n),
                                 sizes=[1, 1, 1, k * n],
                                 strides=[1, 1, 1, 1], issue_token=True)
                             dma_start_task(bt); bt_list.append(bt)
