@@ -197,13 +197,28 @@ so I left it alone and killed nothing else. Rule adopted, and it is the process-
 keeps repeating: **on a shared box, kill exact pids you have attributed - never a pattern you have not checked.**
 "Verify the instrument before believing the reading" applies to `pkill` as much as to a timer.
 
-**Confirmed by the owner, and the framing is the part worth keeping:** the five overlapping suite invocations were
-the kernel owner's repeated-suite race checking after the GDN retraction plus a validation run, all synchronous and all
-exited, and this lane is now fully paused. The lesson recorded in the owner's own words: the per-run CPU cap did not
+**Confirmed by the owner, corrected by the owner, and the framing is the part worth keeping.** The five overlapping
+suite invocations were the kernel owner's **p3-gate window** (the oracle and CPU-vs-device comparisons per pack) plus a
+**p6-validate full-suite run**, all synchronous and all exited, and this lane is now fully paused. **My first
+attribution - repeated-suite race checking after the GDN retraction - was wrong**, and the owner corrected it on the
+grounds that the contamination record should name the actual cause rather than the more flattering-sounding one: the
+race was already fixed and verified eight times over by then, and the race-checking repeats had happened earlier, during
+that verification. An attribution that flatters the party being attributed is still a wrong attribution, and this one
+was mine; "verify the instrument before believing the reading" applies to the *motive* one writes into a record as much
+as to a number.
+
+**The principle this lane has been running on, in the owner's words:** the day has been spent making the weaker
+statement first, and it has not cost either of us a single correct number. That is a better summary of the operating
+rule than any of the individual instances, and it survived the day's one deliberate weakening that did cost something -
+recording PTQ1_0 as short by half a token - because that cost was a number, not a truth. The lesson recorded in the owner's own words: the per-run CPU cap did not
 help because nothing serialised launches, so several invocations each politely capping their threads still multiply the
 load - **"our runs were individually well-behaved" was true and irrelevant.** The mechanism was concurrency, not any
 single run's design, and that is now the third distinct mechanism this lane has had to fix rather than a fourth
 variation of one.
+
+**One data point from the run that was cut short by nobody:** the p6-validate full suite, cosine included, reported
+`passed=53 failed=0 skipped=0`, matching this lane's own three clean runs at the same count - so the counts line and the
+skip fix are consistent across both writers and two trees' worth of invocations.
 
 **Peer finding recorded, because it says which rows this lane's noise actually blurs:** their load sensitivity is
 model-dependent - a 4B prefill moved only slightly at high load because most of its time is device attention, while a
