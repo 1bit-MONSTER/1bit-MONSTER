@@ -194,7 +194,15 @@ jobs:
             echo "No build/ directory (ROCm unavailable on this runner) - skipping host ctest."
           fi
       - name: ShellCheck
-        uses: ludeeus/action-shellcheck@2.0.0
+        # Pinned to a commit, like every other action in this repo: #987 (closed
+        # 2026-07-26) is the audit that removed the mutable tags, and this usage
+        # arrived after it — added by #1756 on 08-21 — as the only remaining tag pin
+        # among 56 `uses:` lines across the 34 workflows. A third-party tag can be
+        # force-pushed to different code, and this step runs in a REQUIRED job
+        # (`C++ (cmake configure + build)`), so the code it downloads executes under
+        # the ruleset's gate. 2.0.0 resolved to this commit when the step last ran
+        # (the download line in the job log prints the same SHA).
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38  # 2.0.0
         with:
           scandir: '.'
           severity: warning
