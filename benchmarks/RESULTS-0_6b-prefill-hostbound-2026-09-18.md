@@ -110,3 +110,32 @@ round-trips between the bf16 prefill and the runlist decode consume — but it d
 Recorded as the state of the lever, not as a fix: any change here alters the prefill path that
 carries the accuracy gate, so it needs the oracle scoreboard re-run per model and is a multi-hour
 step (raised with the user).
+
+## Instrumented: what the host term actually is (`perf stat`)
+
+`perf stat` around one 8k prefill of 0.6B (same invocation as the table above, prefill 4077 ms):
+
+| counter | value |
+|---|---|
+| `duration_time` | 7.19 s (whole process: startup + prefill + boot token) |
+| `task-clock` | 30.25 s CPU (≈ 8 threads for the 4.08 s prefill) |
+| `cycles` | 121.1 G |
+| `instructions` | 74.4 G |
+| **IPC** | **0.61** |
+| `cache-misses` | 192.6 M |
+| `LLC-load/store-misses` | not supported on this PMU |
+
+74.4 G instructions over `8192 tokens × 28 layers = 229,376` token-layers is **~324,000 host
+instructions per token per layer**, or **~316 instructions per hidden element per layer**
+(H=1024). An IPC of 0.61 on a modern out-of-order part means the pipeline is stalled most of the
+time — this is not a compute-bound loop, it is an instruction-and-stall-bound one.
+
+Neither number is compatible with "the arithmetic is slow": the model's `H²` work is 390–402 ms of
+device GEMM, while the `H` work is 4007–4071 ms of host code that issues 74 G instructions to move
+per-element data. The lever is **fusing and vectorising the per-element host passes** (the
+conversion / norm / RoPE / SiLU / quantise / tile-pack sequence that currently walks each element
+several times), not making the matmuls faster and not the attention kernel.
+
+This is the instrumented form of the classification, so the cell is not left as an inference:
+per-element host code, ~316 instructions per element per layer, IPC 0.61, ~4.0 s of a 4.08 s
+prefill at 8192 tokens.
