@@ -61,6 +61,26 @@ and the `N<=512` softmax contract live. Nothing in this note is a reason to reop
 cells — it names the one address at which native is behind and the reason the deficit is invisible
 at 1k.
 
+## The cheapest hypothesis, tested and refused: host threads
+
+The obvious way to buy back 2–3% on a prefill that is ~4 s of host work would be more host
+threads. It is already at the optimum: the bf16 prefill's default is `g_host_threads_default = 8`
+(`npu_engine_universal.cpp:507`) and raising `NPU_HOST_THREADS` only loses time.
+
+| NPU_HOST_THREADS | 0.6B 8k prefill (2 runs) |
+|---|---:|
+| default (=8) | **4125, 4078 ms** |
+| 8 (explicit) | 4322, 4298 ms |
+| 12 | 4238, 4148 ms |
+| 16 | 4330, 4305 ms |
+| 24 | 4373, 4431 ms |
+| 32 | 20430, 17672 ms |
+
+Two things worth keeping: the default is the best of the sweep, and **32 threads is a ~5x
+regression** (20.4 s / 17.7 s vs 4.1 s) — a cliff for anyone who assumes `nproc` threads is a
+free win. The residual cell therefore belongs to the attention term (2347 ms of 4139 ms at 8k),
+not to the host-side conv/GEMM work.
+
 ## Status of criterion (c) after this note
 
 - **1k: met**, all three metrics for all six models (prefill 1.27–1.47x, TTFT faster,
