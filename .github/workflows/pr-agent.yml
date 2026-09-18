@@ -16,9 +16,22 @@ jobs:
     runs-on: [self-hosted, pr-agent]
     timeout-minutes: 30
     # Only run for same-repo PRs and trusted commenters (not external forks)
+    #
+    # The PR check on the comment branch is not decoration: `issue_comment` fires for
+    # comments on plain ISSUES too, and the CLI step builds its target as
+    # `.../pull/${{ github.event.issue.number }}`. On an issue that is not a PR that URL
+    # cannot resolve, so the run had nothing to review and could only fail — while still
+    # occupying one of the two self-hosted runners, which is the same pool the NPU
+    # benchmark needs (#2552). Measured over 70 minutes on 2026-09-18: 14 of 22 PR-Agent
+    # runs were `issue_comment`, all with head_branch `main` (i.e. issue comments), and
+    # none of them had completed — the queue was 8 deep on `main` alone.
+    #
+    # What this does NOT change: a trusted comment on a real PR still runs, including the
+    # `*)` fallback in the CLI step that turns a non-command comment into a full review.
+    # That is a product choice about how the agent should respond; this is not.
     if: |
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'issue_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
