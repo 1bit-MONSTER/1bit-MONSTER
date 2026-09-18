@@ -47,6 +47,7 @@ static bool  OPT_DIAG = false;
 // --plus-one-norms restores the HF convention for comparison.
 static bool OPT_PLAIN_NORMS = true;
 static bool  OPT_TOPK = false;  // print top-5 ids at every position
+static const char* OPT_DUMP = nullptr;  // write per-layer hidden states (P2 cosine gate)
 // Folded-basis order. Two self-consistent conventions exist:
 //   A (default): forward = signs then H, inverse = H then signs   (runtime.py::fwht verbatim)
 //   B:           forward = H then signs, inverse = signs then H   (same algebra, other order)
@@ -245,6 +246,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--diag") == 0) { OPT_DIAG = true; continue; }
         if (std::strcmp(argv[i], "--plus-one-norms") == 0) { OPT_PLAIN_NORMS = false; continue; }
         if (std::strcmp(argv[i], "--topk") == 0) { OPT_TOPK = true; continue; }
+        if (std::strcmp(argv[i], "--dump-layers") == 0 && i + 1 < argc) { OPT_DUMP = argv[++i]; continue; }
         if (std::strcmp(argv[i], "--fold-signs-after") == 0) { OPT_FOLD_SIGNS_AFTER = true; continue; }
         if (std::strcmp(argv[i], "--no-ssmout-perm") == 0) { OPT_SSMOUT_PERM = false; continue; }
         if (std::strcmp(argv[i], "--invert-ssmout-perm") == 0) { OPT_SSMOUT_PERM_INV = true; continue; }
@@ -305,6 +307,11 @@ int main(int argc, char** argv) {
 
     int pos = 0, agree = 0, checked = 0;
     std::vector<float> logits;
+    FILE* dump_fp = nullptr;
+    if (OPT_DUMP) {
+        dump_fp = std::fopen(OPT_DUMP, "wb");
+        if (!dump_fp) { std::fprintf(stderr, "cannot open %s\n", OPT_DUMP); return 2; }
+    }
     for (size_t step = 0; step < toks.size() + (size_t)predict; step++) {
         const int tok = (step < toks.size()) ? toks[step]
                                             : (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
@@ -497,6 +504,8 @@ int main(int argc, char** argv) {
             mm.rotate(gate);
             std::vector<float> down = mm.matvec(L[l].down, gate);
             for (int i = 0; i < mm.H; i++) h[i] += down[i];
+            if (dump_fp && step == 0)
+                std::fwrite(h.data(), sizeof(float), h.size(), dump_fp);
         }
         std::vector<float> fn = h;
         rmsnorm_1pw(fn, mm.vec("output_norm.weight"), mm.EPS);
@@ -549,5 +558,6 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
         pos++;
     }
+    if (dump_fp) std::fclose(dump_fp);
     return 0;
 }

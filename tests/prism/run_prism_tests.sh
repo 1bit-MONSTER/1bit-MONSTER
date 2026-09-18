@@ -97,6 +97,20 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
   fi
     run "$base: per-position oracle agreement" \
         python3 "$REPO/tests/prism/check_oracle_agreement.py" "$TMP/pf" "$bp" "$base"
+    # Per-layer cosine vs the in-repo streaming numpy reference (P2 gate, clause 2).
+    # Expensive (~6 min/pack): the folded pack by default; PRISM_LAYER_COSINE=all for
+    # all three, =0 to skip.
+    LC="${PRISM_LAYER_COSINE:-folded}"
+    do_cos=0
+    case "$LC" in
+      0|off) do_cos=0 ;;
+      all)   do_cos=1 ;;
+      *)     [ "$base" = "Ternary-Bonsai-2-27B-PTQ1_0" ] && do_cos=1 || do_cos=0 ;;
+    esac
+    if [ "$do_cos" = 1 ]; then
+      run "$base: per-layer cosine vs numpy reference (64 layers)" bash -c \
+        "\"$TMP/pf\" \"$bp\" 1000 --dump-layers \"$TMP/cpp_layers.bin\" --quiet > /dev/null 2>&1 && python3 \"$REPO/tests/prism/dump_prism_layers.py\" \"$bp\" 1000 \"$TMP/py_layers.bin\" > /dev/null && python3 \"$REPO/tests/prism/compare_prism_layers.py\" \"$TMP/cpp_layers.bin\" \"$TMP/py_layers.bin\""
+    fi
   fi
   if [ -f "$bp" ]; then
     run "$base: converted .1bp is a byte-exact repack" \
