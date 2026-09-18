@@ -139,6 +139,74 @@ static inline float bf16g(uint16_t v){
     return __builtin_bit_cast(float,b);
 }
 static inline uint16_t f32_to_bf16(float f){uint32_t b=__builtin_bit_cast(uint32_t,f);return (uint16_t)((b+0x7FFF+((b>>16)&1))>>16);}
+// HF direct GEMM weights (NPU_HF_WEIGHTS=<dir>): ge_weights.f32 holds, per layer, the seven
+// projection tensors q,k,v,o,gate,up,down as flat f32 [out,in] row-major in PyTorch nn.Linear
+// order — EXACTLY what the q4nx dequant (dq) returns, so they are a 1:1 substitute carrying HF
+// bf16 precision instead of int4. lm_head.f32 holds [vocab,H] f32. Layout:
+//   q[NH*HD,H] k[NKV*HD,H] v[NKV*HD,H] o[H,NH*HD] gate[IM,H] up[IM,H] down[H,IM]
+// (see tools/convert_hf_ge_weights.py / scripts/convert_hf_ge_weights.py).
+struct HfGe {
+    std::vector<float> ge;
+    std::vector<uint16_t> ge_bf16;
+    bool ok=false; int H=0,NH=0,NKV=0,HD=0,IM=0;
+    size_t stride=0, q_off=0,k_off=0,v_off=0,o_off=0,g_off=0,u_off=0,d_off=0;
+    size_t bstride=0,bq_off=0,bo_off=0,bg_off=0,bd_off=0;
+    bool init(const char* dir,int H_,int NH_,int NKV_,int HD_,int IM_){
+        H=H_;NH=NH_;NKV=NKV_;HD=HD_;IM=IM_;
+        size_t q=(size_t)(NH*HD)*H, k=(size_t)(NKV*HD)*H, v=(size_t)(NKV*HD)*H;
+        size_t o=(size_t)H*(NH*HD), g=(size_t)IM*H, u=(size_t)IM*H, d=(size_t)H*IM;
+        q_off=0;k_off=q;v_off=q+k;o_off=q+k+v;g_off=o_off+o;u_off=g_off+g;d_off=u_off+u;
+        stride=d_off+d;
+        std::string p=std::string(dir)+"/ge_weights.f32";
+        FILE* f=fopen(p.c_str(),"rb"); if(!f){fprintf(stderr,"[hf] cannot open %s\n",p.c_str());return false;}
+        fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+        ge.resize(sz/4);
+        if(fread(ge.data(),4,ge.size(),f)!=ge.size()){fclose(f);ge.clear();return false;}
+        fclose(f);
+        fprintf(stderr,"[hf] loaded %s: %zu floats/layer, %zu layers\n",p.c_str(),stride,ge.size()/stride);
+        ok=true; return true;
+    }
+    float* get(int l,int tag,int rows,int cols){
+        size_t off=0;int R=0,C=0;
+        switch(tag){case 0:off=q_off;R=NH*HD;C=H;break;case 1:off=k_off;R=NKV*HD;C=H;break;
+                    case 2:off=v_off;R=NKV*HD;C=H;break;case 3:off=o_off;R=H;C=NH*HD;break;
+                    case 4:off=g_off;R=IM;C=H;break;case 5:off=u_off;R=IM;C=H;break;
+                    case 6:off=d_off;R=H;C=IM;break;}
+        if(rows!=R||cols!=C){fprintf(stderr,"[hf] tag %d shape %dx%d != %dx%d\n",tag,rows,cols,R,C);return nullptr;}
+        float* out=(float*)malloc((size_t)rows*cols*4); if(!out)return nullptr;
+        memcpy(out,ge.data()+(size_t)l*stride+off,(size_t)rows*cols*4);
+        return out;
+    }
+    bool load_lm_head(std::vector<float>& out,const char* dir){
+        std::string p=std::string(dir)+"/lm_head.f32";
+        FILE* f=fopen(p.c_str(),"rb"); if(!f)return false;
+        fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+        out.resize(sz/4);
+        if(fread(out.data(),4,out.size(),f)!=out.size()){fclose(f);out.clear();return false;}
+        fclose(f);
+        fprintf(stderr,"[hf] loaded %s: %zu floats\n",p.c_str(),out.size());
+        return true;
+    }
+    bool init_bf16_inout(const char* dir,int qkvn){
+        size_t q=(size_t)H*qkvn, o=(size_t)(NH*HD)*H, g=(size_t)H*2*IM, d=(size_t)IM*H;
+        bq_off=0; bo_off=q; bg_off=q+o; bd_off=q+o+g; bstride=q+o+g+d;
+        std::string p=std::string(dir)+"/ge_weights_bf16.bin";
+        FILE* f=fopen(p.c_str(),"rb"); if(!f){fprintf(stderr,"[hf] cannot open %s\n",p.c_str());return false;}
+        fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+        ge_bf16.resize(sz/2);
+        if(fread(ge_bf16.data(),2,ge_bf16.size(),f)!=ge_bf16.size()){fclose(f);ge_bf16.clear();return false;}
+        fclose(f);
+        fprintf(stderr,"[hf] loaded %s: %zu bf16/layer, %zu layers\n",p.c_str(),bstride,ge_bf16.size()/bstride);
+        return true;
+    }
+    const uint16_t* get_bf16(int l,int tag){
+        size_t off=0;
+        switch(tag){case 0:off=bq_off;break;case 1:off=bo_off;break;case 2:off=bg_off;break;case 3:off=bd_off;break;}
+        return ge_bf16.data()+(size_t)l*bstride+off;
+    }
+};
+static HfGe g_hf;
+static bool g_use_hf=false;
 // bfp16ebs8: 8 f32 -> 1 shared exponent byte + 8 x 7-bit mantissa bytes (9B/8vals)
 static inline void f32_to_bfp16ebs8(const float* in, int n, uint8_t* out){
     for(int b=0;b<n/8;b++){
@@ -1275,7 +1343,9 @@ int main(int argc,char**argv){
     if (lm_bpt == 4736 || lm_bpt == 8704) { int lm_cols = H / 256; if (lm_cols > 0) lm_i8 *= lm_cols; }
 
     // Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model
-    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=
+    if (const char* hfd = getenv("NPU_HF_WEIGHTS")) { if (g_hf.init(hfd, H, NH, NKV, HD, IM)) g_use_hf = true; }
+    if (g_use_hf) { if (!g_hf.load_lm_head(lm_head_f32, getenv("NPU_HF_WEIGHTS"))) { g_use_hf = false; } }
+    if(!g_use_hf && lo&&lm_i8>0){int lr,lc;float*lm_raw=
         (lm_bpt==8704) ? dequant_q8_0_to_float_ex(i8p(lo),lm_i8,H,&lr,&lc)
         : (lm_bpt==4736) ? dequant_i8_4736_to_float(i8p(lo),lm_i8,H,&lr,&lc)
         : q4_dequant_geom(i8p(lo),lm_i8,H,cfg.cpt,&lr,&lc);
@@ -1940,10 +2010,10 @@ struct Bf16Ctx {
         // layer 3 with no symbol, so name each step. Silent unless the flag is set.
         const bool pdbg = getenv("RT_PACK_DEBUG") != nullptr;
         if (pdbg) fprintf(stderr, "    std: dq(q_proj) off=%llu K=%d\n", (unsigned long long)qp[l], H);
-        float* qkv_w = dq(qp[l], q_i8, H, &qr, &qc, use_q8);
+        float* qkv_w = g_use_hf ? g_hf.get(l, 0, NH*HD, H) : dq(qp[l], q_i8, H, &qr, &qc, use_q8); if (g_use_hf) { qr = NH*HD; qc = H; }
         if (pdbg) fprintf(stderr, "    std: q=%p qr=%d qc=%d\n", (void*)qkv_w, qr, qc);
         if (pdbg) fprintf(stderr, "    std: dq(o_proj) off=%llu K=%d\n", (unsigned long long)op[l], OIN);
-        float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
+        float* ow = g_use_hf ? g_hf.get(l, 3, OOUT, OIN) : dq(op[l], o_i8, OIN, &or2, &oc2, use_q8); if (g_use_hf) { or2 = OOUT; oc2 = OIN; }
         if (pdbg) fprintf(stderr, "    std: o=%p or2=%d oc2=%d\n", (void*)ow, or2, oc2);
         if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
         // A non-NULL dequantized buffer with ZERO rows means the tensor's shape was not
@@ -1964,8 +2034,8 @@ struct Bf16Ctx {
         // gate (2*NH*HD rows).
         if (qr == NH * HD && kp[l] && vp[l]) {
             int kr = 0, kc = 0, vr = 0, vc = 0;
-            float* kw = dq(kp[l], k_i8, H, &kr, &kc, use_q8);
-            float* vw = dq(vp[l], v_i8, H, &vr, &vc, use_q8);
+            float* kw = g_use_hf ? g_hf.get(l, 1, NKV*HD, H) : dq(kp[l], k_i8, H, &kr, &kc, use_q8); if (g_use_hf) { kr = NKV*HD; kc = H; }
+            float* vw = g_use_hf ? g_hf.get(l, 2, NKV*HD, H) : dq(vp[l], v_i8, H, &vr, &vc, use_q8); if (g_use_hf) { vr = NKV*HD; vc = H; }
             if (!kw || !vw) { free(qkv_w); free(ow); free(kw); free(vw); continue; }
             int t = qr + kr + vr;   // == NH*HD + 2*NKV*HD == qkv_total
             std::vector<float> w((size_t)H * t, 0.0f);
@@ -2040,7 +2110,10 @@ struct Bf16Ctx {
         free(ow);
         if (gp[l] && up[l]) {
         int unused;
-        int gr,ur;float*gw=dq(gp[l],g_i8,H,&gr,&unused,use_q8),*uw=dq(up[l],u_i8,H,&ur,&unused,use_q8);
+        int gr,ur;
+        float*gw=g_use_hf?g_hf.get(l,4,GUOUT,H):dq(gp[l],g_i8,H,&gr,&unused,use_q8);
+        float*uw=g_use_hf?g_hf.get(l,5,GUOUT,H):dq(up[l],u_i8,H,&ur,&unused,use_q8);
+        if(g_use_hf){gr=GUOUT;ur=GUOUT;}
         if(cfg.gu_split){
             std::vector<float>wg((size_t)H*gr);transpose_pack(gw,GUOUT,H,wg.data(),gr,0);
             FLM_PACKB(cg,l,wg.data(),H,gr,gsc[l]);
@@ -2163,7 +2236,9 @@ struct Bf16Ctx {
         }free(gw);free(uw);
         }
         if (dp[l]) {
-        int dr2,dc2;float*dw=q4_dequant_geom(i8p(dp[l]),d_i8,DIN,cfg.cpt,&dr2,&dc2);
+        int dr2,dc2;
+        float*dw=g_use_hf?g_hf.get(l,6,DOUT,DIN):q4_dequant_geom(i8p(dp[l]),d_i8,DIN,cfg.cpt,&dr2,&dc2);
+        if(g_use_hf){dr2=DOUT;dc2=DIN;}
         std::vector<float>wd((size_t)DIN*DOUT);transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
         FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);
         if(have_small_m) cd_m.packB(l,wd.data(),DIN,DOUT,dsc[l]);
@@ -4588,7 +4663,15 @@ struct Bf16Ctx {
             if (layer_bo_bytes <= 0) layer_bo_bytes = 2048 * 5120;
             std::vector<uint8_t> bo(layer_bo_bytes);
             int offs[6];
+            if (g_use_hf) g_hf.init_bf16_inout(getenv("NPU_HF_WEIGHTS"), qkvn);
             for (int l = 0; l < NC; l++) {
+                if (g_use_hf) {
+                    Wqkv[l] = bf16mm_upload_w(g_hf.get_bf16(l, 0), H, qkvn);
+                    Wo[l]   = bf16mm_upload_w(g_hf.get_bf16(l, 1), qout, H);
+                    Wgu[l]  = bf16mm_upload_w(g_hf.get_bf16(l, 2), H, 2 * IM);
+                    Wd[l]   = bf16mm_upload_w(g_hf.get_bf16(l, 3), IM, H);
+                    continue;
+                }
                 npu_bf16_pack_layer(l, bo.data(), offs);
                 if (l == 0 && getenv("NPU_DUMP_BO")) {
                     FILE* fbo = fopen("/tmp/bo_dump.bin", "wb");
@@ -4618,6 +4701,7 @@ struct Bf16Ctx {
                 if (l == 0 && getenv("NPU_DUMP_L0")) { fprintf(stderr, "[init] H=%d qkvn=%d Wqkv[0]=%d\n", H, qkvn, Wqkv[0]); bf16mm_dump_w(Wqkv[0], "/tmp/bf16_l0_Wqkv.bin"); }
                 Wo[l]    = bf16mm_dequant_dev(bo.data(), qout, H, (uint32_t)offs[3] * 5120, (size_t)layer_bo_bytes);
                 Wd[l]    = bf16mm_dequant_dev(bo.data(), IM, H, (uint32_t)offs[5] * 5120, (size_t)layer_bo_bytes);
+                if (l == 0 && getenv("NPU_DUMP_L0")) { bf16mm_dump_w(Wo[0], "/tmp/bf16_l0_Wo.bin"); bf16mm_dump_w(Wd[0], "/tmp/bf16_l0_Wd.bin"); }
             }
             fprintf(stderr, "bf16 prefill: %d layers dequant done\n", NC);
             printf("=== Prefill %d [bf16] ===\n", npt); fflush(stdout);
