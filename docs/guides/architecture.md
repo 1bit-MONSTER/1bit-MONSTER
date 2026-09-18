@@ -57,6 +57,12 @@ xrt::device (1 instance)
 All 4 GEMM contexts are created at startup and kept alive.
 NPU2 supports multiple concurrent hw_contexts — we've verified 8 alive at once.
 
+The optional bf16 context family (`NPU_BF16=1`) has its own artifact requirement:
+`final_bf16_<T>_K<K>_N<N>.xclbin` / `insts_bf16_<T>_…` are build outputs of
+`engine/npu/generators/build_bf16_xclbins.sh`, and their committed coverage is
+gated by `engine/npu/tests/check_artifact_families.py`. See
+[NPU engine modes](npu-modes.md).
+
 ## Key Fixes
 
 ### K-Interleaving Bug

@@ -1046,16 +1046,29 @@ int main(int argc,char**argv){
     // Open model
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
     uint8_t*md=(uint8_t*)mmap(NULL,st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);
-    uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
-    // The weight loader below is Q4NX-JSON only (manifest at offset 8). The
-    // 1BP binary format (256-byte header + tensor index, no JSON) makes hsz
-    // garbage -> memmem past the mapping in jo()/key_exists = SIGSEGV. The
-    // engine's 1BP support is cfg+emb only; weights require .q4nx conversion
+    // Reject a container this loader cannot parse with a diagnostic instead of a
+    // SIGSEGV (issue #2601: NPU_BF16=1 on a .gguf used to exit 139 with no
+    // output). The weight loader below is Q4NX-JSON only (manifest length at
+    // offset 8). A GGUF (magic "GGUF") or any other container makes hsz garbage
+    // -> memmem past the mapping in jo()/key_exists = SIGSEGV. The engine's 1BP
+    // support is cfg+emb only; weights require .q4nx conversion
     // (tools/tq2_to_q4nx.cpp). Convert instead of crashing.
-    if (is_onebp && (hsz > (uint64_t)st.st_size || hsz < 8)) {
-        fprintf(stderr, "ERR: legacy 1BP model has no JSON manifest — this engine "
-                        "loads weights from .q4nx only.\n"
-                        "     Convert with: build/tq2_to_q4nx %s out.q4nx\n", mp);
+    if (st.st_size < 8) {
+        fprintf(stderr, "ERR: %s is too small to be a .q4nx container (%lld bytes).\n",
+                mp, (long long)st.st_size);
+        return 1;
+    }
+    uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
+    if (hsz > (uint64_t)st.st_size || hsz < 8) {
+        if (is_onebp)
+            fprintf(stderr, "ERR: legacy 1BP model has no JSON manifest — this engine "
+                            "loads weights from .q4nx only.\n"
+                            "     Convert with: build/tq2_to_q4nx %s out.q4nx\n", mp);
+        else
+            fprintf(stderr, "ERR: %s is not a .q4nx container (manifest length %llu "
+                            "does not fit a %lld-byte file)%s.\n",
+                    mp, (unsigned long long)hsz, (long long)st.st_size,
+                    getenv("NPU_BF16") ? " — NPU_BF16=1 requires the .q4nx tiles" : "");
         return 1;
     }
     auto i8p=[&](uint64_t o){return md+df+o;};
