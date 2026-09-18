@@ -1518,6 +1518,34 @@ int zaya_decode_main(int argc, char** argv) {
                         fprintf(stderr, "\n[moecmp] npu: ");
                         for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", moe_out[i]);
                         fprintf(stderr, "\n");
+                        // FAIL CLOSED (issue #2600). This gate used to only print, so a path
+                        // whose MoE output its own reference disproves kept decoding: with
+                        // NPU_FUSED=1 NPU_FUSED_SPLIT=1 (int8) the layer scores corr=0.0057
+                        // while the fused path's layer scores 0.9985 on the same weights and
+                        // the byte-identical reference, and it emitted 32 tokens anyway. The
+                        // int4 C2 gate already refuses in exactly this situation (#2307): a
+                        // wrong-output path that reports its own wrongness and continues is
+                        // worse than a refusal. The threshold sits far below every passing
+                        // measurement (int4 split 0.9993, fused int8 0.9985, broken 0.0057),
+                        // so it cannot fire on a healthy path.
+                        {
+                            const double moe_corr = num/std::sqrt(d1*d2);
+                            const char* moe_min_s = getenv("NPU_MOE_MIN_CORR");
+                            const double moe_min = moe_min_s ? atof(moe_min_s) : 0.95;
+                            const bool moe_allow = getenv("NPU_MOE_ALLOW_BAD") &&
+                                                   atoi(getenv("NPU_MOE_ALLOW_BAD")) == 1;
+                            if (moe_corr < moe_min && !moe_allow) {
+                                fprintf(stderr,
+                                    "\n[MoEgate] REFUSING to continue: the split path's MoE L1 output "
+                                    "correlates %.6f with the CPU reference (threshold %.2f; the fused "
+                                    "path scores 0.9985 on the same weights and the same reference). "
+                                    "Continuing would emit tokens this gate has just disproved - the "
+                                    "failure #2600 is open for. Set NPU_MOE_ALLOW_BAD=1 to continue "
+                                    "anyway, or NPU_MOE_MIN_CORR=<x> to move the threshold.\n",
+                                    moe_corr, moe_min);
+                                exit(2);
+                            }
+                        }
                     }
 fused_single_done:
                     ;
