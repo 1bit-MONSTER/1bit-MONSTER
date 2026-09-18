@@ -22,28 +22,58 @@ ok()  { printf '  ok   %-52s %s\n' "$1" "$2"; }
 bad() { printf '  FAIL %-52s %s\n' "$1" "$2"; fail=1; }
 expect() { if [ "$2" = "$3" ]; then ok "$1" "$2"; else bad "$1" "$2 != $3"; fi; }
 
-# ── the stub: one diagnostic line per line containing BADFMT ────────────────────
+# ── the stub: one diagnostic per BADFMT line, and filename-SENSITIVE ────────────
+# The sensitivity is the point. The first version of this stub ignored where the content
+# came from, so it passed a predicate whose base side was materialised to /tmp — where the
+# real clang-format finds no .clang-format and no usable extension and reports a wildly
+# different count (measured: 269 vs 34 on src/model_router.cpp). A stub that cannot tell
+# the two apart cannot catch that, so content it cannot attribute to a C/C++ file inside
+# $FIXTURE_ROOT — no --assume-filename on stdin, or a path outside the repo, or no C/C++
+# extension — is counted TENFOLD.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/clang-format" <<'STUB'
 #!/bin/bash
-f="${@: -1}"
-n=$(grep -c 'BADFMT' "$f" 2>/dev/null || true)
+assume=""; src=""
+for a in "$@"; do
+  case "$a" in
+    --assume-filename=*) assume="${a#--assume-filename=}" ;;
+    -)                   src="stdin" ;;
+    /*|*/*)              src="$a" ;;
+  esac
+done
+if [ "$src" = "stdin" ]; then content="$(cat)"; target="$assume"
+else content="$(cat "$src" 2>/dev/null)"; target="$src"; fi
+n=$(printf '%s\n' "$content" | grep -c 'BADFMT' || true)
+# Resolve like clang-format does: a relative path is relative to the CWD (the gate runs from
+# the repo root), which is why the predicate's own calls are attributable and a /tmp copy is not.
+case "$target" in
+  /*) abs="$target" ;;
+  "") abs="" ;;
+  *)  abs="$PWD/$target" ;;
+esac
+case "$abs" in
+  "$FIXTURE_ROOT"/*) : ;;
+  *) n=$((n * 10)) ;;
+esac
 for i in $(seq 1 "$n"); do
-  echo "$f:$i:1: error: code should be clang-formatted [-Wclang-format-violations]"
+  echo "${target:-?}:$i:1: error: code should be clang-formatted [-Wclang-format-violations]"
 done
 [ "$n" -gt 0 ] && exit 1
 exit 0
 STUB
 chmod +x "$TMP/bin/clang-format"
 export CLANG_FORMAT="$TMP/bin/clang-format"
+export FIXTURE_ROOT="$TMP/repo"
 
-# ── control 1: the checker sees what is there ───────────────────────────────────
-mkdir -p "$TMP/probe"
-printf 'int a;\nBADFMT\nBADFMT\nBADFMT\nint b;\n' > "$TMP/probe/three.cpp"
-printf 'int clean;\n' > "$TMP/probe/zero.cpp"
+# ── control 1: the checker sees what is there, and simulates the attribution ────
+mkdir -p "$TMP/repo/probe" "$TMP/outside"
+printf 'int a;\nBADFMT\nBADFMT\nBADFMT\nint b;\n' > "$TMP/repo/probe/three.cpp"
+printf 'int clean;\n' > "$TMP/repo/probe/zero.cpp"
+printf 'int a;\nBADFMT\nBADFMT\nBADFMT\nint b;\n' > "$TMP/outside/three.cpp"
 probe() { "$CLANG_FORMAT" --dry-run --Werror "$1" 2>&1 | grep -cE '^[^:]+:[0-9]+:[0-9]+: (warning|error):' || true; }
-expect "control: stub reports 3 for a 3-marker file" "$(probe "$TMP/probe/three.cpp")" "3"
-expect "control: stub reports 0 for a clean file"    "$(probe "$TMP/probe/zero.cpp")"  "0"
+expect "control: stub reports 3 for a 3-marker file" "$(probe "$TMP/repo/probe/three.cpp")" "3"
+expect "control: stub reports 0 for a clean file"    "$(probe "$TMP/repo/probe/zero.cpp")"  "0"
+expect "control: unattributable content counts 10x"  "$(probe "$TMP/outside/three.cpp")"    "30"
 
 # ── fixture repo: the predicate is the real script, copied verbatim ─────────────
 mkdir -p "$TMP/repo/src" "$TMP/repo/Testing"

@@ -59,14 +59,31 @@ count() { # count <path> -> diagnostics on stdout
     printf '%s\n' "$out" | grep -cE '^[^:]+:[0-9]+:[0-9]+: (warning|error):' || true
 }
 
-tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+# The base side must be linted AS IF it were the same file. Materialising it to a temp
+# path instead does not work, and fails in the one direction a gate must never fail:
+# clang-format discovers .clang-format by walking up from the file's directory, so a
+# /tmp copy gets LLVM defaults, and a name without a .cpp/.h extension does not even
+# select the language. Measured on src/model_router.cpp with clang-format 23.1.1:
+#
+#   the repo file itself                     38 diagnostics
+#   the same bytes as /tmp/base (no ext)    269      <- base inflated, gate passes everything
+#   the same bytes as /tmp/base.cpp         269
+#   stdin with --assume-filename=<repo path> 34      <- matches the repo file (pre-edit)
+#
+# So the base content goes through stdin with --assume-filename pointing at the real path.
+count_base() { # <repo-relative path>; base content on stdin
+    local out
+    out="$("$CF" --dry-run --Werror --assume-filename="$1" - 2>&1)"
+    printf '%s\n' "$out" | grep -cE '^[^:]+:[0-9]+:[0-9]+: (warning|error):' || true
+}
+
 checked=0; worse=0; total_head=0
 for f in "${changed[@]}"; do
     [ -e "$f" ] || { echo "  skip (not present at head): $f"; continue; }
     head_n="$(count "$f")"
     base_n=0
-    if git show "$BASE:$f" > "$tmp" 2>/dev/null; then
-        base_n="$(count "$tmp")"
+    if git show "$BASE:$f" >/dev/null 2>&1; then
+        base_n="$(git show "$BASE:$f" | count_base "$f")"
     fi
     checked=$((checked + 1)); total_head=$((total_head + head_n))
     if [ "$head_n" -gt "$base_n" ]; then
