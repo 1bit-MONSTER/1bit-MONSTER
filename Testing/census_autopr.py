@@ -179,15 +179,34 @@ def _open_draft_pr(arch, target, models):
     orig_branch = _git_out(["git", "symbolic-ref", "-q", "--short", "HEAD"])
     orig_head = _git_out(["git", "rev-parse", "HEAD"])
     try:
+        # Base the branch on the PR's base, NOT on whatever HEAD this run happens to
+        # have. In CI the checkout is fresh main, but a run outside CI inherits the
+        # local checkout's age, and a branch forked from an old HEAD presents a diff
+        # full of squash-merge noise around a one-line change: #2443/#2444 each showed
+        # 18 files for one line, 17 of them byte-identical to main (issue #2498). The
+        # stale base also fed _apply_alias a stale header, so a class main had mapped
+        # since the fork looked unmapped and was re-proposed.
+        #
+        # ORDER MATTERS: the apply has to come AFTER this switch. `git switch` refuses
+        # to carry a modified file whose incoming version differs, and bitnet_model.h
+        # is exactly that file — applying first makes the switch fail with "local
+        # changes would be overwritten", which is how this was first attempted.
+        #
+        # `-C` still creates the branch or rebuilds one a previous run left behind
+        # (that case used to fall through to a commit with nothing staged and fail).
+        for cmd in (["git", "fetch", "--quiet", "origin", "main"],
+                    ["git", "switch", "--quiet", "-C", branch, "origin/main"]):
+            r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+            if r.returncode != 0:
+                text = (r.stderr or r.stdout).strip()
+                print(f"[autopr] cmd failed: {' '.join(cmd)}\n{text[:300]}",
+                      file=sys.stderr)
+                return None
         if not _apply_alias(arch, target):
             print(f"[autopr] {arch}: already mapped in bitnet_model.h — "
                   f"nothing to propose", file=sys.stderr)
             return None
         cmds = [
-            # -C: create the branch, or rebuild it from the current HEAD when a
-            # previous run left one behind (that case used to fall through to a
-            # commit with nothing staged and fail).
-            ["git", "switch", "-C", branch],
             ["git", "add", os.path.relpath(ENGINE, ROOT)],
             ["git", "commit", "-m", f"fix(census): auto-propose {arch} -> {target}"],
             ["git", "push", "-u", "origin", branch],
