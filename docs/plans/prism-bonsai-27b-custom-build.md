@@ -328,6 +328,19 @@ reported as a delta, not a replacement.
 > **our own** path (`kernels/vulkan/dmmv_prism.comp` + a real harness), not from ZINC: ZINC cannot run on this box,
 > the fix needs zig which is not installed, and the deliverable wants our own kernels with no third-party runtime
 > in the loop - so ZINC stays an *optional cross-check* if zig ever lands rather than the source of the number.
+>
+> **Update 16:31 - P5's third column now EXISTS, on our own stack (`8d7c8113a`).** Rather than wait on the
+> third-party fix, the peer drove **our** `kernels/vulkan/dmmv_prism.comp` through **our** `src/vulkan_rt.h` with a
+> new `tests/test_vulkan_prism.cpp`, checked per element against a CPU dequant+dot reference: Q1_0 max_abs_err
+> 0.000005 and PQ2_0 0.000002 at 17408x5120 (both 0.000000 at 16x256), throughput Q1_0 **23.3 GB/s** and PQ2_0
+> **43.0 GB/s** at load 23 (busy-tagged, re-bracket pending), PTQ1_0 printed **NOT COVERED** rather than skipped.
+> The column is a **fallback, not a competitor** (23.3 against HIP dp4a's 200-260 GB/s standalone: the shader
+> dequantizes to float where HIP uses int8 dp4a). Trap cleared on the way, and it is the day's recurring shape:
+> `Pipeline::create` never set specialization constants, so every format kept the declared default and decoded
+> through the Q1_0 branch - a PQ2_0 run then "failed" with max_abs_err 42150, which was the harness comparing a
+> Q1_0 decode against a PQ2_0 reference. **The instrument lied, not the system under test.** Worth more than its
+> numbers, this column carries a *per-element kernel-level* gate - the shape that the end-to-end fork oracle turned
+> out not to be (section 4a). Next: the PTQ1_0 shader case, then back to the Q1_0 GEMV gate.
 > (c) The earlier `tests/prism/Q1_0-vulkan.log` reading of 33.5 tok/s is **not** a column and is **not** in the
 > record: it is untracked (`.gitignore:56 = *.log`, 0 tracked logs under tests/prism), it carries no triad tag, and
 > the build that produced it is not on the box. Even recovered, a quiet claim would need a same-window triad.

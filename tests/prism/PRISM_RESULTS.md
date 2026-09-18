@@ -234,7 +234,7 @@ watch rather than as a resolved item. The counts line is what surfaced it, which
 | the fault, from the backtrace | `memcpy` <- `vulkan.buffer.Buffer.initDeviceLocalAndUpload` <- `model.loader.load` <- `main`: a 13926400-byte copy to a STACK address | `[Bonsai-27B-Q1_0 \| Q1_0 GGUF \| ZINC merged build \| strixhalo-quiet \| 0 \| - \| 2026-09-18]` |
 | earlier untracked log | `tests/prism/Q1_0-vulkan.log` is untracked (`.gitignore:56 = *.log`; 0 tracked logs under tests/prism), carries no triad tag, and its build is not on the box | `[Bonsai-27B-Q1_0 \| Q1_0 GGUF \| ZINC (older build) \| strixhalo-unknown \| - \| - \| 2026-09-18]` |
 
-**Status: shader compile-verified, runtime run blocked.** The ZINC build on this box understands the Prism layout
+**Status: the ZINC route is still compile-verified-but-runtime-blocked; the column itself is now produced on our own stack - see 4d-bis.** The ZINC build on this box understands the Prism layout
 and cannot run it, so no third tok/s column can come from ZINC here, and none is claimed. Our own Vulkan DMMV
 shader handles the same file, so the column is to be produced from our own path with a harness - our code, no
 third-party runtime in the loop - and ZINC becomes an optional cross-check if zig is ever installed. The earlier
@@ -256,6 +256,34 @@ but the windows that could have shown it were loaded and the peer declined to re
 the inherited rule working in the right direction - an isolated A/B is the instrument for a kernel claim, a window
 is the instrument for a gate claim - so the cumulative non-GEMV gains stay recorded as kernel facts awaiting a
 settled box.
+
+## 4d-bis. P5 third column PRODUCED on our own stack (8d7c8113a) - and the specialization-constant trap
+
+**The ZINC route stays blocked (see 4d), so the column was produced by our own shader instead**, which is what this
+lane's record decision asked for: `kernels/vulkan/dmmv_prism.comp` driven through `src/vulkan_rt.h` by a new
+`tests/test_vulkan_prism.cpp`, checked against a **CPU dequant+dot reference** per element.
+
+| measurement | value | tag |
+|---|---|---|
+| Q1_0 correctness, shader vs CPU reference | M=16 K=256 max_abs_err 0.000000; M=17408 K=5120 max_abs_err 0.000005 | `[Bonsai-27B-Q1_0 \| Q1_0 \| Vulkan dmmv_prism.comp vs CPU ref \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| PQ2_0 correctness, shader vs CPU reference | M=16 K=256 max_abs_err 0.000000; M=17408 K=5120 max_abs_err 0.000002 | `[Ternary-Bonsai-27B-PQ2_0 \| PQ2_0 \| Vulkan dmmv_prism.comp vs CPU ref \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| throughput at 17408x5120 | Q1_0 23.3 GB/s, PQ2_0 43.0 GB/s (load 23 - **busy-tagged, re-bracket pending**) | `[2-packs \| Q1_0+PQ2_0 \| Vulkan dmmv_prism.comp \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| PTQ1_0 | **NOT COVERED** - printed as such rather than silently skipped | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| Vulkan dmmv_prism.comp \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| the column's role | a **fallback, not a competitor**: 23.3 GB/s against the HIP dp4a path's 200-260 GB/s standalone, because the shader dequantizes to float where HIP uses int8 dp4a | `[Bonsai-27B-Q1_0 \| Q1_0 \| Vulkan vs HIP \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+
+**The trap that had to be cleared first, and it is the day's recurring shape in a new costume.** `src/vulkan_rt.h`'s
+`Pipeline::create` never set specialization constants, while `dmmv_prism.comp` selects its layout through
+`constant_id=2` and `constant_id=3`. With no spec info every format silently kept the **declared default** and
+decoded through the Q1_0 branch, so a PQ2_0 run "failed" with a max_abs_err of 42150 - which looks exactly like a
+broken shader and was in fact the harness comparing a Q1_0 decode against a PQ2_0 reference. `create()` now accepts
+an optional constant_id-indexed spec array, defaulted so existing callers are unaffected, and PQ2_0 passes. **The
+instrument lied, not the system under test** - the same sentence as the truncated-reference, the early-returning
+harness and the skipped gate earlier today.
+
+**Why this column is worth more than its numbers:** it carries a *per-element kernel-level* correctness gate against
+a CPU reference, which is the shape of gate that the end-to-end fork oracle turned out not to be (section 4a: the
+oracle matched 5/5 while a kernel's norm output was wrong by up to 0.42). A fallback column that is slow but
+elementwise-verified is a better asset than a fast column whose only evidence is a short-prompt argmax.
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 
