@@ -193,6 +193,13 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
       run "$base: DEVICE 64-layer forward vs fork oracle (P3.3)" \
         python3 "$REPO/tests/prism/check_oracle_agreement.py" "$PFHIP" "$bp" "$base"
     fi
+    # Device-vs-CPU greedy-sequence agreement (two independent implementations). The CPU
+    # forward is the fork-validated floor; any divergence is a device-path bug. 11 positions;
+    # PRISM_SEQ_GATE=0 skips it.
+    if [ -n "$PFHIP" ] && [ "${PRISM_SEQ_GATE:-1}" != "0" ]; then
+      run "$base: DEVICE vs CPU greedy sequence (11 tokens)" bash -c \
+        "\"$TMP/pf\" \"$bp\" 760 6511 314 9338 369 --predict 6 > \"$TMP/cpu_gen.txt\" 2>&1 && \"$TMP/pfhip\" \"$bp\" 760 6511 314 9338 369 --predict 6 > \"$TMP/dev_gen.txt\" 2>&1 && python3 \"$REPO/tests/prism/compare_gen.py\" \"$TMP/cpu_gen.txt\" \"$TMP/dev_gen.txt\""
+    fi
     # Per-layer cosine vs the in-repo streaming numpy reference (P2 gate, clause 2).
     # Expensive (~6 min/pack): the folded pack by default; PRISM_LAYER_COSINE=all for
     # all three, =0 to skip.
