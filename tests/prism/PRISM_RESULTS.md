@@ -72,6 +72,7 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | triad, @agent-1141bd PTQ1_0-dot window 15:13, 256 MB before -> after | 203.5-215.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad sweep, same window, lower sizes AFTER the run - the box drifted mid-run | 180.9-192.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | triad, same box minutes after the leaked-harness kill | 202.5-217.1 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
+| triad, @agent-1141bd three-kernel window 15:45:05 (before -> after, 256 MB) | 213.0-214.3 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | contaminant profile: Prism attribution harness, two processes | 98% CPU each, 43 minutes of CPU, zero device I/O, held the NPU device | `[Prism-lane\|leaked probe\|/tmp/attrib\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 
@@ -403,6 +404,43 @@ kernel that runs in it" (the two measured rates are in the row above).
 GEMV at its memory floor the pack remains short of its gate, so the distance still has to come from both halves.
 The decisive next number is the **post-split in-situ** measurement of gdn_recurrence: it tests whether the
 isolated gain survives inside the loop, which is exactly where the tax lives.
+
+### Three-kernel window (15:45:05) - the wall did not move, and Q1_0 is now GEMV-limited
+
+| measurement | value | tag |
+|---|---|---|
+| decode in a valid window (triad on both sides) | Q1_0 34 tok/s, PTQ1_0 24, PQ2_0 24 against 42/27/22 = 81% / 89% / 109% | `[3-packs \| verbatim \| HIP backend \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| same-window correctness | fork oracle 5/5 and compare_gen 11/11 on all three packs | `[3-packs \| verbatim \| HIP forward vs CPU floor + fork oracle \| strixhalo-quiet \| 11 \| capital-of-France \| 2026-09-18]` |
+| the three kernel wins (GDN, rmsnorm, FWHT) in the wall | Q1_0 read 29.6 ms here against 29.6 ms in the earlier load-2.2 window, so the measured kernel win did not appear; load was 11.5 against 2.2 | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP backend, two windows \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| in-situ terms now | GEMV ~20.0 ms, non-GEMV ~4.7-5 ms, wall 29.6 ms | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| GEMV floor at this triad | 16.9 ms for 3.60 GB at 213 GB/s; floor + current non-GEMV = 21.6-21.9 ms, which would clear the 23.81 ms the gate allows | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| pack size discrepancy, unresolved | this lane's records use 3.80 GB file / 3.782 GB payload; the peer used 3.60 GB in the floor arithmetic | `[Bonsai-27B-Q1_0 \| Q1_0 \| container metadata vs peer figure \| cpu-host \| - \| - \| 2026-09-18]` |
+
+**The wall did not move and no improvement is claimed** (row above). Three kernel wins with measured in-situ gains
+produced no change in the wall on a busier box, so the box tax absorbed what the kernels gave back - and the peer
+explicitly declined to claim the gain because the two effects cannot be separated on this evidence. What stands
+firm from that round is the in-situ attribution itself, measured with a differenced profile under the same busy
+conditions.
+
+**This supersedes the two-chase frame that I derived earlier, and the supersession is in the peer's favour.** The
+non-GEMV chase has paid: it fell from its profiled pre-fix figure to roughly half of it through the GDN, rmsnorm and
+FWHT work (both rows above). With the
+GEMV floor at this triad, floor plus current non-GEMV clears the gate (row above), so Q1_0 is now limited by **the
+GEMV reaching its memory bound and nothing else**. My earlier arithmetic said both halves were required; that was
+correct for the old non-GEMV figure and is no longer correct.
+
+**One caveat that matters, and it is the peer's own rule turned on their own projection.** The projection that the
+floor would clear the gate comes from *overlapping* in-situ durations: those terms sum below the wall itself (the rows
+above carry both figures), so the sum is low by construction. A projection built that way cannot be used as a gate value -
+only a window can move a gate - so the row above is recorded as arithmetic, not as a measurement of the gate.
+
+**Five GEMV hypotheses retired by measurement, one left standing and explicitly unmeasured.** The quant pass, the
+dispatch cost, the in-situ tax, lane-tail/r4, and LDS staging have all been killed by data - the last
+catastrophically, at a small fraction of the r1 path's rate. What remains is **an unpack-ALU limit on the 1-bit
+unpack, not a bandwidth limit and not a tiling problem**, and that is recorded as the surviving hypothesis rather
+than as a finding: it is the explanation left after five retirements, and it has not itself been measured. The
+peer's decision to say so instead of trying more tilings is the right one, and it is why the lane is now spending
+its time on P5 and P4 breadth while that question stays open.
 
 **One part of this round is still an estimate, and is recorded as an estimate.** The lost-to-dispatch figure is
 inferred from an assumed per-dispatch cost, and the sum of the measured terms leaves a remainder of about that
