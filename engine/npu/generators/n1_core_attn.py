@@ -37,20 +37,67 @@ def main():
     parser.add_argument("-k", type=int, default=64)
     parser.add_argument("-n", type=int, default=128)
     parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols (q heads)")
+    parser.add_argument("-H", "--heads", type=int, default=0,
+                        help="total q heads in the model (default 0 = same as --cols). "
+                             "Must equal --cols until the multi-pass head-block loop exists.")
     parser.add_argument("-b", "--batch-size", type=int, default=2)
     args = parser.parse_args()
     with mlir_mod_ctx() as ctx:
-        my_attn(args.M, args.K, args.N, args.m, args.k, args.n, args.cols, args.batch_size)
+        my_attn(args.M, args.K, args.N, args.m, args.k, args.n, args.cols,
+                args.batch_size, args.heads or args.cols)
         print(ctx.module)
 
 
-def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
+def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
     dtype_in = np.int8
     dtype_out = np.int32
     K_FRAME = 2048   # fused-style A-frame K (the small-K 4D tap fails on AIE2P)
     assert M % m == 0 and K % k == 0 and N % n == 0
+    # The PV output width is the HEAD DIM, and it is this generator's `n` tile
+    # (C_ty = (m, n); the PV matmul is (m,k)x(k,n)->(m,n)). `-K` only feeds the
+    # QK^T contraction, so -K larger than `n` builds a kernel that computes n of
+    # K head dims -- and NOTHING catches it: aiecc compiles it, XRT loads it, and
+    # it runs silently wrong (measured 2026-09-15: -K 256 -N 512 -c 8 produced a
+    # clean 90192 B xclbin computing 128 of 256 head dims, and the seq's C2
+    # writeback over-read M*K=2048 elements from a (8,128) FIFO). Fail loudly
+    # instead: pass -n = head dim, and see
+    # benchmarks/RESULTS-attention-c2-regression-2026-09-15.md for the PV N-split
+    # that would make K > n a real multi-tile design.
+    assert K <= n, (
+        f"head dim K={K} exceeds the C2/PV output tile n={n}: the PV would compute "
+        f"only {n} of {K} head dims and the toolchain would not report it. "
+        f"Pass -n {K} (and check the QK^T context tiling) or implement the PV N-split."
+    )
     n_k = K // k            # QK^T K-chunks (hd/64 = 2)
+    # The design is ONE CORE COLUMN PER Q HEAD: column c is fed from q row
+    # c*K_FRAME and writes back head c. So a model with more heads than columns
+    # gets a kernel for only the first n_aie_cols heads -- and, like the K>n trap
+    # below, nothing reports it: the xclbin builds, loads and runs, and the host
+    # silently gets the wrong heads. There is no multi-pass head-block loop yet,
+    # so require the caller to say how many heads the model has and fail if it
+    # does not match the column count. See
+    # benchmarks/RESULTS-attention-c2-regression-2026-09-15.md for the loop that
+    # would lift this (Nanbeige nh20, Phi4 nh24, Qwen3.5-4B nh16).
+    if n_heads is None:
+        n_heads = n_aie_cols
+    assert n_heads == n_aie_cols, (
+        f"model has {n_heads} q heads but the kernel has {n_aie_cols} columns "
+        f"(one head per column): it would compute only the first {n_aie_cols} "
+        f"heads and the toolchain would not report it. Pass --cols {n_heads}, "
+        f"or implement the multi-pass head-block loop."
+    )
     n_n = N // n            # QK^T N-tiles (MAX_SEQ/128 = 2)
+    # CHUNKING (L1). Every C1 tile is resident on the core tile, so N=1024 needs
+    # 8x4KB = 32KB plus A2 and overruns core data memory. Process the score range
+    # in groups of four tiles (512 scores) -- exactly attn_softmax_i8's arity, so
+    # the kernel needs no arity change -- and give the contract a row stride
+    # (attn_quant.h, params[3]) so each group's A2 lands in the same (8,N) layout.
+    # N <= 512 is ONE group and takes the original path byte-for-byte.
+    G_TILES = 4
+    n_grp = 1 if n_n <= G_TILES else (N // (G_TILES * n))
+    if n_grp > 1:
+        assert N % (G_TILES * n) == 0, "chunked path needs N a multiple of 512"
+        assert G_TILES * n == 512
     n_k_pv = N // k         # PV K-chunks (MAX_SEQ/64 = 4)
     nkv = 2
 
@@ -61,6 +108,16 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         C_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
         C1_ty = np.ndarray[(m, N), np.dtype[dtype_out]]   # full scores
         A2_ty = np.ndarray[(m, N), np.dtype[dtype_in]]    # softmax weights
+        # A2 writeback element. Chunked (n_grp > 1) MUST use the GROUP SLICE
+        # (8, 512) = 4096 B, not the whole (8, N): SCR has room for only one
+        # (8,N) per head, so each group's a2t writes a strided 4096 B slice of
+        # it -- and a PARTIAL element read never lets the MemTile hand the
+        # buffer on, so the core's second A2O acquire returned the first buffer
+        # and element 1 was never produced (group 1's A2 came out all-zero).
+        # With the slice as the element, the a2t reads the FIFO contiguously
+        # (a whole element) and writes SCR strided. See
+        # benchmarks/RESULTS-attention-c2-regression-2026-09-15.md.
+        A2o_ty = A2_ty if n_grp == 1 else np.ndarray[(m, G_TILES * n), np.dtype[dtype_in]]
         P_ty = np.ndarray[(8,), np.dtype[np.float32]]
 
         kernel_o = "attn_kernel.o"
@@ -69,7 +126,7 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         # attn_softmax_i8 takes 4 C1 half-tiles + params + a2 (extra halves
         # unused for N < 512 — the contract reads only c1[t>>7]).
         softmax = external_func("attn_softmax_i8",
-                                inputs=[C_ty, C_ty, C_ty, C_ty, A_ty, A2_ty],
+                                inputs=[C_ty, C_ty, C_ty, C_ty, A_ty, A2o_ty],
                                 link_with=kernel_o)
 
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(2 + 1)]
@@ -94,8 +151,8 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         # A2 writeback: core → mem → shim → DDR (bo4 scratch, after the params)
         A2o_c = [None] * n_aie_cols; A2o_s = [None] * n_aie_cols
         for c in range(n_aie_cols):
-            A2o_c[c] = object_fifo(f"A2O_C{c}", core_tiles[0][c], mem_tiles[c], 2, A2_ty)
-            A2o_s[c] = object_fifo(f"A2O_S{c}", mem_tiles[c], shim_tiles[c], 1, A2_ty)
+            A2o_c[c] = object_fifo(f"A2O_C{c}", core_tiles[0][c], mem_tiles[c], 2, A2o_ty)
+            A2o_s[c] = object_fifo(f"A2O_S{c}", mem_tiles[c], shim_tiles[c], 1, A2o_ty)
             object_fifo_link(A2o_c[c], A2o_s[c])
         C2_c = [None] * n_aie_cols; C2_s = [None] * n_aie_cols
         for c in range(n_aie_cols):
@@ -103,37 +160,73 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
             C2_s[c] = object_fifo(f"C2_S{c}", mem_tiles[c], shim_tiles[c], 1, C_ty)
             object_fifo_link(C2_c[c], C2_s[c])
 
-        # One (8,128) int32 C1 half-tile per N/128 chunk (2 for N=256, 4 for N=512)
+        # One (8,128) int32 C1 half-tile per N/128 chunk (2 for N=256, 4 for N=512).
+        # Chunked (N>512): only G_TILES are resident, reused per group.
         C1 = [[buffer(core_tiles[0][c], C_ty, name=f"C1_{c}_{nt}")
-               for nt in range(n_n)] for c in range(n_aie_cols)]
-        A2buf = [buffer(core_tiles[0][c], A2_ty, name=f"A2_{c}") for c in range(n_aie_cols)]
+               for nt in range(min(n_n, G_TILES))] for c in range(n_aie_cols)]
+        A2buf = [buffer(core_tiles[0][c], A2o_ty, name=f"A2_{c}")
+                 for c in range(n_aie_cols)]
 
         for c in range(n_aie_cols):
             @core(core_tiles[0][c], stack_size=0x1000)
             def core_body():
                 for _ in range_(0xFFFFFFFF):
-                    for nt in range(n_n):   # python-unrolled (C1 is a python list)
-                        zero(C1[c][nt])
-                    # ── QK^T phase: n_k K-chunks × n_n N-tiles. Per (ki, nt)
-                    # the seq feeds one A-tile (q row c chunk ki — the SAME
-                    # tile for every nt) + one B-tile (K^T (ki,nt)); the core
-                    # consumes in the same (ki, nt) order into C1[nt]. Fifo
-                    # counts: n_k·n_n A + n_k·n_n B (QK^T) + 1 A (params)
-                    # + n_k_pv A + n_k_pv B (PV) — matches the seq feed.
-                    for ki in range_(n_k):
-                        for nt in range(n_n):   # python-unrolled (C1 is a python list)
-                            Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
-                            Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
-                            matmul(Ab, Bb, C1[c][nt])
-                            A_c[c].release(ObjectFifoPort.Consume, 1)
-                            B_c[c].release(ObjectFifoPort.Consume, 1)
-                    # params tile (rides the A stream)
-                    Par = A_c[c].acquire(ObjectFifoPort.Consume, 1)
-                    A_c[c].release(ObjectFifoPort.Consume, 1)
-                    A2o = A2o_c[c].acquire(ObjectFifoPort.Produce, 1)
-                    softmax(C1[c][0], C1[c][1], C1[c][2 if n_n > 2 else 0],
-                            C1[c][3 if n_n > 3 else 0], Par, A2o)
-                    A2o_c[c].release(ObjectFifoPort.Produce, 1)
+                  if n_grp == 1:
+                      for nt in range(n_n):   # python-unrolled (C1 is a python list)
+                          zero(C1[c][nt])
+                      # ── QK^T phase: n_k K-chunks × n_n N-tiles. Per (ki, nt)
+                      # the seq feeds one A-tile (q row c chunk ki — the SAME
+                      # tile for every nt) + one B-tile (K^T (ki,nt)); the core
+                      # consumes in the same (ki, nt) order into C1[nt]. Fifo
+                      # counts: n_k·n_n A + n_k·n_n B (QK^T) + 1 A (params)
+                      # + n_k_pv A + n_k_pv B (PV) — matches the seq feed.
+                      for ki in range_(n_k):
+                          for nt in range(n_n):   # python-unrolled (C1 is a python list)
+                              Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                              Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                              matmul(Ab, Bb, C1[c][nt])
+                              A_c[c].release(ObjectFifoPort.Consume, 1)
+                              B_c[c].release(ObjectFifoPort.Consume, 1)
+                      # params tile (rides the A stream)
+                      Par = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                      A_c[c].release(ObjectFifoPort.Consume, 1)
+                      A2o = A2o_c[c].acquire(ObjectFifoPort.Produce, 1)
+                      softmax(C1[c][0], C1[c][1], C1[c][2 if n_n > 2 else 0],
+                              C1[c][3 if n_n > 3 else 0], Par, A2o)
+                      A2o_c[c].release(ObjectFifoPort.Produce, 1)
+                      # ── PV phase: C2 = A2 · V[kv(h)] into the C2 writeback FIFO.
+                      # This block was dropped from the n_grp == 1 path when the
+                      # chunked branch landed (b2cfb080f): the refactor placed the
+                      # Cb/C2 code under `else` only, so for N <= 512 the core
+                      # produced A2 but never consumed the PV feed nor wrote C2.
+                      # The seq always emits n_k_pv (A,B) pairs and a C2 read task,
+                      # so its absence is what hung the launch and left C2 at zero.
+                      Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
+                      zero(Cb)
+                      for ki in range_(n_k_pv):
+                          Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                          Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                          matmul(Ab, Bb, Cb)
+                          A_c[c].release(ObjectFifoPort.Consume, 1)
+                          B_c[c].release(ObjectFifoPort.Consume, 1)
+                      C2_c[c].release(ObjectFifoPort.Produce, 1)
+
+                  else:
+                    for g in range(n_grp):
+                        for nt in range(G_TILES):
+                            zero(C1[c][nt])
+                        for ki in range_(n_k):
+                            for ntl in range(G_TILES):
+                                Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                                Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                                matmul(Ab, Bb, C1[c][ntl])
+                                A_c[c].release(ObjectFifoPort.Consume, 1)
+                                B_c[c].release(ObjectFifoPort.Consume, 1)
+                        Par = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                        A_c[c].release(ObjectFifoPort.Consume, 1)
+                        A2o = A2o_c[c].acquire(ObjectFifoPort.Produce, 1)
+                        softmax(C1[c][0], C1[c][1], C1[c][2], C1[c][3], Par, A2o)
+                        A2o_c[c].release(ObjectFifoPort.Produce, 1)
                     Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
                     zero(Cb)
                     for ki in range_(n_k_pv):
@@ -152,50 +245,58 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
             np.ndarray[(32 + n_aie_cols * M * N,), np.dtype[dtype_in]],  # scratch (bo4)
         )
         def seq(Q, KT, C2, V, SCR):
-            # QK^T phase: per (ki, nt): A = q row c chunk ki (offset c*K+ki*k,
-            # A-layout strides [1, 8, K, 1] sizes [1, k/8, 8, 8]); B = K^T tile
-            # (ki, nt) per column's kv.
-            for ki in range(n_k):
-                for nt in range(n_n):
-                    at_list, bt_list = [], []
-                    for c in range(n_aie_cols):
-                        # A in the fused M×Kframe layout: K_frame=2048 (the
-                        # small-K 4D tap pattern does not deliver on AIE2P).
-                        at = shim_dma_single_bd_task(
-                            A_s[c], Q, offset=c * K_FRAME + ki * k,
-                            sizes=[1, k // 8, 8, 8], strides=[8 * K_FRAME, 8, K_FRAME, 1],
-                            issue_token=True)
-                        dma_start_task(at); at_list.append(at)
-                    for cc in range(n_aie_cols):
-                        kvv = cc // 4
-                        bt = shim_dma_single_bd_task(
-                            B_s[cc], KT,
-                            offset=kvv * (K * N) + (ki * (N // n) + nt) * (k * n),
-                            sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
-                        dma_start_task(bt); bt_list.append(bt)
-                    dma_await_task(*at_list, *bt_list)
-                    dma_free_task(*at_list, *bt_list)
-            # params (8 floats) ride each A stream as one (8,64) tile — the
-            # floats in the first 32 bytes (A-layout row 0).
-            pt_list = []
-            for c in range(n_aie_cols):
-                # params ride the A stream from the q BO's padding (row 15
-                # of the A-frame — never read by the head taps).
-                pt = shim_dma_single_bd_task(A_s[c], Q, offset=15 * K_FRAME,
-                                             sizes=[1, 1, 1, 512], strides=[1, 1, 1, 1],
-                                             issue_token=True)
-                dma_start_task(pt); pt_list.append(pt)
-            # A2 writeback: core A2 (A-layout, r*N + (t/8)*8 + t%8) → bo4[32..]
-            a2_list = []
-            for c in range(n_aie_cols):
-                a2t = shim_dma_single_bd_task(
-                    A2o_s[c], SCR, offset=32 + c * (M * N),
-                    sizes=[1, 1, 1, M * N], strides=[1, 1, 1, 1], issue_token=True)
-                dma_start_task(a2t); a2_list.append(a2t)
-            # the PV reads the A2 back — the writebacks MUST be visible first.
-            dma_await_task(*a2_list)
-            dma_free_task(*a2_list)
-            # PV phase: A = A2 from bo4 (A-layout), B = V[kv] tile (ki)
+          if n_grp > 1:
+            # CHUNKED: the core consumes, per group g, n_k*G_TILES (A,B) pairs,
+            # then ONE params tile, then produces one (8,512) A2 slice. The feed
+            # below must be in exactly that order -- the A-stream and B-stream
+            # FIFO counts are matched to the core's acquires.
+            for g in range(n_grp):
+                for ki in range(n_k):
+                    for ntl in range(G_TILES):
+                        at_list, bt_list = [], []
+                        for c in range(n_aie_cols):
+                            at = shim_dma_single_bd_task(
+                                A_s[c], Q, offset=c * K_FRAME + ki * k,
+                                sizes=[1, k // 8, 8, 8], strides=[8 * K_FRAME, 8, K_FRAME, 1],
+                                issue_token=True)
+                            dma_start_task(at); at_list.append(at)
+                        for cc in range(n_aie_cols):
+                            kvv = cc // 4
+                            bt = shim_dma_single_bd_task(
+                                B_s[cc], KT,
+                                offset=kvv * (K * N) + (ki * (N // n) + g * G_TILES + ntl) * (k * n),
+                                sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                            dma_start_task(bt); bt_list.append(bt)
+                        dma_await_task(*at_list, *bt_list)
+                        dma_free_task(*at_list, *bt_list)
+                pt_list = []
+                for c in range(n_aie_cols):
+                    # params are PER GROUP: group g reads its own 8-float set
+                    # at 15*K_FRAME + g*64, so the causal mask can use the
+                    # group-local key count (seq - 512*g, clamped). Without
+                    # this every group would mask against the global seq and
+                    # every group past the first would be numerically wrong.
+                    pt = shim_dma_single_bd_task(A_s[c], Q, offset=15 * K_FRAME + g * 64,
+                                                 sizes=[1, 1, 1, 512], strides=[1, 1, 1, 1],
+                                                 issue_token=True)
+                    dma_start_task(pt); pt_list.append(pt)
+                a2_list = []
+                for c in range(n_aie_cols):
+                    a2t = shim_dma_single_bd_task(
+                        A2o_s[c], SCR, offset=32 + c * (M * N) + g * (G_TILES * n),
+                        sizes=[1, 1, m, G_TILES * n], strides=[4, 4, N, 1], issue_token=True)
+                    dma_start_task(a2t); a2_list.append(a2t)
+                # the params tiles ride the same A stream; await/free them WITH
+                # the writeback so the A FIFO stays in lockstep with the core's
+                # per-group acquires (n_k*G_TILES A + 1 params each). Leaving
+                # them pending (as the first cut did) stalls group 2's QK^T.
+                dma_await_task(*a2_list, *pt_list)
+                dma_free_task(*a2_list, *pt_list)
+            # ── PV phase. The chunked core has always had its Cb/C2 block, but
+            # this sequence never fed it: the group loop above ends at the A2
+            # writeback, so the core's n_k_pv A/B acquires blocked forever and
+            # C2 was never read. A = A2 read back from bo4 (row stride N, the
+            # layout the strided writeback above produces), B = V[kv] tile.
             for ki in range(n_k_pv):
                 at_list, bt_list = [], []
                 for c in range(n_aie_cols):
@@ -212,19 +313,89 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                     dma_start_task(bt); bt_list.append(bt)
                 dma_await_task(*at_list, *bt_list)
                 dma_free_task(*at_list, *bt_list)
-            # C2 writeback per head: the full (8,128) tile of column c →
-            # bo2[c * (M*K) ..] (each column's tile is M*K int32 = 4096 B,
-            # flat, no 4D permutation; the host reads row 0 of each tile at
-            # the interleaved mmul C-layout positions (c/8)*64 + c%8 — the
-            # same c1_idx mapping the softmax kernel uses).
+            # C2 writeback per head (same geometry as the n_grp == 1 path).
             ctasks = []
             for c in range(n_aie_cols):
                 ct = shim_dma_single_bd_task(
                     C2_s[c], C2, offset=c * (M * K),
                     sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
                 dma_start_task(ct); ctasks.append(ct)
-            dma_await_task(*ctasks, *pt_list)
-            dma_free_task(*ctasks, *pt_list)
+            dma_await_task(*ctasks)
+            dma_free_task(*ctasks)
+          else:
+              # QK^T phase: per (ki, nt): A = q row c chunk ki (offset c*K+ki*k,
+              # A-layout strides [1, 8, K, 1] sizes [1, k/8, 8, 8]); B = K^T tile
+              # (ki, nt) per column's kv.
+              for ki in range(n_k):
+                  for nt in range(n_n):
+                      at_list, bt_list = [], []
+                      for c in range(n_aie_cols):
+                          # A in the fused M×Kframe layout: K_frame=2048 (the
+                          # small-K 4D tap pattern does not deliver on AIE2P).
+                          at = shim_dma_single_bd_task(
+                              A_s[c], Q, offset=c * K_FRAME + ki * k,
+                              sizes=[1, k // 8, 8, 8], strides=[8 * K_FRAME, 8, K_FRAME, 1],
+                              issue_token=True)
+                          dma_start_task(at); at_list.append(at)
+                      for cc in range(n_aie_cols):
+                          kvv = cc // 4
+                          bt = shim_dma_single_bd_task(
+                              B_s[cc], KT,
+                              offset=kvv * (K * N) + (ki * (N // n) + nt) * (k * n),
+                              sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                          dma_start_task(bt); bt_list.append(bt)
+                      dma_await_task(*at_list, *bt_list)
+                      dma_free_task(*at_list, *bt_list)
+              # params (8 floats) ride each A stream as one (8,64) tile — the
+              # floats in the first 32 bytes (A-layout row 0).
+              pt_list = []
+              for c in range(n_aie_cols):
+                  # params ride the A stream from the q BO's padding (row 15
+                  # of the A-frame — never read by the head taps).
+                  pt = shim_dma_single_bd_task(A_s[c], Q, offset=15 * K_FRAME,
+                                               sizes=[1, 1, 1, 512], strides=[1, 1, 1, 1],
+                                               issue_token=True)
+                  dma_start_task(pt); pt_list.append(pt)
+              # A2 writeback: core A2 (A-layout, r*N + (t/8)*8 + t%8) → bo4[32..]
+              a2_list = []
+              for c in range(n_aie_cols):
+                  a2t = shim_dma_single_bd_task(
+                      A2o_s[c], SCR, offset=32 + c * (M * N),
+                      sizes=[1, 1, 1, M * N], strides=[1, 1, 1, 1], issue_token=True)
+                  dma_start_task(a2t); a2_list.append(a2t)
+              # the PV reads the A2 back — the writebacks MUST be visible first.
+              dma_await_task(*a2_list)
+              dma_free_task(*a2_list)
+              # PV phase: A = A2 from bo4 (A-layout), B = V[kv] tile (ki)
+              for ki in range(n_k_pv):
+                  at_list, bt_list = [], []
+                  for c in range(n_aie_cols):
+                      at = shim_dma_single_bd_task(
+                          A_s[c], SCR, offset=32 + c * (M * N) + ki * k,
+                          sizes=[1, k // 8, 8, 8], strides=[8 * N, 8, N, 1], issue_token=True)
+                      dma_start_task(at); at_list.append(at)
+                  for cc in range(n_aie_cols):
+                      kvv = cc // 4
+                      bt = shim_dma_single_bd_task(
+                          B_s[cc], V,
+                          offset=kvv * (N * K) + ki * (k * n),
+                          sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                      dma_start_task(bt); bt_list.append(bt)
+                  dma_await_task(*at_list, *bt_list)
+                  dma_free_task(*at_list, *bt_list)
+              # C2 writeback per head: the full (8,128) tile of column c →
+              # bo2[c * (M*K) ..] (each column's tile is M*K int32 = 4096 B,
+              # flat, no 4D permutation; the host reads row 0 of each tile at
+              # the interleaved mmul C-layout positions (c/8)*64 + c%8 — the
+              # same c1_idx mapping the softmax kernel uses).
+              ctasks = []
+              for c in range(n_aie_cols):
+                  ct = shim_dma_single_bd_task(
+                      C2_s[c], C2, offset=c * (M * K),
+                      sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
+                  dma_start_task(ct); ctasks.append(ct)
+              dma_await_task(*ctasks, *pt_list)
+              dma_free_task(*ctasks, *pt_list)
 
 
 main()

@@ -38,15 +38,35 @@ done
 # passing against a stale assumption, but this reads the shipped .cpp.
 echo "source contract (engine/npu/src/npu_engine_universal.cpp)"
 
-if awk '/auto ip=\[&\]\(const char\*t, int K, int N\)/,/^    \};/' "$SRC" \
-     | grep -qF '"_K"+std::to_string(K)+"_N"'; then
+# The lambda body is located by NAME.  It used to be pinned to the exact text
+# `auto ip=[&](const char*t, int K, int N)`, and #2435 then gave ip() default
+# arguments (`int K=-1, int N=-1`) and a trailing return type without touching the
+# fallback — so the awk range came back EMPTY and this rule reported "ip() has no
+# dimension-keyed fallback (regressed?)" about a file whose fallback was still
+# there.  Both halves of Layer 1 were red on main from #2435 until this fix
+# (verified: the rule passes at #2435's parent 75b28a8c1 and at the commit that
+# introduced it, 02b4e04a3).  A permanently red rule is worse than no rule: the
+# real revert it exists to catch is indistinguishable from the false positive.
+# Each half now has a control below.
+lambda_body() {  # lambda_body <file> <name>
+    awk -v name="$2" '
+        $0 ~ "^    auto "name"=\\[&\\]" { f=1 }
+        f { print }
+        f && /^    \};/ { exit }
+    ' "$1"
+}
+have_fallback() {  # have_fallback <file> <name>
+    lambda_body "$1" "$2" | grep -vE '^[[:space:]]*//' \
+        | grep -qF '"_K"+std::to_string(K)+"_N"'
+}
+
+if have_fallback "$SRC" ip; then
     ok "ip() falls back to insts_i8_<t>_K<K>_N<N>.txt"
 else
     bad "ip() has no dimension-keyed fallback (regressed?)"
 fi
 
-if awk '/auto xp=\[&\]\(const char\*t, int K, int N\)/,/^    \};/' "$SRC" \
-     | grep -qF '"_K"+std::to_string(K)+"_N"'; then
+if have_fallback "$SRC" xp; then
     ok "xp() still falls back to final_i8_<t>_K<K>_N<N>.xclbin"
 else
     bad "xp() lost its dimension-keyed fallback"
@@ -55,13 +75,80 @@ fi
 # Every call site must pass the shape, or the fallback is unreachable.  A
 # one-argument ip("G") or ip(t) compiles fine and silently restores the old
 # behaviour, so match an ip( whose argument list contains no comma.  The lambda
-# definition itself is ip=[&](...) and does not match ip\(.
-onearg=$(grep -nE '\bip\([^,()]*\)' "$SRC" || true)
+# definition itself is ip=[&](...) and does not match ip\(.  Comments are stripped
+# first, respecting string and character literals: the previous grep matched
+# `xp()/ip() prefer the` inside a comment at line 2133 and reported prose as a
+# call site, which was the other half of the same always-red failure.
+onearg_sites() {  # onearg_sites <file>
+    "$PY" - "$1" <<'PYEOF'
+import re, sys
+src = open(sys.argv[1]).read()
+out, i, n = [], 0, len(src)
+while i < n:                       # strip comments, preserving line numbering
+    c = src[i]
+    if c in '"\'':
+        q = c; i += 1
+        while i < n and src[i] != q:
+            i += 2 if src[i] == '\\' else 1
+        i += 1; out.append(' '); continue
+    if src.startswith('//', i):
+        while i < n and src[i] != '\n':
+            i += 1
+        continue
+    if src.startswith('/*', i):
+        j = src.find('*/', i + 2)
+        i = n if j < 0 else j + 2
+        out.append(' '); continue
+    out.append(c); i += 1
+code = ''.join(out)
+lines = src.splitlines()
+for m in re.finditer(r'(?<![\w])ip\(([^,()]*)\)', code):
+    ln = code.count('\n', 0, m.start()) + 1
+    print("%d: %s" % (ln, lines[ln - 1].strip()))
+PYEOF
+}
+onearg=$(onearg_sites "$SRC")
 if [ -z "$onearg" ]; then
     ok "every ip() call site passes K and N"
 else
     bad "an ip() call site passes no shape:"
     printf '        %s\n' "$onearg"
+fi
+
+# --- controls: both Layer 1 rules must be able to FAIL ------------------------
+# Each rule above went red for a reason unrelated to the code it guards, so each is
+# now run against a mutated copy of the same file.  A control that stops holding is
+# a finding, not noise: it means the rule has gone blind again.
+ctl_d="$(mktemp -d)"
+trap 'rm -rf "$ctl_d"' EXIT
+
+# (a) delete ip()'s fallback line — the source rule must notice.
+sed 's|return base+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".txt";|return base+"_"+cfg.model_tag+".txt";|' \
+    "$SRC" > "$ctl_d/nofallback.cpp"
+if [ "$(grep -cF 'return base+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".txt";' "$ctl_d/nofallback.cpp")" -ne 0 ]; then
+    bad "control: the mutation did not remove ip()'s fallback line (sed no longer matches the source)"
+elif have_fallback "$ctl_d/nofallback.cpp" ip; then
+    bad "control: with ip()'s fallback line removed the rule still passes"
+else
+    ok "control: removing ip()'s fallback line is caught"
+fi
+
+# (b) rename the lambda — the name anchor is what makes (a) meaningful.
+sed 's|auto ip=\[&\]|auto zz=[\&]|' "$SRC" > "$ctl_d/renamed.cpp"
+if have_fallback "$ctl_d/renamed.cpp" ip; then
+    bad "control: a renamed ip() lambda still passes the source rule"
+else
+    ok "control: a renamed ip() lambda is caught"
+fi
+
+# (c) a comment naming ip() must not count as a call site (the 2133 false positive).
+{ cat "$SRC"; printf '\n// control: xp()/ip() prefer the dimension-keyed name\n'; } \
+    > "$ctl_d/withcomment.cpp"
+if [ -z "$(onearg_sites "$ctl_d/withcomment.cpp")" ]; then
+    ok "control: a comment naming ip() is not read as a call site"
+else
+    bad "control: a comment naming ip() is still read as a call site:"
+    printf '        %s\n' "$(onearg_sites "$ctl_d/withcomment.cpp")"
 fi
 
 # --- Layer 2: replay the lookup against the real committed xclbins -----------

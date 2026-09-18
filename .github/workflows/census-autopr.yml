@@ -1,12 +1,17 @@
 name: Census autopr
 
 # Auto-file DRAFT PRs proposing a one-line bitnet_model.h alias for uncovered
-# architecture classes that are plausible variants of a family the engine
-# already knows (e.g. `kimik3` -> `kimi_k3`). census_autopr.py (called from
-# hf_new_models.py) only guesses a candidate when the class is an edit-distance
-# / known-family match; genuinely-new architectures and SIGNIFICANT arrivals
-# (major family or vision/multimodal variant) are left as a manual alert — they
-# need a real engine implementation, not an alias.
+# architecture classes whose name is a KNOWN name spelled differently
+# (e.g. `kimik3` -> `kimi_k3`) — an exact normalized-name match, which is a
+# spelling difference and not a claim about the architecture.
+#
+# A merely name-SIMILAR class is alerted on and NEVER filed. That rule used to
+# file, and both PRs it produced (`language`, `picolm`) were closed unjustified
+# (#2443, #2444): the mapping table is an exact-match dispatch table that holds
+# 1-4 char aliases (`h` -> LLAMA, `new` -> QWEN3), so reading it as a family
+# list made the shortest alias a wildcard. Genuinely-new architectures and
+# SIGNIFICANT arrivals (major family or vision/multimodal variant) are left as
+# a manual alert — they need a real engine implementation, not an alias.
 #
 # Deliberately separate from census-watch.yml, which is ALERT-ONLY (read-only
 # perms, no write token on schedule runs). This one runs the same watcher with
@@ -80,9 +85,11 @@ jobs:
           # is why the breakage stayed invisible.
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # CENSUS_SKIP_PR stays UNSET so census_autopr may file draft PRs.
+          # CENSUS_SKIP_PR stays UNSET so census_autopr may file draft PRs -
+          # for an exact normalized-name match only. Name-similar candidates
+          # are alerted on and never filed (see the note at the top).
           python3 Testing/hf_new_models.py --limit 120 2>&1 | tee /tmp/census-autopr.log
-          echo "--- (draft PRs for plausible aliases; SIGNIFICANT/manual left as alerts) ---"
+          echo "--- (draft PRs for exact-name aliases; name-similar/SIGNIFICANT/manual left as alerts) ---"
           # A candidate the autopr could not file must not pass silently; that
           # is how the missing identity went unnoticed across five runs.
           if grep -q '\[autopr\] cmd failed' /tmp/census-autopr.log; then

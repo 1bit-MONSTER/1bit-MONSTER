@@ -37,10 +37,14 @@ cd 1bit-MONSTER && cmake -B build && cmake --build build
 packaging/model-download.sh list
 packaging/model-download.sh zaya1-8b      # Zyphra flagship, 6.6 GB
 
-./build/1bit zaya -m ~/.local/share/1bit/models/ZAYA1-8B.1bp -p "Hello world"
+./build/1bit zaya --model ~/.local/share/1bit/models/ZAYA1-8B.1bp   # serves on :8088
+
+# then, from another shell:
+curl -s localhost:8088/completion -H 'Content-Type: application/json' \
+  -d '{"prompt":"Hello world","n_predict":32}'
 ```
 
-**The last line needs a model first.** Plain GGUF files run directly (`-m model.gguf`)
+**The run line needs a model first.** Plain GGUF files run directly (`-m model.gguf`)
 and need no downloader; it is the 1BP/NPU weights that have to be fetched, by
 `packaging/model-download.sh <name>` — the same script the packaged image's
 `1bit-model-fetch.service` invokes, and it verifies each download against the

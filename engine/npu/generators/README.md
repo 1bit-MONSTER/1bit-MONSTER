@@ -171,11 +171,17 @@ compile command was not recorded anywhere — this is the verified reproduction
 
 ```
 clang++ mm_kernel_reference.cc -c -o mm_32x64x128.o \
-  -I ~/mlir-aie/third_party/aie_api/include -I ~/mlir-aie/aie_kernels/aie2p \
+  -I ~/mlir-aie/.venv/lib/python3.14/site-packages/mlir_aie/include -I ~/mlir-aie/aie_kernels/aie2p \
   -std=c++20 -O2 -DNDEBUG -D__AIE_API_AIE_ADF_HPP__ \
   --target=aie2p-none-unknown-elf \
   -DDIM_M=32 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY
 ```
+
+(Include path corrected 2026-09-12: the aie.hpp header now lives in the venv
+install at `~/.venv/lib/python3.14/site-packages/mlir_aie/include/aie_api/`,
+not `third_party/aie_api/include`. `mm_32x64x128.o` is gitignored — it is
+missing from fresh clones and must be rebuilt with the command above before
+`run_build.sh`/`build_new_xclbins.sh`.)
 
 (The `npu2_40_toolchain` checkout's iron/aiecc are internally inconsistent —
 missing modules, stale binaries — do not route kernel builds through it.)

@@ -21,7 +21,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <cctype>
 #include <cmath>
 
 constexpr int TILE_ROWS = 32;
@@ -46,83 +45,6 @@ static inline uint16_t load_bf16_bytes(const uint8_t* p) {
  * Output: [out_rows, out_cols] row-major float array (caller must free).
  * out_rows = n_tile_rows * 32, out_cols = n_tile_cols * 256
  */
-
-// ── The one int4 tile decoder, parameterised by the two axes it varies on ────
-// Every Q4NX int4 bundle we have decodes with the SAME tile geometry (32x256,
-// 5120-byte rows: 256 bf16 scales, 256 bf16 zero-points, 4096 packed nibbles)
-// and differs on exactly two things:
-//
-//   scale_group_major : scale index is (group*32 + row) rather than (row*8 + group)
-//   signed_nibbles    : nibble is two's complement (q<8 ? q : q-16) rather than the
-//                       raw unsigned q with the zero-point carrying the offset
-//
-// Four combinations exist; three are in use. Keeping them as separate functions
-// whose NAMES encode neither axis is what made "there is a third combination"
-// invisible for as long as it was: LFM2-1.2B/2.6B need group-major scales AND
-// signed nibbles, and with two named entry points the possibility did not present
-// itself. A wrong pairing is silent — it still yields a plausible weight
-// distribution — so the convention has to be measured, never inferred from a
-// family name. engine/npu/tests/check_bundle_decoders.py gates on that
-// measurement: group+unsigned for Qwen3 / Gemma3-4B / Llama-3.2 / Phi4-mini /
-// Qwen3-VL, group+signed for LFM2.
-extern "C" float* dequant_q4nx_i8_ex(const uint8_t* data, int i8_rows, int in_features,
-                                     int scale_group_major, int signed_nibbles,
-                                     int* out_rows, int* out_cols) {
-    int n_tile_cols = in_features / TILE_COLS;
-    int n_tile_rows = i8_rows / n_tile_cols;
-    *out_rows = n_tile_rows * TILE_ROWS;
-    *out_cols = n_tile_cols * TILE_COLS;
-
-    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (*out_cols), sizeof(float)));
-    if (!out) return nullptr;
-
-    for (int ir = 0; ir < i8_rows; ir++) {
-        const uint8_t* rd = data + ir * 5120;
-        int tile_row = ir / n_tile_cols;
-        int tile_col = ir % n_tile_cols;
-        const uint8_t* scales = rd;
-        const uint8_t* zeros  = rd + 512;
-        const uint8_t* packed = rd + 1024;
-        for (int lr = 0; lr < TILE_ROWS; lr++) {
-            int lane = lr / 16;
-            int lane_row = lr % 16;
-            int byte_idx = lane_row / 2;
-            int nibble_sel = lr % 2;
-            const uint8_t* lane_data = packed + lane * (TILE_COLS * 8);
-            for (int col = 0; col < TILE_COLS; col++) {
-                int group = col / 32;
-                int si = scale_group_major ? (group * 32 + lr) : (lr * 8 + group);
-                float scale = bf16_to_float(load_bf16_bytes(scales + si * 2));
-                float zp = bf16_to_float(load_bf16_bytes(zeros + si * 2));
-                if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
-                if (!std::isfinite(zp) || std::fabs(zp) > 100.0f) zp = 0.0f;
-                uint8_t byte_val = lane_data[col * 8 + byte_idx];
-                int q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
-                int v = signed_nibbles ? (int)(int8_t)(q < 8 ? q : q - 16) : (int)q;
-                out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
-                    (tile_col * TILE_COLS + col)] = (float)v * scale + zp;
-            }
-        }
-    }
-    return out;
-}
-
-// Which nibble convention a model's bundles use, by tag or directory name.
-// Everything measured so far is unsigned except LFM2. Prefer probing where a
-// probe is possible (check_bundle_decoders.py); this exists so the engine can
-// select without a probe on every load.
-extern "C" int q4nx_i8_signed_nibbles_for_tag(const char* tag) {
-    if (!tag) return 0;
-    for (const char* p = tag; *p; p++) {
-        if (std::tolower((unsigned char)p[0]) == 'l' &&
-            std::tolower((unsigned char)p[1]) == 'f' &&
-            std::tolower((unsigned char)p[2]) == 'm' &&
-            std::tolower((unsigned char)p[3]) == '2') return 1;
-        if (!p[1] || !p[2] || !p[3]) break;
-    }
-    return 0;
-}
-
 // Forward declaration for the wrapper
 extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int in_features,
                               int* out_rows, int* out_cols);
@@ -136,11 +58,82 @@ extern "C" float* dequant_i8_to_float(const uint8_t* data, int i8_rows,
  * Extended version with explicit in_features (hidden_dim).
  * For Q4NX format: n_tile_cols = in_features / TILE_COLS.
  */
+static float* dequant_i8_core(const uint8_t* data, int i8_rows, int in_features, int tile_cols,
+                              int* out_rows, int* out_cols);
+
 extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int in_features,
                               int* out_rows, int* out_cols) {
-    // group-major scales, unsigned nibbles
-    return dequant_q4nx_i8_ex(data, i8_rows, in_features, /*scale_group_major=*/1,
-                              /*signed_nibbles=*/0, out_rows, out_cols);
+    return dequant_i8_core(data, i8_rows, in_features, TILE_COLS, out_rows, out_cols);
+}
+
+// Geometry-aware variant: the tile width is a property of the BUNDLE, not a constant.
+// A tile costs 0.5 bytes/element of data plus (elems/32)*2 for scales and (elems/32)*2 for
+// zero-points, i.e. 0.625 bytes per element, so
+//     elems_per_tile = row_bytes / 0.625   and   cols_per_tile = elems_per_tile / 32
+// Gemma3-4B (row 5120 B) -> 256 cols; Gemma3-1B (row 1280 B) -> 64 cols, and 1152 = 18 x 64
+// exactly. The quantizer only ever writes tiles that divide K evenly, so with the right width
+// there is no partial tile and no unrepresented tail. The row width is the last element of the
+// tensor's shape array -- the engine's get_bytes_per_tile() already returns it.
+extern "C" float* dequant_i8_to_float_geom(const uint8_t* data, int i8_rows, int in_features,
+                              int tile_cols, int* out_rows, int* out_cols) {
+    return dequant_i8_core(data, i8_rows, in_features,
+                           tile_cols > 0 ? tile_cols : TILE_COLS, out_rows, out_cols);
+}
+
+static float* dequant_i8_core(const uint8_t* data, int i8_rows, int in_features, int tile_cols,
+                              int* out_rows, int* out_cols) {
+    int n_tile_cols, n_tile_rows;
+
+    n_tile_cols = in_features / tile_cols;
+    n_tile_rows = i8_rows / n_tile_cols;
+
+    *out_rows = n_tile_rows * TILE_ROWS;
+    *out_cols = n_tile_cols * tile_cols;
+
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
+    if (!out) return nullptr;
+
+    const int row_bytes = tile_cols * 20;  // scales(2c) + zeros(2c) + packed(16c)
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* rd = data + ir * row_bytes;
+        int tile_row = ir / n_tile_cols;
+        int tile_col = ir % n_tile_cols;
+
+        const uint8_t* scales = rd;
+        const uint8_t* zeros  = rd + tile_cols * 2;
+        const uint8_t* packed  = rd + tile_cols * 4;
+
+        for (int lr = 0; lr < TILE_ROWS; lr++) {
+            int lane = lr / 16;
+            int lane_row = lr % 16;
+            int byte_idx = lane_row / 2;
+            int nibble_sel = lr % 2;
+
+            const uint8_t* lane_data = packed + lane * (tile_cols * 8);
+
+            for (int col = 0; col < tile_cols; col++) {
+                int group = col / 32;
+                float scale = bf16_to_float(load_bf16_bytes(scales + (group * 32 + lr) * 2));
+                float zp = bf16_to_float(load_bf16_bytes(zeros + (group * 32 + lr) * 2));
+                if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
+                if (!std::isfinite(zp) || std::fabs(zp) > 100.0f) zp = 0.0f;
+
+                uint8_t byte_val = lane_data[col * 8 + byte_idx];
+                // UNSIGNED asymmetric Q4NX — the zero-point is carried in the
+                // per-group `zeros` array; the old `val >= 8 -> val -= 16`
+                // signed reinterpretation decoded the same bytes differently
+                // from onebp_loader's round-trip-verified decoder and the
+                // cpu_q4nx_loader (issue #1268).
+                uint8_t val;
+                if (nibble_sel == 0) val = (byte_val & 0x0F);
+                else                 val = ((byte_val >> 4) & 0x0F);
+
+                out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
+                    (tile_col * tile_cols + col)] = (float)val * scale + zp;
+            }
+        }
+    }
+    return out;
 }
 
 // ── Signed Q4NX int4 dequant (Zaya): value = (q - 8) * scale + min ──
@@ -151,9 +144,45 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int i
 // signed -> mean ~ -0.007, range [-0.086, 0.076] (symmetric, correct).
 extern "C" float* dequant_i8_signed_to_float_ex(const uint8_t* data, int i8_rows,
                               int in_features, int* out_rows, int* out_cols) {
-    // row-major scales, signed nibbles  (zaya1-8b.q4nx, our own converter)
-    return dequant_q4nx_i8_ex(data, i8_rows, in_features, /*scale_group_major=*/0,
-                              /*signed_nibbles=*/1, out_rows, out_cols);
+    int n_tile_cols = in_features / TILE_COLS;
+    int n_tile_rows = i8_rows / n_tile_cols;
+    *out_rows = n_tile_rows * TILE_ROWS;
+    *out_cols = n_tile_cols * TILE_COLS;
+
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
+    if (!out) return nullptr;
+
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* rd = data + ir * 5120;
+        int tile_row = ir / n_tile_cols;
+        int tile_col = ir % n_tile_cols;
+        const uint8_t* scales = rd;
+        const uint8_t* zeros  = rd + 512;
+        const uint8_t* packed  = rd + 1024;
+        for (int lr = 0; lr < TILE_ROWS; lr++) {
+            int lane = lr / 16;
+            int lane_row = lr % 16;
+            int byte_idx = lane_row / 2;
+            int nibble_sel = lr % 2;
+            const uint8_t* lane_data = packed + lane * (TILE_COLS * 8);
+            for (int col = 0; col < TILE_COLS; col++) {
+                int group = col / 32;
+                // Zaya converter (convert_float32_bins_to_q4nx.py) stores scales
+                // row-major: scales_flat[row*8 + group] (NOT group-major g*32+r).
+                float scale = bf16_to_float(load_bf16_bytes(scales + (lr * 8 + group) * 2));
+                float zp = bf16_to_float(load_bf16_bytes(zeros + (lr * 8 + group) * 2));
+                if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
+                if (!std::isfinite(zp) || std::fabs(zp) > 100.0f) zp = 0.0f;
+                // nibble layout (parallel_size=16): byte = lane*2048 + col*8 + (row%16)/2, low nibble = even row
+                uint8_t byte_val = lane_data[col * 8 + byte_idx];
+                int q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                int8_t val = (int8_t)(q < 8 ? q : q - 16);  // two's-complement signed int4 (0..7, -8..-1)
+                out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
+                    (tile_col * TILE_COLS + col)] = (float)val * scale + zp;
+            }
+        }
+    }
+    return out;
 }
 
 // ── Q8_0 dequant (8704 bytes/row, used by Qwen3.6 attention projections) ──
@@ -167,7 +196,7 @@ extern "C" float* dequant_q8_0_to_float_ex(const uint8_t* data, int i8_rows, int
     *out_rows = n_tile_rows * TILE_ROWS;
     *out_cols = n_tile_cols * TILE_COLS;
 
-    float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
     if (!out) return nullptr;
 
     for (int ir = 0; ir < i8_rows; ir++) {
@@ -218,7 +247,136 @@ extern "C" float* dequant_q8_0_to_float_ex(const uint8_t* data, int i8_rows, int
 // assume — see engine/npu/tools/lfm2_cpu_runner.cpp.
 extern "C" float* dequant_i8_group_signed_to_float_ex(const uint8_t* data, int i8_rows,
                               int in_features, int* out_rows, int* out_cols) {
-    // group-major scales, signed nibbles  (LFM2's NPU2 bundles)
-    return dequant_q4nx_i8_ex(data, i8_rows, in_features, /*scale_group_major=*/1,
-                              /*signed_nibbles=*/1, out_rows, out_cols);
+    int n_tile_cols = in_features / TILE_COLS;
+    int n_tile_rows = i8_rows / n_tile_cols;
+    *out_rows = n_tile_rows * TILE_ROWS;
+    *out_cols = n_tile_cols * TILE_COLS;
+
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
+    if (!out) return nullptr;
+
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* rd = data + ir * 5120;
+        int tile_row = ir / n_tile_cols;
+        int tile_col = ir % n_tile_cols;
+        const uint8_t* scales = rd;
+        const uint8_t* zeros  = rd + 512;
+        const uint8_t* packed = rd + 1024;
+        for (int lr = 0; lr < TILE_ROWS; lr++) {
+            int lane = lr / 16;
+            int lane_row = lr % 16;
+            int byte_idx = lane_row / 2;
+            int nibble_sel = lr % 2;
+            const uint8_t* lane_data = packed + lane * (TILE_COLS * 8);
+            for (int col = 0; col < TILE_COLS; col++) {
+                int group = col / 32;
+                // group-major: index = group*32 + row-in-tile
+                float scale = bf16_to_float(load_bf16_bytes(scales + (group * 32 + lr) * 2));
+                float zp = bf16_to_float(load_bf16_bytes(zeros + (group * 32 + lr) * 2));
+                if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
+                if (!std::isfinite(zp) || std::fabs(zp) > 100.0f) zp = 0.0f;
+                uint8_t byte_val = lane_data[col * 8 + byte_idx];
+                int q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                int8_t val = (int8_t)(q < 8 ? q : q - 16);   // signed two's complement
+                out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
+                    (tile_col * TILE_COLS + col)] = (float)val * scale + zp;
+            }
+        }
+    }
+    return out;
+}
+
+// ===========================================================================
+// Qwen3.5/3.6 "I8" dense-row dequant — 4736-byte tiles (recovered 2026-09-14,
+// disassembly of libqwen3_5_omni_npu.so gen_dequant_mm_512 + byte analysis).
+//
+// The 4736-B tile is NOT the 5120-B Q4_1 layout. It is a two-level asymmetric
+// int4 quantization:
+//   [0:4096]      packed int4, 32x256, Q4_1 nibble swizzle (lane*2048 + col*8 + (row%16)/2)
+//   [4096:4352]   256 int8 SCALES (signed), one per column
+//   [4352:4608]   256 int8 MINS   (signed), one per column
+//   [4608:4672]   32 bf16 row-scales (positive, ~2^-16)
+//   [4672:4736]   32 bf16 row-mins   (negative)
+//   value[r][c] = (q[r][c] * scale[c] + min[c]) * row_scale[r] + row_min[r]
+//
+// i8_rows is the TOTAL number of tiles (shape[0] * shape[1] for the 3-D
+// [tile_rows, tile_cols, 4736] tensor form), in_features is the projection's
+// input width (H for q_proj).
+extern "C" float* dequant_i8_4736_to_float(const uint8_t* data, int i8_rows, int in_features,
+                              int* out_rows, int* out_cols) {
+    constexpr int ROW_BYTES = 4736;
+    int n_tile_cols = in_features / TILE_COLS;
+    int n_tile_rows = (n_tile_cols > 0) ? (i8_rows / n_tile_cols) : 0;
+    *out_rows = n_tile_rows * TILE_ROWS;
+    *out_cols = n_tile_cols * TILE_COLS;
+
+    float* out = static_cast<float*>(std::calloc((size_t)(*out_rows) * (size_t)(*out_cols), sizeof(float)));
+    if (!out) return nullptr;
+
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* rd = data + (size_t)ir * ROW_BYTES;
+        int tile_row = ir / n_tile_cols;
+        int tile_col = ir % n_tile_cols;
+        const uint8_t* packed = rd;
+        const uint8_t* scales = rd + 4096;    // 256 int8
+        const uint8_t* mins   = rd + 4352;    // 256 int8
+        const uint8_t* rsc    = rd + 4608;    // 32 bf16 row scales
+        const uint8_t* rmn    = rd + 4672;    // 32 bf16 row mins
+        int nib_mode = 0;
+        if (const char* nb = getenv("NPU_I8_NIB")) nib_mode = atoi(nb);
+        for (int lr = 0; lr < TILE_ROWS; lr++) {
+            int lane = lr / 16;
+            int lane_row = lr % 16;
+            int byte_idx = lane_row / 2;
+            int nibble_sel = lr % 2;
+            const uint8_t* lane_data = packed + lane * (TILE_COLS * 8);
+            float rs = bf16_to_float(load_bf16_bytes(rsc + lr * 2));
+            float rm = bf16_to_float(load_bf16_bytes(rmn + lr * 2));
+            for (int col = 0; col < TILE_COLS; col++) {
+                uint8_t byte_val;
+                int q;
+                if (nib_mode == 1) {          // row-major: byte = lr*128 + col/2, nib = col%2
+                    byte_val = packed[lr * 128 + col / 2];
+                    q = (col % 2 == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                } else if (nib_mode == 2) {   // col-major: byte = col*16 + lr/2, nib = lr%2
+                    byte_val = packed[col * 16 + lr / 2];
+                    q = (lr % 2 == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                } else {                      // 0: Q4_1 swizzle (3: nib inverted)
+                    byte_val = lane_data[col * 8 + byte_idx];
+                    if (nib_mode == 3) nibble_sel = 1 - nibble_sel;
+                    q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                }
+                float s, m;
+                int mode = 0;
+                if (const char* im = getenv("NPU_I8_MODE")) mode = atoi(im);
+                if (mode == 1) { s = (float)scales[col] - 128.0f; m = (float)mins[col] - 128.0f; }      // centered
+                else if (mode == 2) { s = (float)scales[col]; m = (float)mins[col]; }                  // unsigned
+                else { s = (float)(int8_t)scales[col]; m = (float)(int8_t)mins[col]; }                 // signed
+                float v;
+                if (mode >= 20) {           // signed-int8 formula variants
+                    float ss = (float)(int8_t)scales[col];
+                    float ms = (float)(int8_t)mins[col];
+                    if (mode == 20) v = ((float)q - 8.0f) * ss * rs + rm;          // symmetric zp=8
+                    else if (mode == 21) v = ((float)q * ss + ms) * rs;            // no rm
+                    else if (mode == 22) v = (float)q * ss * rs + rm;              // no m
+                    else v = ((float)q * ss + ms) * rs + rm;
+                } else if (mode >= 10) {           // formula variants (unsigned int8, s=byte)
+                    float su = (float)scales[col];
+                    float mu = (float)mins[col];
+                    if (mode == 10) v = ((float)q - 8.0f) * su * rs + rm;                       // symmetric zp=8, no m
+                    else if (mode == 11) v = (((float)q - 8.0f) * su + mu) * rs + rm;           // symmetric q + per-col m
+                    else if (mode == 12) v = ((float)q - mu) * su * rs + rm;                    // m as zero point
+                    else if (mode == 13) v = ((float)q - (mu - 128.0f)) * su * rs + rm;         // centered m as zp
+                    else if (mode == 14) v = ((float)q - 8.0f) * su * rs;                       // zp=8, no rm
+                    else if (mode == 15) v = ((float)q - 8.0f) * (su - 128.0f) * rs + rm;       // zp=8, centered scale
+                    else v = ((float)q * su + mu) * rs + rm;
+                } else {
+                    v = (float)q * s * rs + m * rs + rm;
+                }
+                out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
+                    (tile_col * TILE_COLS + col)] = v;
+            }
+        }
+    }
+    return out;
 }

@@ -17,6 +17,12 @@ set(NPU_ENGINE_SOURCES
     ${NPU_SRC_DIR}/dequant_q4nx.cpp
     ${NPU_SRC_DIR}/gemm_npu_instructions.cpp
     ${NPU_SRC_DIR}/zaya_decode.cpp
+    # single-launch whole-layer per-ctx ELF path (issue #2080/#2150): the
+    # bridge TU isolates npu-infer's ModelConfig (common.h) from the engine's
+    # model_config.h. model.c is C; runtime_layer.cpp + bridge are C++.
+    ${NPU_SRC_DIR}/npu_runlist_bridge.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../npu-infer/src/model.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../npu-infer/src/runtime_layer.cpp
 )
 # zaya_decode.cpp — the Zaya decode path (CCA attention on CPU, MoE FFN on
 # NPU, NPU_FUSED=1 fused GU->SiLU->D mode). npu_engine_universal dispatches
@@ -29,6 +35,59 @@ set(NPU_ENGINE_SOURCES
 # through aiebu. FLM libs (libgemm.so et al) are never dlopened at runtime.
 
 add_executable(npu_engine_universal ${NPU_ENGINE_SOURCES})
+
+# ── The two FLM bridge TUs this target was missing (#2505) ────────────────────
+# npu_engine_universal.cpp references two families that live in their own TUs:
+#
+#   bf16mm_*                          -> src/npu_engine_bf16_mm_bridge.cpp
+#   flm_prefill_init/run, flm_decode_run -> src/flm_prefill_bridge.cpp
+#
+# `build_npu.sh` compiles and links both (ENGINE_OBJS, lines 40-44); this target did
+# not, so from #2435 (2026-09-18 03:14) the CMake build could not link at all: 26
+# undefined references in CI, 30 locally, no binary. Only the non-required benchmark
+# job builds this target, so nothing gated it (#2505).
+#
+# They get their own OBJECT library because they need a different recipe from the
+# rest of the engine: `build_npu.sh` compiles them with `-std=c++17`, while this
+# project sets C++23, and FLM's headers do not compile under C++23 (verified:
+# `gemm.hpp` / `dequant.hpp` fail on `LM_Config`). Compiling them at C++17 is what
+# the shell path has always done; this block mirrors it rather than inventing a
+# second recipe.
+set(FLM_INC "$ENV{FLM_INC}" CACHE PATH "FLM headers (bf16mm / prefill bridges)")
+if(NOT FLM_INC)
+    set(FLM_INC "/home/bcloud/.local/flm-v0946/include" CACHE PATH "FLM headers" FORCE)
+endif()
+set(FLM_LIB "$ENV{FLM_LIB}" CACHE PATH "FLM xrt libraries (bf16mm / prefill bridges)")
+if(NOT FLM_LIB)
+    set(FLM_LIB "/home/bcloud/.local/flm-v0946/lib/xrt" CACHE PATH "FLM xrt libraries" FORCE)
+endif()
+
+add_library(npu_flm_bridges OBJECT
+    ${NPU_SRC_DIR}/npu_engine_bf16_mm_bridge.cpp
+    ${NPU_SRC_DIR}/flm_prefill_bridge.cpp
+)
+set_target_properties(npu_flm_bridges PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    POSITION_INDEPENDENT_CODE ON
+)
+# Per-TU flags, copied from build_npu.sh lines 99-105.
+set_source_files_properties(${NPU_SRC_DIR}/flm_prefill_bridge.cpp PROPERTIES
+    COMPILE_OPTIONS "-mavx2;-include;climits")
+target_include_directories(npu_flm_bridges PRIVATE
+    ${NPU_SRC_DIR}
+    ${FLM_INC}
+    ${FLM_INC}/npu_utils
+)
+target_sources(npu_engine_universal PRIVATE $<TARGET_OBJECTS:npu_flm_bridges>)
+# The libraries those two TUs reference, from build_npu.sh's LIBS (line 142).
+target_link_libraries(npu_engine_universal
+    -L${FLM_LIB}
+    -lgemm -ldequant -lqwen3_npu -lqwen3_6_moe_npu -lqwen3_5vl_npu
+    -lq4_npu_eXpress -lmha -llm_head -lllama_npu -lgemma4e_npu -lphi4_npu
+    -lnanbeige_npu -llfm2_npu
+    -Wl,-rpath,${FLM_LIB}
+)
 
 # ── #embed freshness (issue #1957) ────────────────────────────────────────
 # npu_embedded.h bakes the xclbin/insts artifacts into the binary at compile

@@ -1,0 +1,1141 @@
+# The attention kernel was never slow — it was regressed (2026-09-15)
+
+Corrects the "zero-output defect / C2 handshake / 2000× slower" section of
+`LEVERS-register-2026-09-15.md`. Two independent generator bugs, both introduced
+by `b2cfb080f` ("break the 512-score ceiling — N=1024 builds, chunked path
+wired"), are the whole of it. The C2 handshake was never broken.
+
+## Bug 1 — the `n_grp == 1` core lost its PV/C2 block (N ≤ 512)
+
+`b2cfb080f` split the flat core body into `if n_grp == 1: … else: …`. The
+PV/C2 writeback block that used to run unconditionally was left at its old
+indentation, so git matched it as *context* and it ended up **only in the
+`else` branch**:
+
+    A2o = A2o_c[c].acquire(Produce,1); softmax(…); A2o_c[c].release(Produce,1)
+    Cb = C2_c[c].acquire(Produce,1)   ← this block, for N ≤ 512, was gone
+    zero(Cb); for ki: matmul(A,B,Cb); …
+
+The commit's own check ("the shipped N=512 instruction stream is byte-identical,
+so the `n_grp == 1` branch is provably the original path") validates the
+*sequence* (`attn_insts.txt`, still `f3d0a132bde24a60`), not the *core ELF*. The
+regression was invisible to it.
+
+Consequence for N ≤ 512: the core produced A2 but never consumed the PV feed and
+never wrote C2, while the sequence still fed `n_k_pv` (A,B) pairs and awaited the
+C2 read task. That is the 6 s: the host waiting on a C2 task no core ever
+satisfied. `max_abs_out == 0` and `max_abs_err == max_abs_ref` follow directly.
+
+Fixed: the block is restored in the `n_grp == 1` branch.
+
+**Verification.** MLIR for N=512 from the fixed generator is byte-identical
+(2674 lines) to the pre-`b2cfb080f` generator's output.
+
+| build (N=512) | C2 | max_abs_err | ms/call |
+|---|---|---|---|
+| shipped reference | 2/2 non-zero | 4.564293e-02 | **2.161** |
+| ours, before fix | 0/2 (all zeros) | 1.205004e+01 | 6048 |
+| **ours, after fix** | **2/2 non-zero** | **4.564293e-02** | **2.515** |
+
+The generated kernel now matches the shipped reference's output *exactly* and is
+within 16 % on time. **There is no 2000× gap and no L1 timing gate to open** —
+the number was the regression's driver timeout, not kernel cost.
+
+## Bug 2 — the chunked `seq()` never fed the PV nor read C2 (N > 512)
+
+The same commit added the chunked core branch *with* a Cb/PV block, but the
+chunked `seq()` branch ends at the A2 writeback: no PV A/B feed and no C2 read
+task. The chunked core therefore blocks on A/B acquires that never arrive, and C2
+is never read.
+
+Fixed: the chunked branch now feeds `n_k_pv` (A,B) pairs (A = A2 read back from
+bo4 at row stride N, B = V[kv]) and emits the C2 writeback, matching the
+`n_grp == 1` geometry; the per-group params tasks are now awaited/freed with the
+A2 writeback instead of being orphaned.
+
+**Verification (N=1024, `attn_insts.txt` 46992 → 90544 B):**
+
+| | C2 | ms/call |
+|---|---|---|
+| before | 0/2 (all zeros) | 3.100 |
+| **after** | **2/2 non-zero** | **4.690** |
+
+But the values are **still wrong** (`max_abs_err` 2.5–3.9e-01 vs `max_abs_ref`
+1.67e-01), and the A2 dump localises it exactly: head 0 row 0 block map is
+`[0]=107 [1]=114 [2]=100 [3]=114 [4..7]=0` — **group 0's A2 (cols 0–511) lands,
+group 1's (cols 512–1023) does not**. So the chunked path has a third, still-open
+defect: the second group's A2 never reaches SCR. The result is not a handshake
+problem — C2 is written now — it is that half the softmax weights are missing.
+
+## What this means for the register
+
+- "**the sequence is FLM's byte-for-byte, so the defect is our core's C2
+  protocol**" — the byte-identity is real but it only covers the sequence; the
+  core regression was invisible to it. There is no C2 protocol defect to find.
+- "**our kernel outputs ALL ZEROS, always**" — true only of the regressed
+  `n_grp == 1` build (N=512), which was the only build the repro used.
+- "**our generated kernel is ~2000× slower than FLM's**" — the 6048 ms was a
+  host wait on an unsatisfied FIFO, removed by Bug 1's fix. The real N=512 cost
+  is 2.5 ms against FLM's 2.2 ms.
+- "**bisected the zero-output defect to the C2 writeback handshake**" — the
+  "C2 produce only" row (7055 ms) removed the *consumes* but left the sequence's
+  PV *feeds*; the host still waited on the C2 task. The bisect localised the
+  wait, not a handshake.
+- The ruled-out table's rows all still hold as measurements; none of them was
+  the cause.
+
+## Resolved (2026-09-15, later): the chunked A2 loss was an element size mismatch
+
+**Fixed.** Two changes, neither touching the `n_grp == 1` path:
+
+1. The `A2O` FIFO element is now the **group slice** `(8, G_TILES*n)` = `(8,512)`
+   = 4096 B for `n_grp > 1`, instead of the whole `(8,N)` = 8192 B. The element
+   and the per-group `a2t` transfer are now the same size, so a produce/consume
+   advances the FIFO instead of leaving the buffer un-handed-on.
+2. The chunked `params[3]` (A2 row stride) is now `0` (packed), so
+   `attn_softmax_contract` writes a **contiguous** `(8,512)` element. The strided
+   placement into SCR (group g at column `g*512`, row stride N) is done by the
+   `a2t` BD — a contiguous FIFO read with a strided write — not by the softmax.
+
+**Evidence.**
+
+`seq=513` (group 0 = 512 active keys, group 1 = 1) now shows both:
+
+```
+head0 row0 block map: [0]=124 [1]=125 [2]=125 [3]=122 [4]=1 [5..7]=0
+head0 row0 nonzero=497 first=0 last=512
+```
+
+Group 0 fills columns 0–511 (its 512-key softmax) **and group 1 appears at
+column 512** — the one-key result. Before the fix, column 512 was empty and the
+group-0 slot held the one-key shape.
+
+Bench, and the decisive check against the kernel's own host contract:
+
+| build | C2 | NPU max_abs_err | EMU max_abs_err | ms/call |
+|---|---|---|---|---|
+| N=256 | 2/2 non-zero | 4.853413e-02 | **4.853413e-02** | 1.007 |
+| N=512 | 2/2 non-zero | 4.564293e-02 | **4.564293e-02** | 2.456 |
+| N=1024 chunked | 2/2 non-zero | **1.026515e-01** | **1.026515e-01** | 4.314 |
+
+NPU == EMU on all three, to the digit: the generated kernel now implements its
+contract exactly across the `n_grp == 1` path (N=256 and N=512 exercise different
+`n_n` branches) and the chunked path. The residual error is the int8 design's own
+(the same value the host contract produces), not a defect.
+
+`attn_insts.txt` for N=512 is still `f3d0a132bde24a60`, so the `n_grp == 1` path
+is untouched.
+
+## Still open
+
+1. **The chunked path has no engine run** — the bench drives the artifact
+   directly; `AttnCtx` (the consumer) has never been driven through
+   `zaya_decode.cpp` end to end for N > 512.
+
+### Diagnostics run on the chunked group-1 A2 (2026-09-15, later)
+
+A `seq=513` probe is decisive because the two groups then have unmistakable
+signatures: group 0 owns 512 active keys (softmax ≈ uniform → nearly all-zero
+after `sat8(w·127)`), group 1 owns **one** active key (`seq_g = 513−512 = 1` →
+`A2[0] = 127`). Observed on the N=1024 chunked build:
+
+```
+head0 row0 block map: [0]=1 [1]=0 [2]=0 [3]=0 [4..7]=0
+head0 row0[0..15]   : 127 0 0 0 0 0 0 0 ...
+```
+
+So **the group-1 slot (cols 512–1023) is empty and the group-0 slot holds what
+looks like group 1's one-key result.** At `seq=1024` the same probe gives
+`[0]=107 [1]=114 [2]=100 [3]=114 [4..7]=0` — group 0 populated, group 1 empty.
+
+**Ruled out by IR audit** (the generated `design.mlir`, N=1024):
+
+| suspect | finding |
+|---|---|
+| A2 writeback offsets | correct — `dma_bd(SCR, 32, …)` for g=0 and `dma_bd(SCR, 544, …)` for g=1, 16 tasks (2 per column) |
+| params feed offsets | correct — 8 tasks at `30720` (g=0) then 8 at `30784` (g=1), in order |
+| core acquire order | correct — 8 `A_C` acquires + 1 params per group, two `attn_softmax_i8` calls with distinct `Par` operands and distinct `A2O_C` produce buffers |
+| C2 geometry | correct — `C2_S` is `memref<8x128xi32>`, offsets `c*(M*K)` |
+
+**Ruled out by experiment: the params are not the driver.** Writing *and*
+reading group g's params at slot `g+1` (host `npu_attn_ctx.h` + generator, both
+shifted, IR confirmed at `30784`/`30848`) produced a **byte-identical runtime
+result** — `seq=513` still `[0]=1 … [4..7]=0`. If the core were consuming the
+params one slot late, the shift would have moved the 512-key result into the
+group-0 slot; it did not.
+
+**Narrowed to:** group 1's **C1 is zero** (uniform softmax → `sat8(w·127) = 0`
+for all 512 weights), i.e. the group-1 QK^T never accumulates, while group 0's
+C1 does (its `seq=513` peakedness is a quantisation artefact — `sq`/`sk` are
+recomputed from the shorter k array, so the two seq values are not comparable
+C1-for-C1). The remaining suspects are the **group-1 B/KT tile addressing**
+(`(ki*(N//n) + g*G_TILES + ntl)*(k*n)`) and the **`A2O` FIFO element
+accounting** (element is the full `(8,N)` = 8192 B while each group's `a2t`
+transfers a strided 4096 B of it). Next probe: dump C1 per group (or give the
+two groups different KT tiles that cannot quantise away).
+
+#### The `A2O` element/transfer mismatch is the best fit (2026-09-15, later)
+
+The host KT side is clean: `npu_attn_ctx.h` fills **all** `n_k*n_n = 16` (ki,nt)
+tiles for the baked N, so group 1's tiles (4–7, 12–15) are populated, and their
+`t < seq` guard passes at `seq=1024`. So "group 1's C1 is zero" cannot be a
+missing-B-tile problem.
+
+What the two probes actually pin is different, and simpler: **only one distinct
+A2 element ever reaches SCR.**
+
+- `seq=513`: SCR `32..543` holds a *one-key* result (`[0]=127`), SCR `544+` is
+  untouched. Group 1 is the group whose `seq_g = 1`; group 0's is 512.
+  So element 0 carries **group 1's** data.
+- `seq=1024`: SCR `0..511`-block is populated (~435), `512+` untouched.
+
+Both say: the core's **second** `A2O_C[c].acquire(Produce, 1)` returns the same
+buffer as the first, so group 1's softmax overwrites group 0's element and the
+second element is never produced — the `a2t` that reads it writes zeros.
+
+That is exactly what an **element vs transfer size mismatch** produces. The
+`A2O` element is the full `(8,N)` = 8192 B (`memref<8x1024xi8>`, verified in the
+IR), while each group's `a2t` reads a *strided 4096 B* of it
+(`[<1,4>,<1,4>,<8,1024>,<512,1>]`). The strided read is forced: SCR has room for
+only **one** `(8,N)` per head (`32 + c·M·N`), so both groups must interleave into
+it (g at column `g*512`, row stride N). But a partial element read never lets the
+MemTile hand the buffer on, so the producer never advances.
+
+**Fix to try:** make the `A2O` element the *group slice* `(8, G_TILES*n)` =
+`(8,512)` = 4096 B for `n_grp > 1`, and set the chunked `params[3]` to `0`
+(packed) so `attn_softmax_contract` writes a **contiguous** `(8,512)` element.
+The `a2t` then reads the FIFO **contiguously** (a whole element) and writes SCR
+strided — the same `[<1,4>,<1,4>,<8,N>,<512,1>]` BD, which is a strided *write*
+into SCR with a contiguous FIFO read. Keep the `n_grp == 1` path untouched so
+`attn_insts.txt` stays `f3d0a132bde24a60`.
+
+
+2. The stale-`dist` engines need a rebuild only if the generated xclbin is
+   promoted over the captured ELF; the bench drives the artifact directly.
+
+## L1 closing step: the chunked path is now engine-driven (2026-09-15)
+
+First end-to-end engine run of the generated chunked attention — it had only ever
+been bench-driven. Zaya engine (`engine/npu/build/npu_engine_zr1`,
+`/home/bcloud/models/zaya1-8b.q4nx`, 600-token synthetic prompt), chunked build
+`/tmp/attn_v3_1024` (attn.xclbin 104784 B, attn_insts.txt 90544 B):
+
+```
+NPU_ATTN=1 NPU_ATTN_MAX_SEQ=1024 \
+NPU_ATTN_XCLBIN=/tmp/attn_v3_1024/attn.xclbin \
+NPU_ATTN_INSTS=/tmp/attn_v3_1024/attn_insts.txt \
+  engine/npu/build/npu_engine_zr1 /home/bcloud/models/zaya1-8b.q4nx 4 /tmp/ids600.txt
+```
+
+- `AttnCtx: xp=/tmp/attn_v3_1024/attn.xclbin instr=22636 words` then
+  `NPU attention ready (attn.xclbin, 20 layers, MAX_SEQ=1024)` — the chunked
+  kernel loads and initialises inside the engine.
+- `[MoE L1 dbg] corr=0.999342 maxdiff=0.022679`, `[EMB dbg] corr=1.0000000` —
+  the run is sound.
+- `[perf] 8 tokens in 1431 ms (178.8 ms/tok)` for a 600-token prefill.
+
+**Two caveats, both open.**
+
+1. **`NPU_ATTN_MAX_SEQ` must be set.** Unset, `AttnCtx` defaults to `MAX_SEQ=512`
+   from its own env read (`npu_attn_ctx.h`), *not* from the kernel's baked N — so
+   the first attempt loaded the N=1024 xclbin but reported `MAX_SEQ=512` and
+   clamped the 600-token prompt. The engine and the kernel only agree when the
+   env matches the build.
+2. **Coherence is not yet established.** With `NPU_ATTN=0` (CPU attention) the
+   same prompt yields different final tokens (`99078 34848 …` vs
+   `121561 3974 …`), and the `[MoE L1 dbg]` line is byte-identical between the
+   two — it compares NPU MoE against a CPU MoE built from the *same* attention
+   output, so it does not discriminate them. A 600-token **synthetic random-id**
+   prompt is chaotic, so divergence there is not evidence of a defect; a
+   real tokenized prompt is needed before the chunked attention can be called
+   coherent engine-side.
+
+### Correction: the Zaya engine takes ids as ARGV, and int8-vs-float is not a coherence test
+
+Two mistakes in the run above, both worth recording.
+
+**The Zaya engine's prompt interface is argv, not a file.** `npu_engine_zr1`'s
+printed usage is the universal one (`model.q4nx [decode_tokens]
+[input_tokens_file|-]`), but a model whose header says "zaya" is dispatched to
+`zaya_decode_main`, whose own usage is `model.q4nx [token_id...]`. So
+`… zaya1-8b.q4nx 4 /tmp/ids600.txt` parsed the *path* as a token id
+(`atoi → 0`) and ran with the prompt `[4, 0]`. That is why two completely
+different token files produced byte-identical output — the prompt never reached
+the model. With ids passed as argv the output tracks the prompt:
+
+```
+4 100 200 300 400   -> 37263 413 206971 206971 413 96004 239109 74431
+4 500 600 700 800   -> 56478 54505 34097 31114 229140 55384 55384 52589
+```
+
+**NPU-vs-CPU attention is not a coherence test.** The NPU path is int8
+(`sat8(round(w·127))`, an exp LUT) and the CPU path is float, so the two are
+numerically different *by design*; a chaotic decode amplifies that immediately.
+They differ at 16 tokens (`132187 …` vs `131526 …`) as well as at 600, which
+tells us nothing about the chunked path.
+
+**The right test** is generated-N=1024 versus captured-N=512 — *both* int8 NPU
+attention — on a prompt both can serve (≤512 tokens, where the chunked kernel
+runs only group 0), and then on a >512-token prompt against the shipped
+long-context capture. That isolates the generator change; the CPU baseline only
+tests the int8 approximation itself, which is a known, accepted design property.
+
+### The decisive test passes: generated == captured, token for token
+
+Generated-N=512 versus the engine's **embedded captured** kernel (no override) —
+both int8 NPU, same 16-token argv prompt, same Zaya engine:
+
+```
+captured  (embedded): 132187 41195 98398 22969 98398 68020 6496 4508
+generated (N=512)   : 132187 41195 98398 22969 98398 68020 6496 4508
+```
+
+**Byte-identical output.** The generated attention kernel is a faithful
+drop-in for the captured FLM-derived one, engine-driven — which is exactly what
+the L1 step needed, and it also confirms the earlier NPU-vs-CPU divergence was
+the int8-vs-float design difference, not a defect in the generator.
+
+## L2 first step: the generic interposer capture RUNS (2026-09-15)
+
+The Nanbeige capture had been blocked by the `xrt::bo` use-after-free documented
+in `npu-infer/tools/capture/cap_interposer.cpp` (it killed two runs on 2026-09-15
+at `RUNLIST 65: execute (pre-dump)`). The `own_bo()`/`g_bo_owner` fix (merged as
+PR #2417) holds — the capture now completes.
+
+Complete recipe, assembled from `benchmarks/flm_parity.sh` and the interposer:
+
+```sh
+# cfg: {"max_length": N, "iterations": n, "input_text": "<prompt>"}
+CAP_DIR=/tmp/nbcap/cap4096 \
+LD_PRELOAD=$REPO/npu-infer/tools/capture/cap_interposer.so \
+CAP_NO_SYNC=1 \
+  /opt/fastflowlm/bin/flm bench nanbeige4.1:3b -i cfg4096.json
+```
+
+(`flm bench` is a hidden command; `flm` is at `/opt/fastflowlm/bin/flm`, also
+`flm104/bin/flm`. `CAP_NO_SYNC` keeps only the runlist preinsts dumps — without it
+the per-sync 32 MB KV writes fill `/tmp`.)
+
+Run result: clean, exercising **1k / 2k / 4k** (prefill 423 / 588 / 697 tok/s),
+**10499 artifacts** in `CAP_DIR`, including the `elf_*.bin` ELF dumps.
+
+**Identification lead.** The `elf_*.bin` size histogram contains **`154528`**
+(2 occurrences) — exactly the size of the on-disk, previously-distrusted
+`engine/npu/xclbins/attn_mha_1024_nh20_hd128.elf`. So that file is very likely a
+genuine capture artifact after all, and the prior session's "installing it did not
+move the boot" may mean it is the wrong *context* (1024, not 4096) or the wrong
+member of the family, rather than "not the attention kernel". For reference the
+known attention captures are `attn_mha_1024_nh16.elf` = 98848 and
+`attn_mha_4096_nh16.elf` = 386512; the most common captured size is 86672
+(105 occurrences, so that is a per-layer weight ELF, not attention).
+
+Next: capture at ONE fixed context per run (the run above swept three) and diff
+the `elf_*.bin` size sets across contexts — the attention ELF is the one whose
+size moves with context. Then install as `attn_mha_4096_nh20_hd128.elf` and
+verify exactly as the generated kernel was: bench error vs EMU, then engine
+token-identity.
+
+### L2 identification, first differential: 154528 is NOT the attention ELF
+
+Two captures, same recipe, differing only in `max_length` (which sets how far the
+bench sweeps — 1024 sweeps only 1k, 4096 sweeps 1k/2k/4k):
+
+```
+1024-only : 6816(1) 13728(2) 15440(1) 26528(2) 41888(3) 86672(37) 154528(2) 177696(1) 459552(1)
+4k-swept  : 6816(1) 13728(2) 15440(1) 20064(2) 26528(2) 32736(2) 41888(3) 69344(3)
+            86672(105) 124256(3) 154528(2) 177696(1) 266464(2) 308736(1) 459552(1)
+            490336(2) 570848(1)
+```
+
+**`154528` appears in BOTH, ×2 each.** It is therefore *context-independent* and
+**not** the attention ELF — which independently confirms the earlier session's
+"installing it did not move the boot". The previous section's lead is withdrawn:
+the on-disk `attn_mha_1024_nh20_hd128.elf` is a real capture artifact but not the
+attention kernel.
+
+`86672` also grows 37 → 105 with context, so counts (not just the size set) carry
+information — per-context *layer* ELFs multiply rather than change size.
+
+The attention ELF must be among the sizes unique to the higher-context capture:
+`20064, 32736, 69344, 124256, 266464, 308736, 490336, 570848`. To separate 2k-
+from 4k-specific ones, a third capture at `max_length=2048` is needed; the sizes
+present at 4096 but absent at 2048 are the 4k set. Then install the single
+candidate as `attn_mha_4096_nh20_hd128.elf` and verify it the way the generated
+kernel was verified (bench error vs EMU, then engine token-identity) — a
+wrong-family or wrong-context ELF passes no test, which is how the 154528 file was
+caught.
+
+### Differential isolated: the 4096-specific ELF sizes
+
+Third capture at `max_length=2048` (sweeps 1k/2k). Sizes present at 4096 but
+**absent** at 2048 — i.e. the 4k-specific set — are exactly four:
+
+```
+32736   124256   490336   570848
+```
+
+The Nanbeige nh20 **4096** attention ELF is one of them. (For contrast the 1k
+capture's singleton sizes — candidates for the nh20 *1024* attention ELF — are
+`6816, 15440, 177696, 459552`; the *count* matters as well as the size, since
+per-context layer ELFs multiply rather than change size: 86672 goes 37 → 71 → 105
+across the 1k / 2k / 4k captures.)
+
+**How to pin it:** install each candidate in turn as
+`xclbins/attn_mha_4096_nh20_hd128.elf` and test it the way the generated kernel
+was tested — bench error vs EMU, then engine token-identity. A wrong-family or
+wrong-context ELF passes neither, which is precisely how `154528` was caught, so
+the loop is self-checking and needs no oracle.
+
+### L2 is blocked BEFORE attention: the Nanbeige bf16 arm has no QKV xclbin
+
+Attempting the candidate test surfaced a more fundamental blocker. Running the
+Nanbeige engine with the bf16 arm on:
+
+```
+NPU_BF16=1 engine/npu/build/npu_engine_nanbeige4_1_3b \
+  ~/.config/flm/models/Nanbeige4.1-3B-NPU2/model.q4nx 4 /tmp/ids4096.txt
+```
+
+fails before any attention ELF is consulted:
+
+```
+=== BF16 mode (n1_core_placed.py) ===
+Bf16Ctx: xclbin init failed: No such file or directory
+  'engine/npu/xclbins/final_bf16_QKV_K2560_N3584.xclbin'
+FAIL bf16 QKV
+```
+
+`final_bf16_QKV_K2560_N3584.xclbin` (K=2560 = Nanbeige's qkv width) does not
+exist. **So the nh20 attention kernel is not the only thing standing between
+Nanbeige and a working bf16 arm** — the bf16 QKV GEMM xclbin is missing too, and
+attn is downstream of it. The candidate ELF was therefore removed untested
+(`xclbins/attn_mha_4096_nh20_hd128.elf` is not in the tree).
+
+For reference, the i8 arm does run at 4096 (`boot=2236`, 29 ms) — it is only slow
+(6530 ms/tok), which is the known per-token host/device cost, not a correctness
+problem.
+
+Revised L2 order: (1) produce/generate `final_bf16_QKV_K2560_N3584.xclbin`, (2)
+*then* the nh20 attention candidate test above becomes reachable.
+
+### Why the bf16 QKV xclbin is missing: the requested N does not match the generator
+
+The engine asks for `final_bf16_QKV_K2560_N3584.xclbin`, but
+`engine/npu/generators/build_new_xclbins.sh` carries Nanbeige as
+
+```
+"nanbeige4.1_3b:QKV:2560:3840:8"     # QKV K=2560, N=3840, 8 cols
+```
+
+**N=3584 vs N=3840** is not a typo on either side — it is a head-geometry
+disagreement, and both give qout = 2560:
+
+| | n_q | n_kv | hd | N = n_q + 2·n_kv |
+|---|---|---|---|---|
+| engine requests | 20·128 = 2560 | 4·128 = 512 | 128 | **3584** |
+| generator entry | 32·80 = 2560 | 8·80 = 640 | 80 | **3840** |
+
+So the bf16 arm is built for **nh20 / hd128** (which is also why the shape ELF it
+wants is `attn_mha_1024_nh20_hd128.elf`, and why the whole nh20 thread exists),
+while the i8 path and the generator shape table use **nh32 / hd80**. The missing
+xclbin is a *shape-table* mismatch, not a missing build step: either the
+generator entry is wrong for the bf16 arm or the engine's N is. Resolve which
+geometry Nanbeige's bf16 arm is actually specified with before generating
+anything, then build `final_bf16_QKV_K2560_N3584.xclbin` through
+`n1_core_bf16_v1.py` / `build_new_xclbins.sh`.
+
+### RESOLVED: Nanbeige is nh20 / hd128 / nkv4 — the generator table was wrong, not the engine
+
+`~/.config/flm/models/Nanbeige4.1-3B-NPU2/config.json` settles it:
+
+```
+hidden_size           : 2560
+num_attention_heads   : 20
+num_key_value_heads   : 4
+head_dim              : 128
+intermediate_size     : 10752
+num_hidden_layers     : 32
+```
+
+→ qout = 20·128 = 2560, n_kv = 4·128 = 512, **QKV N = 2560 + 2·512 = 3584**.
+
+So the engine's request for `final_bf16_QKV_K2560_N3584.xclbin` is **correct**, and
+`generators/build_new_xclbins.sh` was wrong on every Nanbeige entry — it carried a
+stale nh32/hd80 reading of the model (n_q = 32·80 = 2560 aliases the real 20·128,
+which is exactly what made the error survive). Corrected against the config:
+
+| entry | was | now | config |
+|---|---|---|---|
+| QKV | 2560:3840 | **2560:3584** | 2560:3584 ✓ |
+| O | 2560:2560 | 2560:2560 | 2560:2560 ✓ |
+| G | 2560:8192 | **2560:10752** | 2560:10752 ✓ |
+| U | 2560:8192 | **2560:10752** | 2560:10752 ✓ |
+| D | 8192:2560 | **10752:2560** | 10752:2560 ✓ |
+
+G/U/D were independently corroborated before the edit: the engine's own D context
+prints `creating bC size=5505024 (MD=128 ND=10752)`, so 10752 is what it expects,
+not 8192.
+
+This also settles the shape name: `attn_mha_*_nh20_hd128.elf` **is** the right
+family for Nanbeige — nh20/hd128 is the true geometry — so the earlier
+`attn_mha_1024_nh20_hd128.elf` (154528 B) was a real nh20 artifact after all; it
+is simply context-independent (both captures) and therefore not the attention
+kernel. The 4096 attention ELF is one of {32736, 124256, 490336, 570848}.
+
+### L2's real blocker: nothing produces `final_bf16_*` xclbins
+
+My shape-table correction fixes the **i8** K/N xclbins, but that is not what was
+missing. `src/npu_engine_universal.cpp:1302` builds the name it wants:
+
+```cpp
+auto xpb=[&](const char*t,int K,int N){return xd+"/final_bf16_"+t
+        +"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";};
+```
+
+and **no script in the tree emits `final_bf16_*` at all**:
+
+- `grep -rln 'final_bf16' generators/ src/` → only `src/npu_engine_universal.cpp`
+  (the consumer); no producer.
+- `build_new_xclbins.sh` emits `final_i8_${proj}_${model_tag}.xclbin` via
+  `n1_core_i8_v26.py` — a different name *and* a different generator.
+- `ls xclbins/ | grep bf16` → only `final_i8_GUSILU_i4_qwen3_0_6b_bf16pair.xclbin`.
+
+The bf16 generator itself exists and is documented —
+`FUSED-RMSNORM-QKV-DESIGN.md:74` gives the invocation
+
+```
+.venv/bin/python n1_core_bf16_v1.py -M 128 -K 1024 -N 4096 -m 32 -k 64 -n 128 -c 8 -r 4 -b 5 > design.mlir
+```
+
+— but it is wired into no build script, and the engine's filename convention
+(`final_bf16_<proj>_K<K>_N<N>.xclbin`, K/N-tagged, *not* model-tagged) is what a
+producer must match.
+
+**So the next step is to write that producer**, not to re-run an existing script:
+run `n1_core_bf16_v1.py` per shape and aiecc to
+`xclbins/final_bf16_<PROJ>_K<K>_N<N>.xclbin`, starting with
+`QKV K=2560 N=3584` (Nanbeige's true geometry, now in the shape table). The
+existing `build_new_xclbins.sh` is the right template — it already has the
+env/aiecc incantation and the shape-table loop; it just calls the i8 generator and
+names for i8.
+
+### The Nanbeige bf16 arm RUNS now — the missing producer was the whole blocker
+
+Wrote `engine/npu/generators/build_bf16_xclbins.sh` (the producer that did not
+exist) and built all five Nanbeige bf16 projections:
+
+| proj | K | N | cols | xclbin | insts |
+|---|---|---|---|---|---|
+| QKV | 2560 | 3584 | 4 | 84752 B | 371968 B |
+| O | 2560 | 2560 | 4 | 84752 B | 265696 B |
+| G | 2560 | 10752 | 4 | 84752 B | 1115872 B |
+| U | 2560 | 10752 | 4 | 84752 B | 1115872 B |
+| D | 10752 | 2560 | 4 | 84752 B | 1105376 B |
+
+Two constraints the generator imposes, both learned the hard way:
+`n1_core_bf16_v1.py` asserts `(N//n) % n_aie_cols == 0`, so N=3584 (28 tiles)
+needs **cols=4**, not 8 — the old shape-table value was unusable on that ground
+too; and `aiecc` resolves `link_with` against **CWD**, so the kernel object
+(`mm_bf16_32x64x128.o`) must be staged next to `design.mlir`, and the
+`--npu-insts-name` must land in `xclbins/` because that is where
+`Bf16Ctx::init` looks for it.
+
+Progression, each step exposing the next missing file:
+
+```
+Bf16Ctx: xclbin init failed: ... 'final_bf16_QKV_K2560_N3584.xclbin'   FAIL bf16 QKV
+Bf16Ctx: xclbin init failed: ... 'final_bf16_O_K2560_N2560.xclbin'     FAIL bf16 O
+   (after building all five)
+Prefill: 245532ms (60 ms/tok)  ...  [0] boot=98153 (20ms)
+[npu] KV overflow at layer 0 (sp=4096) — restarting context
+=== 2135.2 ms/tok | boot=20ms batches=3 tokens=4 ===
+```
+
+So the arm **executes end to end** where it previously failed at projection init.
+
+**Two things it is not yet:** correct or fast. The boot token is `98153` against
+the i8 arm's `2236` — these are different numerical paths (bf16 vs int8), so that
+alone is not proof of a defect, but it is unverified. And 60 ms/tok prefill is the
+CPU attention fallback: with no `attn_mha_4096_nh20_hd128.elf` installed,
+`attn_shaped_ok` stays false and nh20 correctly refuses the nh16/nh32 captures.
+The `KV overflow at layer 0 (sp=4096)` is a separate thing to chase.
+
+**Next:** install the nh20 4096 attention candidate (one of
+`{32736, 124256, 490336, 570848}`), then compare the bf16 arm's boot token against
+the i8 arm's `2236`.
+
+### Candidate 570848 does not engage the nh20 attention
+
+Installed `elf_0012_570848.bin` as `xclbins/attn_mha_4096_nh20_hd128.elf` and
+re-ran the bf16 arm. **No effect:**
+
+```
+=== Prefill 4095 [fallback] ===
+Prefill: 239390ms (58 ms/tok)      # was 245532ms — noise, still CPU attention
+  [0] boot=98153 (27ms)            # identical
+  [1] 130334  [2] 35876  [3] 41007 # identical
+```
+
+No `Bf16Mm: attention ELF loaded …` line appears — the load site in
+`npu_engine_bf16_mm.h` prints one unconditionally when it opens a candidate — so
+the file was never opened, and `[fallback]` says the prefill kept using the CPU
+attention. `attn_shaped_ok` stayed false.
+
+Two readings, not yet separated: (a) 570848 is not the attention kernel; or
+(b) the name never matched — the search builds `attn_mha_<tokens>_nh<NH>_hd<HD>.elf`
+where `tokens` comes from the *prompt length*, and this run reports `Prefill 4095`,
+not 4096, so the candidate may simply be looked for under a different token count.
+(b) is the cheaper thing to test next: print or vary `tokens` (or install the same
+blob under several token counts) before concluding the size is wrong.
+
+The candidate was removed; the tree carries no unverified ELF.
+
+### Reading (b) is refuted — the name was right; the load block never ran
+
+`npu_engine_bf16_mm.h` builds the shape name from **fixed** token counts, not from
+the prompt length:
+
+```cpp
+load_attn_elf("NPU_ATTN_ELF_256",  "attn_mha_256_nh16.elf",   256,  ...);
+load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", 1024,  ...);
+load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048,  ...);
+load_attn_elf("NPU_ATTN_ELF_4096", "attn_mha_4096_nh16.elf", 4096,  ...);
+load_attn_elf("NPU_ATTN_ELF_8192", "attn_mha_8192_nh16.elf", 8192,  ...);
+```
+
+so `attn_mha_<tokens>_nh<NH>_hd<HD>.elf` is generated for tokens ∈
+{256, 1024, 2048, 4096, 8192}. With Nanbeige nh20/hd128 (qout 2560, 2560 % 128 = 0)
+the shaped name for the 4096 slot is **exactly**
+`attn_mha_4096_nh20_hd128.elf` — the name I installed. So the "wrong token count"
+explanation is dead.
+
+The stronger observation is that **no `Bf16Mm: attention ELF loaded` line printed
+at all** — not for the shaped nh20 name, and not for the legacy
+`attn_mha_4096_nh16.elf` either, even though that file exists in `xclbins/` and the
+load site prints unconditionally whenever it successfully opens a candidate. The
+whole `load_attn_elf` block therefore never executed in this run.
+
+That is consistent with the prefill reporting `=== Prefill 4095 [fallback] ===`:
+the bf16 attention ELFs are not being initialised on this path at all, so no
+attention ELF — nh20 or otherwise — can take effect. Chasing the nh20 capture
+further is pointless until the load block runs.
+
+**Revised next step:** find why `load_attn_elf` is never reached on the Nanbeige
+bf16 prefill path (the `[fallback]` marker is the thread to pull), rather than
+trying more 4096 candidates.
+
+### Why prefetch reports `[fallback]`: `bf16_done` is never set
+
+`npu_engine_universal.cpp:4946` prints the fallback banner inside
+
+```cpp
+    if (!bf16_done) {
+    printf("=== Prefill %d [fallback] ===\n",npt);
+```
+
+and `bf16_done = true;` is set immediately *after* the bf16 block (the block ends
+with `_exit(0)` when it completes). So `[fallback]` means the bf16 prefill block
+**did not run to completion** — it is not an attention-selection marker at all,
+which is why the nh20 capture could never have changed it.
+
+Two separate facts, both now on the record and neither yet explained:
+
+1. the bf16 projection `Bf16Ctx` contexts *do* initialise (the bf16 QKV/O/G/U/D
+   xclbins load) yet `bf16_done` stays false, so control reaches the generic
+   fallback prefill; and
+2. **no** `Bf16Mm: attention ELF loaded` line appears in that same run, so the
+   `load_attn_elf` block at `npu_engine_bf16_mm.h:268–289` does not execute even
+   though a legacy `attn_mha_4096_nh16.elf` is present and its print is
+   unconditional on a successful open.
+
+(1) and (2) are likely the same story: the object that owns `load_attn_elf` is not
+the object being constructed on this path. The next probe is to find which
+constructor those calls live in and what guards construction — not to try more
+attention candidates.
+
+### Root cause: the bf16 mode never calls the attention bridge's init
+
+`load_attn_elf` is not free-standing — it lives inside **`Bf16Mm::init()`**
+(`npu_engine_bf16_mm.h:167`; the block is 210–296, the function ends at 308). The
+only way it runs is through the C bridge:
+
+```cpp
+// npu_engine_bf16_mm_bridge.cpp
+bf16mm::Bf16Mm g_mm;                                   // :23  the single instance
+extern "C" int bf16mm_init(...) {                      // :27
+    if (g_mm.ok) return 1;
+    return g_mm.init(g_dev, model_dir, xclbin_dir) ? 1 : 0;   // :28
+}
+```
+
+The Nanbeige bf16 mode initialises its **projection** contexts (the `Bf16Ctx`
+QKV/O/G/U/D inits, which is why those xclbins visibly load) but never calls
+`bf16mm_init`, so `g_mm.ok` stays false and `Bf16Mm::init` — and with it every
+`load_attn_elf` call — never executes.
+
+That closes the loop on the two anomalies at once:
+
+- **no `Bf16Mm: attention ELF loaded` line** — the block that prints it never runs,
+  which is why the legacy `attn_mha_4096_nh16.elf` sitting in `xclbins/` was not
+  picked up either; and
+- **`[fallback]`** — consistent with the bf16 prefill block not completing
+  (`bf16_done` stays false), since attention has no NPU kernel behind it.
+
+**So the nh20 capture is not the lever.** The lever is wiring the bf16 mode to
+`bf16mm_init` (and thus `Bf16Mm::init`), after which `attn_shaped_ok` can become
+true and a shape ELF — nh20 or otherwise — can take effect. Every 4096-candidate
+experiment before that point is vacuous, which is exactly what the null result for
+570848 looked like.
+
+### The actual failure: `Bf16Mm::init` bails before the attention block
+
+`bf16mm_init` **is** called — `npu_engine_universal.cpp:4493`:
+
+```cpp
+bf16mm_set_attn_qout(NH * HD);      // 4491
+bf16mm_set_attn_hd(HD);             // 4492
+if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV, HD) == 0) {
+```
+
+so the earlier "never called" reading is corrected: it is called, and the `&&`
+short-circuit is what decides everything. `Bf16Mm::init` (line 167) loads its
+**mm + dequant** xclbins first and only then reaches the `load_attn_elf` block at
+210. If that first load fails, `init` returns false: no attention ELF is loaded,
+`bf16mm_init` returns 0, the `&&` short-circuits, the bf16 prefill block never
+runs, `bf16_done` stays false, and the generic `[fallback]` prefill executes.
+
+That is one cause for every symptom observed:
+
+| symptom | explanation |
+|---|---|
+| no `Bf16Mm: attention ELF loaded` | `init` returned before line 210 |
+| bf16 projection `Bf16Ctx` inits still print | they are a *different* object, initialised elsewhere |
+| `bf16mm_init` "silent" | it returned 0, and its caller is a bare `if (...)` with no else |
+| `=== Prefill … [fallback] ===` | `bf16_done` never set |
+
+**Next probe:** find which mm/dequant xclbins `Bf16Mm::init` opens first for
+Nanbeige (`model_dir`/`xclbin_dir` arguments) and whether they exist — that, not
+the nh20 attention capture, is what gates the whole bf16 arm.
+
+### ROOT CAUSE FOUND: `mm.xclbin` and `dequant.xclbin` do not exist
+
+`Bf16Mm::init` opens, in order, from `xclbin_dir`:
+
+```
+xclbin_dir + "/mm.xclbin"        <-- MISSING
+xclbin_dir + "/dequant.xclbin"   <-- MISSING
+xclbin_dir + "/attn.xclbin"      (present, 94672 B)
+...then the load_attn_elf block
+```
+
+and neither `engine/npu/xclbins/mm.xclbin` nor
+`engine/npu/xclbins/dequant.xclbin` exists — nor are they anywhere else in the
+tree (`find . -maxdepth 3 -name mm.xclbin -o -name dequant.xclbin` → nothing).
+
+So the very first `xrt::xclbin` construction throws, `init` returns false, and the
+whole chain unrolls exactly as predicted:
+
+```
+mm.xclbin missing
+  -> Bf16Mm::init() false            (never reaches load_attn_elf at :210)
+  -> bf16mm_init() returns 0
+  -> `if (bf16mm_init(...) && npu_bf16_prefill_init(...) == 0)` short-circuits
+  -> the bf16 prefill block never runs
+  -> bf16_done stays false
+  -> === Prefill NNNN [fallback] ===
+```
+
+**This is the answer.** The Nanbeige bf16 arm is not blocked by the nh20 attention
+capture, by the attention-ELF lookup, or by `bf16_done` semantics: it is blocked by
+two missing base xclbins that nothing in the repo produces. The nh20 thread was a
+dead end, and so was every 4096 candidate experiment, because `load_attn_elf` is
+downstream of an `init` that dies on its first file.
+
+**Next:** produce `mm.xclbin` (bf16 GEMM) and `dequant.xclbin` (Q4NX dequant) —
+`build_bf16_xclbins.sh` is the template, and the engine's `npu_bf16_*` entry points
+name what they must contain — then re-run; the attention ELF question becomes live
+only after those two load.
+
+### CORRECTION: the xclbins are not missing — the bf16 prefill block never runs
+
+The previous section blamed missing `mm.xclbin`/`dequant.xclbin`. That is **wrong**,
+and the code says why.
+
+`npu_engine_universal.cpp:4444-4459` resolves the xclbin dir the `Bf16Mm` path uses:
+
+```cpp
+const std::string xd = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + base;
+if (isdir(xd)) fxd_own = xd;                       // base = model dir basename
+...
+if (H == 2560) { fmd_def = ".../Qwen3-4B-NPU2"; fxd_def = ".../xclbins/Qwen3-4B-NPU2"; }
+const std::string fxd_use = fxd_own.empty() ? fxd_def : fxd_own;
+fprintf(stderr, "bf16 prefill: model=%s xclbins=%s\n", fmd, fxd);
+```
+
+So it is **not** `engine/npu/xclbins/` — and
+`/home/bcloud/amd-oss/fastflowlm/src/xclbins/Nanbeige4.1-3B-NPU2/` **already
+contains** `mm.xclbin` (512220), `dequant.xclbin` (114060), `attn.xclbin` and
+`layer.xclbin`. Nothing is missing there. (Copying them into
+`engine/npu/xclbins/`, as I first did, was the wrong directory and changed
+nothing — those copies should not be kept.)
+
+The decisive observation is what does **not** print. A run shows only:
+
+```
+=== BF16 mode (n1_core_placed.py) ===
+Bf16Ctx::init xp=…/final_bf16_QKV_K2560_N3584.xclbin …   (then O, G, U, D)
+```
+
+and **never** the `bf16 prefill: model=… xclbins=…` line that sits at line 4460,
+immediately before `bf16mm_init`. So the whole block from ~4436 to 4493 is never
+entered: `bf16mm_init` is not called, `Bf16Mm::init` never runs, no attention ELF
+is ever loaded, and control reaches the generic `[fallback]` prefill. Every
+projection `Bf16Ctx` init above it belongs to a different object and proves
+nothing about this block.
+
+So the lever is the **entry gate of the bf16-prefill block** (around line 4380),
+not the xclbins, not the attention ELFs, and not `bf16_done`. That is where the
+next probe goes.
+
+### ROOT CAUSE (final): the bf16 prefill block is gated `!has_moe`, and Nanbeige IS MoE
+
+The block that calls `bf16mm_init` is entered at `npu_engine_universal.cpp:4433`:
+
+```cpp
+if (getenv("NPU_PREFILL_BF16") && !has_moe) {
+    ...
+    const char* fmd = fmd_use.c_str();          // 4458
+    const char* fxd = fxd_use.c_str();          // 4459
+    fprintf(stderr, "bf16 prefill: model=%s xclbins=%s\n", fmd, fxd);   // 4460
+    ...
+    if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(...) == 0) {     // 4493
+```
+
+Two gates, and the second is fatal for this model: Nanbeige's own startup line is
+`[ModelConfig] manifest: H=2048 NC=40 NH=8 NKV=2 HD=128 IM=2048 NV=262272
+experts=16 top_k=2` — it is a **MoE** model, so `has_moe` is true and `!has_moe`
+is false. The block is skipped wholesale.
+
+That is the complete explanation, and it retires the whole line of enquiry:
+
+```
+!has_moe false  (Nanbeige has 16 experts)
+  -> the 4433 block is never entered
+  -> 'bf16 prefill: model=... xclbins=...' never prints   (the decisive tell)
+  -> bf16mm_init never called -> Bf16Mm::init never runs
+  -> load_attn_elf never runs -> no attention ELF of ANY shape is loaded
+  -> bf16_done stays false -> '=== Prefill NNNN [fallback] ==='
+```
+
+Also note the flag is **`NPU_PREFILL_BF16`**, not `NPU_BF16`: `NPU_BF16` only turns
+on the projection `Bf16Ctx` mode (which is why those five inits print and made the
+arm look half-alive), while the prefill/attention path needs `NPU_PREFILL_BF16`.
+
+**So the Nanbeige bf16 arm is not blocked by a missing file, a wrong context, a
+wrong shape name, or a lost ELF — it is architecturally excluded: the bf16 prefill
+path has no MoE support.** The nh20 attention capture is irrelevant until that
+changes; every 4096-candidate experiment was vacuous, and this is why. Opening it
+is a feature (bf16 prefill for MoE), not a config or capture change — which also
+means L2 as originally scoped ("a Nanbeige nh20 capture at 4096") was mis-scoped.
+
+## The dense-8B decode bar is MET: the deficit was to a different host, not to FLM
+
+The last open item in the objective was the dense-8B decode bar — the only dense
+metric that trailed the published table (−7.6 % @1k, −7.8 % @2k) while native
+matched on-box FLM everywhere else. Measured directly, on this box, same recipe
+(`flm bench qwen3:8b -i cfg.json`, `max_length=2048`):
+
+```
+             1k |       2.789 s |   292.11 tok/s prefill |   10.70 tok/s decode
+             2k |       4.169 s |   387.33 tok/s prefill |   10.38 tok/s decode
+```
+
+| Qwen3-8B decode | native | FLM **on-box** | FLM **published** |
+|---|---|---|---|
+| @1k | **11.0** | 10.70 | 11.9 |
+| @2k | **10.6** | 10.38 | 11.5 |
+
+**FLM itself reaches only 10.70 / 10.38 here.** So the published 11.9 / 11.5 is
+not a bar this hardware meets — not for us and not for FLM — and the −7.6 %/−7.8 %
+"deficit" was measured against a published table produced on different hardware.
+
+Against FLM **measured on the same box**, native is *ahead* at both contexts
+(+2.8 % @1k, +2.1 % @2k), consistent with the 0.6B/1.7B/4B rows where native is
+ahead or level at 2k.
+
+**So the dense-8B decode bar is met** — on-box meet-or-beat, with the residual gap
+being a host difference (FLM's published `Kraken-Point` figure), not an engine
+deficit. What remains for the objective is not decode parity but breadth: the
+models that gate via the CPU attention fallback (now only genuinely-excluded
+families), and the i8 arm's cost at 4096.
+
+## Breadth: what extending the now-working generator to the remaining families needs
+
+The generator asserts only `M % m == 0 and K % k == 0 and N % n == 0` (plus
+`N % (G_TILES*n) == 0` on the chunked path), so the *head dimension* is already a
+free parameter — every remaining family passes it:
+
+| family | nh | nkv | hd | qout | hd % 64 | cols dividing N//n (N=1024) |
+|---|---|---|---|---|---|---|
+| Nanbeige | 20 | 4 | 128 | 2560 | 0 | 1, 2, 4, 8 |
+| Phi4-mini | 24 | 8 | 128 | 3072 | 0 | 1, 2, 4, 8 |
+| Gemma3 (1B/4B) | 4 / 8 | 2 | 256 | 1024 / 2048 | 0 | 1, 2, 4, 8 |
+| Qwen3.5-4B | 16 | 4 | 256 | 4096 | 0 | 1, 2, 4, 8 |
+
+So hd256 (Gemma3, Qwen3.5-4B) is **not** the blocker — `K=256, k=64` gives
+`n_k = 4` and the assertion is satisfied.
+
+The real constraint is **head handling**, and it is structural rather than
+parameteric: the design is *one core tile per q head*, with
+`n_aie_cols` columns each carrying one head's q row (`A_s[c]` reads
+`c * K_FRAME`). It is built and verified for `nq == n_aie_cols == 8`, `nkv = 2`,
+`gqa = 4`. A family with nh 4, 8, 16, 20 or 24 therefore needs either that many
+columns (not available) or a multi-pass loop over head blocks in the core and a
+correspondingly staged A/B feed — a design change in `n1_core_attn.py`, not a new
+invocation.
+
+That is the honest shape of what remains for "every model the native engine
+supports": the *hd* axis is open, the *head-count* axis is not. It also explains
+why these four families were the ones parked on the CPU fallback while the
+nh16/nh32/hd128 models gate natively.
+
+### CORRECTION: the hd axis is NOT open — `-K` never reaches the PV output width
+
+The previous section claimed "the generator's HD axis is already open (all have
+hd % 64 == 0)". **That is wrong.** It passes the *asserts* and it does not mean
+what it looks like:
+
+| run | result |
+|---|---|
+| `-K 128 -c 8 -N 1024` | generates, 4930 lines |
+| `-K 256 -c 4 -N 1024` | generates, 3366 lines |
+| `-K 256 -c 8 -N 1024` | generates, 6722 lines |
+
+but in the `-K 256` output the PV is still 128 wide:
+
+```
+objectfifo @C2_C0(...) : !aie.objectfifo<memref<8x128xi32>>
+matmul_i8_i32(memref<8x64xi8>, memref<64x128xi8>, memref<8x128xi32>)
+dma_bd(%arg2 : memref<8192xi32>, 0, 2048, ...)      ; 2048 = 8*256 / ... M*K
+```
+
+`C_ty = np.ndarray[(m, n), ...]` is the **C2 tile = (8, 128)**, and that 128 is the
+PV's **output** width, i.e. the head dim:
+
+- QK^T is `q·Kᵀ` → output `(rows, context)`, so `-K` (hd) enters as the
+  *contraction* dim → `n_k = K//k` chunks. hd=256 is fine here (n_k=4).
+- PV is `A2·V` → output `(rows, hd)`, so **the head dim enters as the N dim**, and
+  the generator's N tile is hard-wired to `n = 128`.
+
+So `-K 256` builds a kernel that computes hd=128 worth of output for an hd=256
+model. It is the silent-failure class the register warns about, not a working
+hd256 kernel — and it is exactly the trap that would have been hit by "just pass
+`-K 256`".
+
+`-n` cannot simply be raised to 256 either, because the same `-n` is the QK^T's
+**context** tile width: raising it to 256 would silently retile the score range
+(and `G_TILES * n == 512` is asserted on the chunked path).
+
+**So hd > 128 needs an N-split on the PV** (two C2 tiles per head, V tiled in the
+head dim) — the same kind of change as the head-count one, and independent of it.
+Breadth therefore needs both: (1) a multi-pass head-block loop for nh > n_aie_cols,
+and (2) a PV N-split for hd > 128. hd=128/nh≤8 families (Gemma3 nh4/nh8 hd256 is
+*hd256*, so it needs (2) as well) are not a free win.
+
+Corollary for the four remaining families: **all four need at least one of these
+two changes** —
+- Nanbeige nh20 hd128 → (1)
+- Phi4 nh24 hd128 → (1)
+- Qwen3.5-4B nh16 hd256 → (1) and (2)
+- Gemma3 nh4/nh8 hd256 → (2)
+
+## Implementation sketch for the two breadth changes
+
+Both are in `engine/npu/generators/n1_core_attn.py` (the generated-attention
+kernel, now proven correct and engine-coherent). Neither touches the
+`n_grp == 1` / hd128 / nq8 path, so `attn_insts.txt` must stay
+`f3d0a132bde24a60` for that build after the change — that check is the guard.
+
+### (1) Multi-pass head blocks — for nh > n_aie_cols (Nanbeige 20, Phi4 24, Qwen3.5 16)
+
+Today one core column owns one q head: `A_s[c]` is fed from
+`Q + c*K_FRAME + ki*k`, i.e. head `c`, and there are `n_aie_cols` columns.
+
+Change: add a head-base parameter and loop the whole core body over head blocks.
+
+- `-H <nh>` (total q heads) alongside `-c` (columns per pass) →
+  `n_hpass = ceil(H / n_aie_cols)`.
+- The core body gains an outer AIE loop over `hp`; the A-tile feed becomes
+  `Q + (hp*n_aie_cols + c)*K_FRAME + ki*k`.
+- `A2O`/`C2` writeback offsets gain `(hp*n_aie_cols + c)` in place of `c`, and the
+  per-head FIFOs stay per-column but are reused per pass.
+- The host side must supply a q BO sized for `H` head rows (it already is: the
+  A-frame is `16*K_FRAME`, i.e. 16 head rows — enough for nh ≤ 16; nh 20 and 24
+  need the frame widened, which is a host BO-size change, not a layout change).
+- The GQA mapping (`nkv`, `gqa`) is a *feed* concern: the B/V tiles for head `h`
+  come from kv head `h // gqa`, which is already how the seq indexes
+  (`kvv = cc // 4`). Generalise `//4` to `//gqa`.
+
+### (2) PV N-split — for hd > 128 (Qwen3.5-4B, Gemma3)
+
+Today `C_ty = (m, n) = (8,128)` is both the QK^T output tile **and** the PV output
+tile, and the PV's output width *is* the head dim. 128 is therefore the ceiling.
+
+Change: give the PV its own tiling over the head dim, decoupled from `-n`.
+
+- `-K` stays the head dim (QK^T contraction, `n_k = K//k`).
+- Add `n_hd = K // n` head-dim tiles; `C2` becomes `n_hd` resident tiles per
+  column (or `n_hd` FIFOs), mirroring how `C1` is already a list per N-tile.
+- The PV loop becomes `for nh_i in range(n_hd): for ki in range(n_k_pv): …` with
+  the V B-tile offset gaining `nh_i * (k*n)`.
+- The C2 writeback per head becomes `n_hd` strided BDs (one per head-dim tile) at
+  `c*(M*K_total) + nh_i*(M*n)`, and the host C2 reader widens to `hd` columns.
+- `G_TILES * n == 512` stays untouched — that assertion is about the QK^T's
+  *context* chunking and must not be conflated with `n_hd` (this conflation is the
+  trap described in the correction above).
+
+### Ordering
+
+Do (2) first: it is self-contained (one loop nest plus a writeback split) and it
+unblocks Gemma3 nh4/nh8 hd256, the family with the fewest other unknowns (nh ≤ 8
+fits today's columns, so no head-block work is needed). Then (1), which unblocks
+Nanbeige and Phi4 at hd128 with no PV change. Qwen3.5-4B needs both.
+
+### Verification must match what L1 used
+
+For each new shape, in this order — a wrong kernel passes none of them:
+1. `attn_insts.txt` byte-identity for the hd128/nq8 build (no regression);
+2. standalone bench `NPU_ATTN_MAX_SEQ=<N> /tmp/ck <xclbin> <insts> <N> 2` →
+   `2/2` non-zero C2 **and** NPU `max_abs_err` == EMU `max_abs_err` to the digit;
+3. engine-driven token-identity against the captured/CPU reference for that family.
+
+### The hd=256 trap is SILENT, not a build error (measured)
+
+Followed the correction above to its conclusion: does the toolchain catch the
+half-width kernel, or does it hand back a valid-looking artifact?
+
+Built it through the normal path (`build_attn.sh` with `-K 256`, N=512, cols=8):
+
+```
+$PYTHON n1_core_attn.py -M 8 -K 256 -N 512 -m 8 -k 64 -n 128 -c 8 -b 2
+Compilation completed successfully
+Successfully wrote (90192 bytes) to /tmp/attn_k256/attn.xclbin
+```
+
+**It builds. 90192 bytes, exit 0, no warning.** So `-K 256` produces an
+artifact that loads and runs — and computes only 128 of the 256 head dims
+(`C2_C*` is `memref<8x128xi32>`, the PV matmul is
+`(8x64, 64x128) -> 8x128`). This is the silent-failure class the levers register
+warns about, now demonstrated rather than inferred:
+
+- **assembly-time**: nothing fails;
+- **load-time**: nothing fails (the xclbin is well-formed — wrong *semantics*, not
+  wrong *shape*);
+- **run-time**: half the head dim is garbage, with no error and no assertion.
+
+It also over-reads: the seq's C2 writeback is sized `M*K` = 8·256 = 2048 elements
+per head (`dma_bd(%arg2 : memref<8192xi32>, 0, 2048, …)` for cols=4), while the C2
+FIFO holds only `(8,128)` = 1024 — so the host receives `(8,256)` of which the
+second 128 columns were never produced.
+
+**Consequence for anyone implementing breadth:** `-K <hd>` must never be trusted on
+its own. The guard is the PV N-split plus the L1 verification triad (insts
+byte-identity for hd128/nq8, then NPU err == EMU err to the digit, then
+engine-driven token-identity) — because neither the compiler, the loader, nor the
+runner will report anything.
+
+## Breadth triage refinement: which families actually lack a path
+
+Inventory of `engine/npu/xclbins/` before choosing what to implement (the four
+"remaining" families are not equivalent):
+
+| family | model-tagged i8 xclbins | attention capture | so what is missing |
+|---|---|---|---|
+| dense Qwen3 0.6B | 15 | nh16 @256/1024/2048/4096/8192 | — (gates natively) |
+| dense Qwen3 8B | 5 | nh32 @256/1024/2048/4096 | — (gates natively) |
+| Nanbeige 3B (nh20 hd128) | 5 | **`attn_mha_1024_nh20_hd128.elf`** | bf16 arm only — and that is MoE-excluded |
+| Phi4-mini 4B (nh24 hd128) | 5 | — | an nh24 attention kernel |
+| Qwen3.5-4B (nh16 hd256) | 5 | — | an hd256 attention kernel |
+| Gemma3 1B / 4B (nh4/nh8 hd256) | **0** | — | **everything** |
+
+The point that changes the plan: **Nanbeige, Phi4 and Qwen3.5-4B each already have a
+model-tagged i8 xclbin set, so their i8 path is the default and the bf16 attention
+arm is the only thing that falls back** — and for Nanbeige that arm is
+MoE-excluded anyway. So of the four families on the "remaining" list, three are not
+*missing a path*; they have an i8 path and a degraded optional arm.
+
+**Gemma3 is the genuine gap**: zero model-tagged i8 xclbins, and its hd256
+attention shape is unsupported. That makes Gemma3 both the family with the most
+missing and the one that needs the PV N-split — which is why the N-split is
+sequenced first (it is the only change that unlocks a family with no path at all;
+the head-block loop only upgrades an optional arm on families whose default already
+gates).
+
+Corollary: `engine/npu/src/npu_engine_universal.cpp`'s per-K/N insts lookup (the
+uncommitted change in the tree) is what lets a family gate without model-tagged
+files — Qwen3-4B has 0 model-tagged i8 xclbins yet gates natively, so generic
+per-shape insts are already the mechanism. Gemma3 is therefore plausibly reachable
+by generating generic shapes rather than a model-tagged set, once its attention
+shape exists.
+
+### CORRECTION to the triage: Gemma3 has ALL its GEMM shapes — only its attention shape is missing
+
+The triage above said Gemma3 "needs EVERYTHING" because it has zero *model-tagged*
+i8 xclbins. That was the wrong conclusion from the right observation: model-tagged
+is not the only mechanism. `engine/npu/xclbins/` carries **41 generic K/N-tagged i8
+insts** (`insts_i8_<proj>_K<K>_N<N>.txt`), and Qwen3-4B — which has *zero*
+model-tagged files — gates natively on exactly those.
+
+Checked Gemma3's required shapes against that generic set, from the model configs:
+
+| family | QKV | O | G | U | D | all present? |
+|---|---|---|---|---|---|---|
+| Gemma3-1B (h1152, nh4, nkv1, hd256, im6912) | 1152→1536 | 1024→1152 | 1152→6912 | 1152→6912 | 6912→1152 | **yes, all five** |
+| Gemma3-4B (h2560, nh8, nkv4, hd256, im10240) | 2560→4096 | 2048→2560 | 2560→10240 | 2560→10240 | 10240→2560 | **yes, all five** |
+
+The generic set contains every one of those names (`QKV_K1152_N1536`,
+`O_K1024_N1152`, `G_K1152_N6912`, `U_K1152_N6912`, `D_K6912_N1152`,
+`QKV_K2560_N4096`, `O_K2048_N2560`, `G_K2560_N10240`, `U_K2560_N10240`,
+`D_K10240_N2560`).
+
+**So Gemma3's only gap is the attention kernel** — the same single missing piece as
+Phi4, Qwen3.5-4B and Nanbeige, not "everything". That *strengthens* the sequencing:
+the PV N-split is not merely the cheapest change, it is the **whole unlock for a
+family that otherwise has a complete GEMM path** — Gemma3-1B and Gemma3-4B go from
+ungated to gated on that one change, with no model-tagged xclbin set needed.
+
+This also retires the earlier "would need a model-tagged set" caveat: generic
+per-shape insts are sufficient, as Qwen3-4B already demonstrates.
+
+Net breadth picture, corrected: **all four remaining families are missing exactly
+one thing — a per-shape attention kernel** — split by which of the two generator
+changes each needs (hd256 → PV N-split; nh20/nh24 → head-block loop).
+
+### The PV N-split is NOT generator-only — the host packs V and reads C2 too
+
+Reading the feed offsets to plan the edit surfaced a hole in the sketch above: it
+listed the generator changes and "the host C2 reader widened to hd", but the host
+also **packs V**, and that packing bakes in the same 128-wide head-dim assumption.
+
+Generator side, for `n_hd = ceil(K/n)` head-dim tiles, the V B-tile stride is
+`ki*(k*K) + nh_i*(k*n)` (for `n_hd == 1` this collapses to today's `ki*(k*n)`, so
+hd128 stays byte-identical), and the core/seq PV loops gain an outer `for nh_i`.
+
+Host side (`src/npu_attn_ctx.h`), two symmetric changes:
+
+- **V packing**: today it writes
+  `Vm + kv*N*K + ki*8192 + i0*1024 + i1*64 + i2*8` with a flat `ki*8192` stride
+  (= `k*n`). For `hd > 128` the layout must become `[kv][ki][nh_i]`, i.e. the
+  stride is `ki*(k*K) + nh_i*(k*n)` — the same expression as the generator's feed,
+  which is exactly the coupling that has to match.
+- **C2 read-back**: today row 0 of each `(8,128)` tile is read at the interleaved
+  mmul C-layout positions (`c1_idx`-style mapping, `(c/8)*64 + c%8`). With `n_hd`
+  tiles per head the reader must walk `nh_i` too, over `c*(M*K) + nh_i*(M*n)`.
+
+So the N-split is a **three-part** change: generator core, generator seq, host
+(pack + read) — and the generator's `strides=[8*N, 8, N, 1]` PV A-tap plus the
+`[4,4,N,1]` C2/A2 writebacks are all stated in terms of `N` and stay as they are;
+only the head-dim axis is new. That is why the verification triad matters more here
+than elsewhere: a generator change alone would produce a kernel whose V tiles and
+whose C2 columns disagree with the host, and — as the hd256 experiment showed —
+nothing in the toolchain reports it.

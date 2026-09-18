@@ -1,0 +1,887 @@
+// npu_engine_bf16_mm.h — bf16 prefill GEMM engine using FLM's mm.xclbin +
+// dequant.xclbin, driven by FLM's own sequence generators (libgemm.so +
+// libdequant.so) via npu_app.
+//
+// This is the VERIFIED prefill GEMM path (see benchmarks/RESULTS-qwen3-dense-
+// parity-2026-09-10.md). The mm.xclbin is a pure bf16 GEMM:
+//     A_bf16 × W_bf16 → C_bf16
+// and the dequant.xclbin dequantizes the Q4NX layer BO (npu_pack_layer_bo)
+// into the bf16 W. No int32 accumulator, no per-group dequant scale.
+//
+// Recipe (dense Qwen3, M=256):
+//   dequant QKV:  Dequant::generate_dequant_q4_1_seq(seq, 1024, 4096, 0, 0)
+//                  → 8 MB bf16 [q 1024×2048 @0 | k 1024×1024 @4MB | v @6MB]
+//   q gemm:  Gemm::generate_seq(seq, 256, 1024, 2048, woff=0,        ooff=0)
+//   k gemm:  Gemm::generate_seq(seq, 256, 1024, 1024, woff=2097152,  ooff=0)
+//   v gemm:  Gemm::generate_seq(seq, 256, 1024, 1024, woff=3145728,  ooff=0)
+//   (weight_offset and output_offset are in bf16 ELEMENTS, not bytes)
+//
+// KEY: the mm.xclbin computes only 128 CORRECT M-rows per invocation (rows
+// 128..255 are a "duplicated odd" region: C[127],C[129],C[129],C[131],…).
+// The 256-token batch must therefore be split into TWO 128-token batches fed
+// as sparse 256-row A (tokens in rows 0..127, zeros below) — see
+// run_gemm_2batch(). FLM's own Q path uses the precompiled N=128 tiles
+// (mm_256_1024_128_0.bin) for the same reason; running N=2048 with the
+// 2-batch split is byte-equivalent and needs only 2 invocations.
+//
+// Kernel arg order = (C, A, W) → npu_app::safe_run(bC, bA, bW).
+#pragma once
+
+#include <cstdio>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <memory>
+#include <vector>
+
+#include <xrt/xrt_device.h>
+#include <xrt/xrt_bo.h>
+
+// FLM sequence generators (closed-source .so, but using them is acceptable
+// per the project constraint: native engine orchestrates FLM's xclbins+libs).
+#include "npu_utils/npu_instr_utils.hpp"
+#include "npu_utils/npu_utils_xrt.hpp"
+#include "lm_config.hpp"
+#include "modules/gemm.hpp"
+#include "modules/dequant.hpp"
+
+// Fixed 256-token MHA attention ELF (FLM's attn.xclbin instruction stream for
+// the dense-Qwen3 NH=16/NKV=8/HD=128 prefill, position range [0,256)). Captured
+// byte-exact from FLM's runtime (see benchmarks/RESULTS-qwen3-dense-parity).
+#if defined(__has_embed)
+#  if __has_embed("../xclbins/attn_mha_256_nh16.elf")
+inline constexpr unsigned char kAttnMhaElf16[] = {
+#    embed "../xclbins/attn_mha_256_nh16.elf"
+};
+#    define BF16MM_HAS_ATTN_ELF 1
+#  endif
+#  if __has_embed("../xclbins/attn_mha_256_nh32.elf")
+inline constexpr unsigned char kAttnMhaElf32[] = {
+#    embed "../xclbins/attn_mha_256_nh32.elf"
+};
+#    define BF16MM_HAS_ATTN_ELF32 1
+#  endif
+#endif
+
+namespace bf16mm {
+
+// ── Bf16Mm — one bf16 GEMM (mm.xclbin) + one dequant (dequant.xclbin) ──
+//
+// Manages two xclbins (mm.xclbin for GEMM, dequant.xclbin for Q4NX→bf16 W)
+// and two npu_app contexts. The npu_app objects are reused across calls; the
+// sequence is regenerated only when the shape changes.
+struct Bf16Mm {
+    xrt::device* dev = nullptr;
+    std::unique_ptr<xrt::xclbin> mm_xc, dq_xc;
+    std::unique_ptr<xrt::hw_context> mm_hc, dq_hc;
+    std::unique_ptr<npu_app> mm_app, dq_app;
+    std::unique_ptr<Gemm> gemm_;
+    std::unique_ptr<Dequant> deq_;
+    std::unique_ptr<LM_Config> config;
+    // attn.xclbin + the fixed 256-token MHA ELFs (nh16 + nh32, selected by
+    // attn_qout). No sequence regeneration.
+    std::unique_ptr<xrt::xclbin> attn_xc;
+    std::unique_ptr<xrt::hw_context> attn_hc;
+    // <=256-context attention, loaded from a shape-specific ELF when one is present. The
+    // embedded compile-time kernel (attn_kernel below) is nh16/hd128, which is wrong-shape
+    // for every family whose qout is not 2048/4096 -- so without this slot those families get
+    // a wrong-shape kernel at SHORT contexts even once the >256 slots are shape-correct.
+    std::unique_ptr<xrt::elf> attn_elfs;
+    std::unique_ptr<xrt::module> attn_modules;
+    std::unique_ptr<xrt::ext::kernel> attn_kernels;
+    std::unique_ptr<xrt::elf> attn_elf;
+    std::unique_ptr<xrt::module> attn_module;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel;
+    std::unique_ptr<xrt::elf> attn_elf32;
+    std::unique_ptr<xrt::module> attn_module32;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel32;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel1k;   // (256,1024] context ELF, captured from FLM
+    std::unique_ptr<xrt::elf> attn_elf1k;
+    std::unique_ptr<xrt::module> attn_module1k;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel1k32; // (256,1024] NH=32 ELF (Qwen3-4B/8B), captured from FLM
+    std::unique_ptr<xrt::elf> attn_elf1k32;
+    std::unique_ptr<xrt::module> attn_module1k32;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel2k;   // (1024,2048] nh16 ELF, captured from FLM
+    std::unique_ptr<xrt::elf> attn_elf2k;
+    std::unique_ptr<xrt::module> attn_module2k;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel2k32; // (1024,2048] nh32 ELF (4B/8B)
+    std::unique_ptr<xrt::elf> attn_elf2k32;
+    std::unique_ptr<xrt::module> attn_module2k32;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel4k;   // (2048,4096] nh16 ELF, captured from FLM
+    std::unique_ptr<xrt::elf> attn_elf4k;
+    std::unique_ptr<xrt::module> attn_module4k;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel4k32; // (2048,4096] nh32 ELF (4B/8B)
+    std::unique_ptr<xrt::elf> attn_elf4k32;
+    std::unique_ptr<xrt::module> attn_module4k32;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel8k;   // (4096,8192] nh16 ELF, captured from FLM
+    std::unique_ptr<xrt::elf> attn_elf8k;
+    std::unique_ptr<xrt::module> attn_module8k;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel8k32; // (4096,8192] nh32 ELF (4B/8B)
+    std::unique_ptr<xrt::elf> attn_elf8k32;
+    std::unique_ptr<xrt::module> attn_module8k32;
+    std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
+    int attn_qout = 2048;   // NH*HD: 2048 = nh16x128, but 4096 is BOTH nh32x128 and nh16x256
+    int attn_hd = 128;      // model head_dim; every shipped attn ELF is hd128, so this
+                            // must be 128 for any of them to be a valid shape match
+    bool attn_shaped_ok = false;  // a shape-specific ELF (attn_mha_<tok>_nh<NH>_hd<HD>.elf)
+                                  // was found for this model's (NH, HD)
+    int attn_tokens = 256;  // KEYS present in the KV BO for this call
+    size_t attn_bo_elems = 0;  // current act/out BO capacity, in u16
+    int attn_rows = 0;      // query rows this call computes (0 => attn_tokens, max 256)
+    uint32_t attn_kv_region = 4194304;   // KV region stride in bf16 (8MB, MAX_L=8192)
+
+    bool ok = false;
+
+    // Persistent 8 MB W BO — avoids the 8 MB host→device memcpy on every GEMM
+    // call (the prefill reuses the same dequant W across all 256-token batches
+    // and the two M-batches, so the W is memcpy'd once per projection).
+    std::unique_ptr<buffer<uint16_t>> w_cache;
+    const uint16_t* w_cache_ptr = nullptr;
+    size_t w_cache_elems = 0;
+    std::unique_ptr<buffer<uint16_t>> a_cache, c_cache;
+    size_t a_cache_elems = 0, c_cache_elems = 0;
+    std::vector<uint16_t> hAb, hCb;   // host-side 2-batch scratch, reused across calls
+    const uint16_t* a_src_ptr = nullptr;   // A-reuse cache (GU chunks share one A)
+    uint32_t a_src_K = 0;
+    uint16_t a_src_sample[64] = {0};       // content guard vs silent refill of the same pointer
+    std::unique_ptr<buffer<uint16_t>> c_cache0, c_cache1;
+    size_t c_cache0_elems = 0, c_cache1_elems = 0;
+    std::unique_ptr<buffer<uint16_t>> a_cache0, a_cache1;
+    size_t a_cache0_elems = 0, a_cache1_elems = 0;
+    // Device-side dequant W cache: the prefill dequants each projection ONCE
+    // into a persistent device BO and the GEMM reads it directly (no host
+    // round-trip). Index into w_dev is the opaque handle.
+    std::vector<std::unique_ptr<buffer<uint16_t>>> w_dev;
+    std::unique_ptr<buffer<uint8_t>> bo_cache;
+    size_t bo_cache_bytes = 0;
+    const uint8_t* bo_cache_ptr = nullptr;
+    // Per-shape npu_app cache: generate_seq + aiebu ELF assembly + kernel
+    // construction is ~0.5ms/GEMM and the shapes are fixed (Q/K/V/O/GU/D), so
+    // cache the assembled kernel per (K,N,woff) and only safe_run per call.
+    std::map<uint64_t, std::unique_ptr<npu_app>> mm_app_cache;
+
+    ~Bf16Mm() { /* BOs owned by xrt */ }
+
+    /// Load mm.xclbin + dequant.xclbin from xclbin_dir and construct the
+    /// Gemm/Dequant + npu_app contexts.
+    bool init(xrt::device& d, const std::string& model_dir,
+              const std::string& xclbin_dir) {
+        dev = &d;
+        try {
+            config = std::make_unique<LM_Config>();
+            config->from_pretrained(model_dir);
+
+            std::string mmp = xclbin_dir + "/mm.xclbin";
+            std::string dqp = xclbin_dir + "/dequant.xclbin";
+            mm_xc = std::make_unique<xrt::xclbin>(mmp);
+            dev->register_xclbin(*mm_xc);
+            mm_hc = std::make_unique<xrt::hw_context>(*dev, mm_xc->get_uuid());
+
+            dq_xc = std::make_unique<xrt::xclbin>(dqp);
+            dev->register_xclbin(*dq_xc);
+            dq_hc = std::make_unique<xrt::hw_context>(*dev, dq_xc->get_uuid());
+
+            gemm_ = std::make_unique<Gemm>(*config);
+            deq_  = std::make_unique<Dequant>(*config);
+            mm_app = std::make_unique<npu_app>(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
+            dq_app = std::make_unique<npu_app>(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
+
+            // g++ (this build's compiler) has no __has_embed, so the embedded
+            // nh16/nh32 ELFs are never available. Compile the runtime attention
+            // loader unconditionally and gate it on attn.xclbin existing, so a
+            // family's shape-specific attn_mha_<tok>_nh<NH>_hd<HD>.elf is a
+            // drop-in by filename (nanbeige nh20, phi4 nh24, hd256, ...).
+            std::string atp = xclbin_dir + "/attn.xclbin";
+            {
+                FILE* atf = fopen(atp.c_str(), "rb");
+                if (atf) { fclose(atf);
+                    attn_xc = std::make_unique<xrt::xclbin>(atp);
+                    dev->register_xclbin(*attn_xc);
+                    attn_hc = std::make_unique<xrt::hw_context>(*dev, attn_xc->get_uuid());
+                } else {
+                    fprintf(stderr, "  Bf16Mm: no attn.xclbin at %s - runtime attention ELFs disabled\n", atp.c_str());
+                }
+            }
+#ifdef BF16MM_HAS_ATTN_ELF
+            if (attn_hc) {
+            attn_elf = std::make_unique<xrt::elf>((const char*)kAttnMhaElf16, sizeof(kAttnMhaElf16));
+            attn_module = std::make_unique<xrt::module>(*attn_elf);
+            attn_kernel = std::make_unique<xrt::ext::kernel>(*attn_hc, *attn_module, "MLIR_AIE");
+            }
+#endif
+#ifdef BF16MM_HAS_ATTN_ELF32
+            if (attn_hc) {
+            attn_elf32 = std::make_unique<xrt::elf>((const char*)kAttnMhaElf32, sizeof(kAttnMhaElf32));
+            attn_module32 = std::make_unique<xrt::module>(*attn_elf32);
+            attn_kernel32 = std::make_unique<xrt::ext::kernel>(*attn_hc, *attn_module32, "MLIR_AIE");
+            }
+#endif
+            // Long-context (>256 token) attention ELF: generated with
+            // gen_attn_chunk (FLM's qwen3_npu_sequence::gen_mha_engine_seq +
+            // aiebu), so chunk variants can be swapped without a re-embed.
+            //
+            // NOTE (2026-09-12): the file is NOT in FLM's per-model xclbin dir
+            // (only mm/dequant/attn/layer .xclbin live there), so searching
+            // xclbin_dir alone silently found nothing and run_attn fell back to
+            // the embedded 256-token ELF for every npt>256 run — see the
+            // attn_tokens>256 guard in run_attn(). Search a candidate list.
+            // Two long-context kernels, selected by prompt length in run_attn:
+            //   attn_mha_1024_nh16.elf  -> npt in (256, 1024]
+            //   attn_mha_2048_nh16.elf  -> npt in (1024, 2048]
+            // Both are captured from FLM's real runtime (npu-infer/tools/capture/
+            // run_qwen3_prefill under cap_interposer.so) at the matching prompt
+            // length, and each is gated on the boot token matching the byte-exact
+            // NPU_RUNLIST=1 path at its own length. The embedded kernel covers
+            // npt <= 256. A captured kernel is only valid for the context range it
+            // was captured at — that is exactly why the old single 26 KB capture
+            // failed past ~512 keys.
+            {
+                auto load_attn_elf = [&](const char* envname, const char* fname, int tokens,
+                                         std::unique_ptr<xrt::elf>& e,
+                                         std::unique_ptr<xrt::module>& m,
+                                         std::unique_ptr<xrt::ext::kernel>& k) {
+                    std::vector<std::string> cands;
+                    if (const char* ev = getenv(envname)) cands.push_back(ev);
+                    // Shape-specific name FIRST, so a per-family attention ELF is a
+                    // drop-in by filename -- no code change per family:
+                    //   attn_mha_<tokens>_nh<NH>_hd<HD>.elf
+                    // The filename must carry BOTH nh and hd because qout aliases
+                    // nh32x128 with nh16x256 (both 4096). Families whose attention
+                    // kernel is not hd128/nh16-or-nh32 have no ELF at all today --
+                    // Nanbeige nh20, Phi4 nh24, Gemma3 nh4/nh8 hd256, Qwen3.5 nh16/hd256
+                    // -- and this is the hook they will land on.
+                    if (attn_hd > 0 && attn_qout > 0 && attn_qout % attn_hd == 0) {
+                        const int nh = attn_qout / attn_hd;
+                        char shaped[96];
+                        snprintf(shaped, sizeof shaped, "attn_mha_%d_nh%d_hd%d.elf", tokens, nh, attn_hd);
+                        if (!xclbin_dir.empty()) cands.push_back(xclbin_dir + "/" + shaped);
+                        if (const char* xd = getenv("NPU_XCLBIN_DIR"))
+                            cands.push_back(std::string(xd) + "/" + shaped);
+                        cands.push_back(std::string("engine/npu/xclbins/") + shaped);
+                    }
+                    cands.push_back(xclbin_dir + "/" + fname);
+                    if (const char* xd = getenv("NPU_XCLBIN_DIR"))
+                        cands.push_back(std::string(xd) + "/" + fname);
+                    cands.push_back(std::string("engine/npu/xclbins/") + fname);
+                    for (const std::string& path : cands) {
+                        FILE* ft = fopen(path.c_str(), "rb");
+                        if (!ft) continue;
+                        fseek(ft, 0, SEEK_END); long sz = ftell(ft); fseek(ft, 0, SEEK_SET);
+                        std::vector<char> buf(sz);
+                        if (fread(buf.data(), 1, sz, ft) == (size_t)sz) {
+                            e = std::make_unique<xrt::elf>(buf.data(), sz);
+                            m = std::make_unique<xrt::module>(*e);
+                            k = std::make_unique<xrt::ext::kernel>(*attn_hc, *m, "MLIR_AIE");
+                            // Remember whether this came from the shape-specific name.
+                            if (path.find("attn_mha_") != std::string::npos &&
+                                path.find("_hd") != std::string::npos)
+                                attn_shaped_ok = true;
+                            fprintf(stderr, "  Bf16Mm: attention ELF loaded (%ld B): %s\n", sz, path.c_str());
+                        }
+                        fclose(ft);
+                        if (k) break;
+                    }
+                };
+                if (!attn_hc)
+                    fprintf(stderr, "  Bf16Mm: attention loader skipped (no attn.xclbin/hw_context)\n");
+                if (attn_hc) {
+                load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", 1024, attn_elf1k, attn_module1k, attn_kernel1k);
+                load_attn_elf("NPU_ATTN_ELF_1024_NH32", "attn_mha_1024_nh32.elf", 1024, attn_elf1k32, attn_module1k32, attn_kernel1k32);
+                load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048, attn_elf2k, attn_module2k, attn_kernel2k);
+                load_attn_elf("NPU_ATTN_ELF_2048_NH32", "attn_mha_2048_nh32.elf", 2048, attn_elf2k32, attn_module2k32, attn_kernel2k32);
+                // (2048, 4096] slot. Both names are absent from a default checkout
+                // (only the nh16 4096 capture exists so far), and an absent file is
+                // NOT an error: the selector below then leaves kern null and the
+                // caller uses the CPU attention reference, which is slow but
+                // correct. Install a capture under either name to switch the range
+                // over to the NPU.
+                load_attn_elf("NPU_ATTN_ELF_4096", "attn_mha_4096_nh16.elf", 4096, attn_elf4k, attn_module4k, attn_kernel4k);
+                load_attn_elf("NPU_ATTN_ELF_4096_NH32", "attn_mha_4096_nh32.elf", 4096, attn_elf4k32, attn_module4k32, attn_kernel4k32);
+                // (4096, 8192] slot. nh16 only: the nh32 shapes run the region
+                // stride the H table gives them (2097152 u16 = 4096 tokens), which
+                // cannot address 8192 tokens.
+                load_attn_elf("NPU_ATTN_ELF_8192", "attn_mha_8192_nh16.elf", 8192, attn_elf8k, attn_module8k, attn_kernel8k);
+                load_attn_elf("NPU_ATTN_ELF_8192_NH32", "attn_mha_8192_nh32.elf", 8192, attn_elf8k32, attn_module8k32, attn_kernel8k32);
+                // <=256 slot. The legacy name resolves to the embedded nh16 kernel's source,
+                // so for the six working models this loads the same thing the embedded kernel
+                // already is (harmless); for a family with a different shape it lets
+                // attn_mha_256_nh20_hd128.elf &c. take over the short-context path.
+                load_attn_elf("NPU_ATTN_ELF_256", "attn_mha_256_nh16.elf", 256, attn_elfs, attn_modules, attn_kernels);
+                }
+                if (!attn_kernel1k)
+                    fprintf(stderr, "  Bf16Mm: no 1024-context attention ELF — npt>256 will use CPU attention\n");
+                if (!attn_kernel2k)
+                    fprintf(stderr, "  Bf16Mm: no 2048-context attention ELF — npt>1024 will use CPU attention\n");
+                if (!attn_kernel4k && !attn_kernel4k32)
+                    fprintf(stderr, "  Bf16Mm: no 4096-context attention ELF — npt>2048 will use CPU attention\n");
+            }
+                if (!attn_kernel8k)
+                    fprintf(stderr, "  Bf16Mm: no 8192-context attention ELF — npt>4096 will use CPU attention (nh16 only)\n");
+                if (!attn_kernel8k32)
+                    fprintf(stderr, "  Bf16Mm: no nh32 8192-context attention ELF — those shapes fall to CPU attention above npt=4096\n");
+        } catch (std::exception& ex) {
+            fprintf(stderr, "Bf16Mm::init failed: %s\n", ex.what());
+            return false;
+        }
+        ok = true;
+        return true;
+    }
+
+    /// Select the attention ELF + Q width: 2048 (NH=16) or 4096 (NH=32).
+    void set_attn_qout(int qout) { attn_qout = qout; }
+    void set_attn_hd(int hd) { attn_hd = hd; }
+    /// Set the KV cache region stride (bf16 elems): 8MB=4194304 (H<=2048), 12MB=6291456 (H=2560), 24MB=12582912 (H=4096).
+    void set_attn_kv_region(uint32_t region) { attn_kv_region = region; }
+    /// Tokens per attention call (<=256 uses the embedded ELF; >256 needs the
+    /// generated long-context ELF to be present).
+    void set_attn_tokens(int n) { attn_tokens = n; attn_rows = 0; }
+    /// Query rows for the next attention call (<=256 = the captured kernel's
+    /// width). Pairs with pointers shifted to that query block.
+    void set_attn_rows(int n) { attn_rows = n; }
+
+    /// 256-token MHA attention (attn.xclbin): out = attn(Q, K/V cache).
+    ///   act: attn_rows×qout bf16 [token][head][dim] (Q GEMM output, raw)
+    ///   kv:  32MB = 4×8MB regions [token][4 heads × 128 dims]
+    ///   out: attn_rows×qout bf16 (qout = attn_qout = NH*HD)
+    /// attn_tokens = keys present in the KV BO; attn_rows = query rows of this
+    /// call (<=256, the captured kernel's width). The caller may pass pointers
+    /// shifted to a later query block to cover a prompt longer than 256.
+    bool run_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
+        // qout alone is NOT a shape selector. Every ELF in the xclbin dir is
+        // head_dim=128 and only nh16/nh32 exist, so a 2-way qout test silently
+        // handed the wrong-shape kernel to four families. head_dim alone is not
+        // enough either: Nanbeige nh20 (qout 2560) and Phi4 nh24 (3072) are hd128,
+        // so an hd-only gate still passes them through to the nh16 kernel. Require
+        // the (qout, hd) PAIR to name a kernel that actually ships:
+        //   hd128 + qout 2048 -> nh16, hd128 + qout 4096 -> nh32, anything else -> none.
+        // An unmatched shape makes run_attn return false (explicit failure) instead
+        // of a plausible-looking wrong answer.
+        const bool attn_shape_ok = attn_shaped_ok ||
+            ((attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096));
+        // Short contexts: prefer a shape-specific <=256 ELF ONLY when a shape-specific file
+        // actually loaded (attn_shaped_ok). The first version of this slot preferred it
+        // whenever attn_kernels was non-null -- but the legacy fallback name
+        // attn_mha_256_nh16.elf EXISTS, so for Qwen3-4B (nh32) it loaded the nh16 kernel and
+        // preferred it over the correct EMBEDDED nh32 kernel, breaking the @256 gate
+        // (native 41053 vs FLM's 1614). Caught by an A/B that was chasing an unrelated
+        // discrepancy, not by the regression check, which had only covered 0.6B(nh16) @256
+        // and 4B @1024. Gating on attn_shaped_ok keeps the hook for families that have a real
+        // short-shape ELF and leaves every working model on its embedded kernel.
+        xrt::ext::kernel* kern = !attn_shape_ok ? nullptr
+            : ((attn_tokens <= 256 && attn_shaped_ok && attn_kernels) ? attn_kernels.get()
+               : ((attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get()));
+        // attn_tokens > 256 -> the long-context ELF captured from FLM's REAL
+        // 1024-token prefill (elf_0012 of the prefill capture; 98848 B). It is
+        // verified token-correct at npt = 256/512/896/1024 against the byte-exact
+        // runlist path, and its attention costs 186 ms for a 28-layer npt=1024
+        // run. The previously-used generated gen(0,1024) ELF was both wrong and
+        // ~1200x slower (223050 ms) and has been replaced in the xclbin dir.
+        // Long-context slot. A captured kernel is only valid for the (shape, context)
+        // it was captured at, so BOTH must match. attn_mha_2048_nh16.elf is an nh16
+        // 2048-context capture and there is no nh32 2048-context capture yet, so
+        // nh32 models must NOT fall through to it: before this guard Qwen3-4B at
+        // npt=2048 used the nh16 2k ELF and returned 112103 where the byte-exact
+        // runlist path says 220. With the guard they get nullptr -> run_attn()
+        // returns false -> the caller's CPU attention reference, which is slow but
+        // correct. Do not "fix" a failure here by widening the condition.
+        const bool nh16 = (attn_qout == 2048);
+        const bool nh32 = (attn_qout == 4096);
+        if (!attn_shape_ok) kern = nullptr;
+        // Longest capture that exists today is 4096. Above it, fall through to the
+        // CPU reference rather than borrowing a shorter kernel: a capture used past
+        // its length is WRONG, not merely slower (a 1024-context ELF at npt=2048
+        // returned 19841 where the byte-exact path says 220).
+        //
+        // Above 4096 the fault that made this slot unusable was NOT here: it was
+        // two 4096-sized structures in the engine (the RoPE tables' read overrun
+        // and the host K/V caches' write overrun), and with those fixed the 8192
+        // capture is correct at 4200 against FLM's own reference. See
+        // RESULTS-ctx8192-blocked-2026-09-15.md.
+        else if (attn_tokens > 8192) kern = nullptr;                       // no capture this long
+        else if (attn_tokens > 4096)
+            // nh16 or nh32, and only when that shape's capture is present.
+            // The region stride follows the capture (see the H table below):
+            // the <=4096 nh32 kernels are 4 MB and this one is 8 MB.
+            kern = nh16 ? (attn_kernel8k ? attn_kernel8k.get() : nullptr)
+                 : nh32 ? (attn_kernel8k32 ? attn_kernel8k32.get() : nullptr)
+                        : nullptr;
+        else if (attn_tokens > 2048)
+            // (2048, 4096]. As for the 2k slot, only the nh16/nh32 shapes may use a
+            // capture; every other shape (nh20 Nanbeige, nh24 Phi4) gets nullptr and
+            // the host reference, which is the correct-answer path for them.
+            kern = nh16 ? (attn_kernel4k ? attn_kernel4k.get() : nullptr)
+                 : nh32 ? (attn_kernel4k32 ? attn_kernel4k32.get() : nullptr)
+                        : nullptr;
+        else if (attn_tokens > 1024)
+            // Only nh16/nh32 have 2k captures. Any other shape must fall through
+            // to the CPU reference rather than borrow the nh32 kernel: Nanbeige
+            // (nh20) and Phi4 (nh24) reach this branch above 1024 keys, and the
+            // nh32 2048 kernel returns wrong tokens for them (Nanbeige @1000:
+            // CPU attn = FLM-ref 163569, shape ELF = 90724).
+            kern = nh16 ? (attn_kernel2k ? attn_kernel2k.get() : nullptr)
+                 : nh32 ? (attn_kernel2k32 ? attn_kernel2k32.get() : nullptr)
+                        : nullptr;
+        else if (attn_tokens > 256)  kern = nh32 ? (attn_kernel1k32 ? attn_kernel1k32.get() : nullptr)
+                                                 : (attn_kernel1k   ? attn_kernel1k.get()   : nullptr);
+        if (!kern) return false;
+        const size_t q = (size_t)attn_qout;
+        const int rows = attn_rows > 0 ? attn_rows : attn_tokens;
+        // Device buffers. BF16MM_ATTN_EXACT_BO sizes act/out to exactly rows*q, to
+        // test whether the kernel's output WIDTH follows the BO it is handed or is
+        // baked into the ELF (RESULTS-coverage-multifamily 122: it writes zeros and
+        // only 2048 of 2560 dims wide).
+        //
+        // Otherwise the BO must satisfy the KERNEL's baked shape, not just this
+        // call's row count: the selected capture was taken at its slot length L and
+        // writes L rows, so sizing by attn_tokens alone overruns it whenever
+        // attn_tokens < L — at npt=4095 the 4096-slot kernel wrote one row past the
+        // end of the act/out BO. Use the slot length the selector picks (the
+        // smallest slot covering attn_tokens), not the largest one loaded, so a
+        // short-context run does not carry 33 MB of unused act/out.
+        const size_t exact = getenv("BF16MM_ATTN_EXACT_BO") ? (size_t)rows * q : 0;
+        const int slot_len = attn_tokens <= 256 ? 256
+                           : attn_tokens <= 1024 ? 1024
+                           : attn_tokens <= 2048 ? 2048
+                           : attn_tokens <= 4096 ? 4096 : 8192;
+        const int sel = slot_len > attn_tokens ? slot_len : attn_tokens;
+        const size_t cap = exact ? exact : (size_t)(sel > 1024 ? sel : 1024) * q;
+        if (!attn_out || attn_bo_elems < cap) {
+            attn_out = std::make_unique<buffer<uint16_t>>(*dev, cap);
+            attn_act = std::make_unique<buffer<uint16_t>>(*dev, cap);
+            attn_bo_elems = cap;
+            attn_kv  = std::make_unique<buffer<uint16_t>>(*dev, (size_t)attn_kv_region * 4);
+            // The comment below says "the rest of the KV BO stays zero" -- but nothing made it
+            // so. The HOST bKv is memset to zero (npu_engine_universal.cpp:4101) while this
+            // DEVICE BO was left as the allocator returned it, and the copy below writes only
+            // attn_tokens*512 elems per region. So any read past that inside a region hit
+            // uninitialized device memory -- which is why the native boot token was
+            // nondeterministic for Nanbeige: 1214 / 131718 / 145029 from the same command
+            // (RESULTS-coverage-multifamily section 59). The host/device asymmetry is the bug;
+            // making the device side match the host side is the fix.
+            memset(attn_kv->data(), 0, (size_t)attn_kv_region * 4 * 2);
+        }
+        memcpy(attn_act->data(), act, (size_t)rows * q * 2);
+        // Only the 4 used region heads matter (256 tokens × 4 heads × 128 dims
+        // = 256KB each). Copy just those; the rest of the KV BO stays zero.
+        const size_t reg = attn_kv_region;                // region stride in bf16
+        // BF16MM_ATTN_KV_PT: elements per token written into each KV region (default
+        // 512 -- behaviour unchanged). RESULTS-coverage-multifamily 184: decoded from the
+        // shipped nh20 ELF, the stream's arg2 descriptors transfer 4.50 MB while this fill
+        // writes 4 regions x attn_tokens x 512 x 2 B = 4.00 MB, so 0.50 MB of what the kernel
+        // reads is never written -- and since attn_kv is memset at :357 that region reads as
+        // ZEROS. 4.50 MB / 4 regions / 1024 tokens = 576 elements per token, so the sweep is
+        // 512 (shipped) / 576 (the stream's implied width) / 640. All six perturbations so far
+        // changed the BO SIZE or the artifact; none changed this number.
+        int kv_pt = 512;
+        if (const char* kvp = getenv("BF16MM_ATTN_KV_PT")) { int v = atoi(kvp); if (v > 0) kv_pt = v; }
+        const size_t used = (size_t)attn_tokens * (size_t)kv_pt;
+        for (int r = 0; r < 4; r++)
+            memcpy(attn_kv->data() + r * reg, kv + r * reg, used * 2);
+        xrt::run run(*kern);
+        // BF16MM_ATTN_SCALARS="a,b,c" (default 3,0,0 -- behaviour unchanged): the kernel's
+        // three SCALAR arguments, which are the only part of this call with no stated
+        // meaning in this file and the only part no perturbation has touched.
+        // RESULTS-coverage-multifamily 177: on an MLIR_AIE kernel the scalars are the runtime
+        // parameters, and section 92 established this attention is CONTEXT-FREE -- a kernel
+        // told L_begin=0, L_end=0 computes over a degenerate range by construction, and
+        // context-free is exactly what a zero range produces. So args 1/2 are swept against
+        // npt and arg 0 against the model's head/layer counts. Hypothesis with a one-run
+        // test, not a finding: the lengths may travel in a BO and 3 may be a mode, not a count.
+        {
+            int sa = 3, sb = 0, sc = 0;
+            if (const char* sv = getenv("BF16MM_ATTN_SCALARS")) sscanf(sv, "%d,%d,%d", &sa, &sb, &sc);
+            run.set_arg(0, sa);
+            run.set_arg(1, sb);
+            run.set_arg(2, sc);
+        }
+        // BF16MM_ATTN_SWAP_IO (default OFF, behaviour unchanged): swap the two
+        // attention argument POSITIONS -- 3 and 4 -- leaving every buffer exactly as
+        // allocated. Rationale (RESULTS-coverage-multifamily 174): FLM handed this
+        // kernel 1 MB at arg3 (= NKV*HD per token, a KV-width slot) and 5 MB at arg4
+        // (= NH*HD, the attention-I/O width), while this engine assumes out=arg3 and
+        // in=arg4 -- the opposite pairing. The engine still fills attn_act with Q (:359)
+        // and still reads its answer from attn_out (:405), so if the kernel's output
+        // slot is its arg4 the answer lands where the engine looks for it and the boot
+        // moves. If it does not move, the slots are equivalent to the kernel and the
+        // role hypothesis dies. Either outcome is informative; shrinking arg3 was not,
+        // because attn_out IS the buffer the engine reads (:405).
+        if (getenv("BF16MM_ATTN_SWAP_IO")) {
+            run.set_arg(3, attn_act->bo());
+            run.set_arg(4, attn_out->bo());
+        } else {
+            run.set_arg(3, attn_out->bo());
+            run.set_arg(4, attn_act->bo());
+        }
+        run.set_arg(5, attn_kv->bo());
+        attn_act->sync_to_device();
+        attn_kv->sync_to_device();
+        // BF16MM_ATTN_SENTINEL: fill the output BO with bf16 1.0 before the run so a kernel
+        // that writes NOTHING can be told from one that writes ZEROS. Both look identical
+        // in the engine's diff (RESULTS-coverage-multifamily 121: Nanbeige's attention
+        // output is all-zero with non-zero inputs), but they have different causes.
+        const bool sentinel = getenv("BF16MM_ATTN_SENTINEL") != nullptr;
+        if (sentinel) {
+            uint16_t* o = attn_out->data();
+            for (size_t i = 0; i < (size_t)rows * q; i++) o[i] = 0x3c00;   // bf16 1.0
+            attn_out->sync_to_device();
+        }
+        // DIAGNOSTIC (BF16MM_AZERO=1), off by default. THE LIVE HAZARD of §122/§124: this kernel
+        // writes only 4/5 of its output (2048 of 2560 columns), and `attn_out` -- unlike `attn_kv` --
+        // is never cleared, so the unwritten remainder is read back into bA. Zeroing exactly what
+        // the host copies back makes the read-back either correct or ZERO, so a CHANGE is the signal.
+        // Same semantics and same reading as the other lane's BF16MM_CZERO in gemm_launch.
+        if (getenv("BF16MM_AZERO")) {
+            memset(attn_out->data(), 0, (size_t)rows * q * 2);
+            attn_out->sync_to_device();
+        }
+        run.start();
+        run.wait();
+        attn_out->sync_from_device();
+        if (sentinel) {
+            const uint16_t* o = attn_out->data();
+            const size_t n = (size_t)rows * q;
+            size_t kept = 0, nz = 0, wrote = 0;
+            size_t first = n, last = 0;
+            std::vector<uint8_t> colwrote((size_t)q, 0);
+            for (size_t i = 0; i < n; i++) {
+                if (o[i] == 0x3c00) kept++;
+                if (o[i] != 0) nz++;
+                if (o[i] != 0x3c00) { wrote++; if (i < first) first = i; last = i; colwrote[i % (size_t)q] = 1; }
+            }
+            size_t cols = 0; for (int j = 0; j < (int)q; j++) cols += colwrote[(size_t)j];
+            int tail = 0; for (int j = (int)q - 1; j >= 0 && !colwrote[(size_t)j]; j--) tail++;
+            fprintf(stderr, "[ATTN-SENTINEL] rows=%d q=%d kept_1.0=%zu/%zu nonzero=%zu wrote=%zu -> kernel %s\n",
+                    rows, (int)q, kept, n, nz, wrote,
+                    kept == n ? "WROTE NOTHING (output BO untouched)" : "DID write (output changed)");
+            // RESULTS-coverage-multifamily 194: POSITIONS, not a binary. The analogue of
+            // BF16MM_CEXTENT -- this replaces section 122's instrument-dependent
+            // "2048 of 2560 columns" with a number the engine counts itself. Caveat carried:
+            // a legitimate output CAN be bf16 1.0, so "unchanged" is an UPPER bound on
+            // "not written"; for a WIDTH claim (which columns are never touched) the sentinel
+            // is the right probe, which is why the per-column map is the form reported.
+            fprintf(stderr, "[ATTN-SENTINEL] positions: first_changed=%zu last_changed=%zu ; columns_touched=%zu/%d ; untouched_tail_columns=%d\n",
+                    first, last, cols, (int)q, tail);
+        }
+        memcpy(out, attn_out->data(), (size_t)rows * q * 2);
+        return true;
+    }
+
+    /// Dequantize the Q4NX layer BO → bf16 W (D_in×D_out bf16, row-major).
+    /// weight_offset is in Q4NX BYTES (tile×5120) — see npu_pack_layer_bo.
+    void run_dequant(uint16_t* wout /*D_in*D_out*/, const uint8_t* q4nx /*layerbo*/,
+                 uint32_t D_in, uint32_t D_out, uint32_t q4nx_weight_offset,
+                 int mode = 0) {
+        // fresh npu_app per call → fresh ctrl_seq (generate_seq APPENDS, so a
+        // reused seq would accumulate stale instructions).
+        npu_app app(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
+        // Copy only this projection's tiles (relative weight_offset 0) — the
+        // old full-10MB copy broke layer BOs > 10 MB (4B ~63 MB, 8B ~82 MB).
+        size_t proj_bytes = (size_t)(D_out / 32) * (D_in / 256) * 5120;
+        if (mode == 1 || mode == 2) proj_bytes *= 2;   // GU: up+gate interleaved region
+        auto bW  = app.create_bo_buffer<uint8_t>(proj_bytes);
+        auto bOut = app.create_bo_buffer<uint16_t>((size_t)D_in * D_out);
+        memcpy(bW.data(), q4nx + (size_t)q4nx_weight_offset, proj_bytes);
+        deq_->generate_dequant_q4_1_seq(app.seq(), D_in, D_out, 0, mode);
+        app.update_ctrl_seq();
+        app.safe_run(bOut, bW);
+        memcpy(wout, bOut.data(), (size_t)D_in * D_out * 2);
+    }
+
+    /// bf16 GEMM: C = A × W. A: M×K bf16, W: K×N bf16 (at woff elements),
+    /// C: M×N bf16 (written at ooff elements). woff/ooff are bf16 ELEMENTS.
+    void run_gemm(uint16_t* C, const uint16_t* A, const uint16_t* W,
+              uint32_t M, uint32_t K, uint32_t N,
+              uint32_t woff, uint32_t ooff = 0) {
+        npu_app app(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
+        gemm_->generate_seq(app.seq(), M, K, N, woff, false,
+                           Gemm::NO_Activation, 0, ooff);
+        app.update_ctrl_seq();
+        auto bA = app.create_bo_buffer<uint16_t>((size_t)M * K);
+        auto bW = app.create_bo_buffer<uint16_t>((size_t)2048 * 2048);   // 8 MB
+        // C BO is fixed 1 MB (256×2048 bf16); the kernel writes the M×N
+        // result at the BO's origin (output_offset is a stream parameter, not
+        // a host-side BO offset — verified byte-exact in the k/v capture).
+        auto bC = app.create_bo_buffer<uint16_t>((size_t)M * 2048);
+        memcpy(bA.data(), A, (size_t)M * K * 2);
+        memcpy(bW.data(), W, (size_t)2048 * 2048 * 2);
+        memset(bC.data(), 0, (size_t)M * 2048 * 2);
+        app.safe_run(bC, bA, bW);
+        memcpy(C, bC.data(), (size_t)M * N * 2);
+    }
+
+    // ── QKV convenience (M=256, A = hidden 256×1024, W = 8 MB dequant QKV) ──
+    //
+    // The mm.xclbin only computes 128 CORRECT M-rows per invocation: rows
+    // 0..127 are C[0..127] (identity), but rows 128..255 are a "duplicated
+    // odd" garbage region (C[127], C[129], C[129], C[131], …) regardless of N.
+    // So the 256-token batch is split into two 128-token batches, each fed as
+    // a SPARSE 256-row A (tokens in rows 0..127, zeros in rows 128..255) — the
+    // output rows 0..127 are then the batch's tokens (byte-exact, verified).
+    void qkv(uint16_t* Q /*256×2048*/, uint16_t* K /*256×1024*/, uint16_t* V /*256×1024*/,
+             const uint16_t* A /*256×1024*/, const uint16_t* W /*8 MB*/) {
+        run_gemm_2batch(Q, A, W, 1024, 2048, 0);        // q: K=1024 N=2048 woff=0
+        run_gemm_2batch(K, A, W, 1024, 1024, 2097152);  // k: woff=2097152 (→4 MB)
+        run_gemm_2batch(V, A, W, 1024, 1024, 3145728);  // v: woff=3145728 (→6 MB)
+    }
+
+    /// bf16 GEMM over 256 tokens as TWO 128-token M-batches (mm.xclbin's
+    /// correct-M capacity is 128 rows). C is M×N row-major; A is M×K.
+    void run_gemm_2batch(uint16_t* C, const uint16_t* A, const uint16_t* W,
+                         uint32_t K, uint32_t N, uint32_t woff) {
+        std::vector<uint16_t> Ab(256 * K, 0);   // sparse 256-row A
+        std::vector<uint16_t> Cb(256 * N, 0);   // per-invocation output
+        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
+        run_gemm_ooff(Cb.data(), Ab.data(), W, 256, K, N, woff, 0, true);
+        memcpy(C, Cb.data(), 128 * N * 2);
+        memset(Ab.data(), 0, 256 * K * 2);
+        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
+        run_gemm_ooff(Cb.data(), Ab.data(), W, 256, K, N, woff, 0, true);
+        memcpy(C + 128 * N, Cb.data(), 128 * N * 2);
+    }
+
+    /// bf16 GEMM with explicit control over the output_offset overload (host-W path).
+    /// use7arg=true → 7-arg generate_seq (no output_offset, Q path).
+    void run_gemm_ooff(uint16_t* C, const uint16_t* A, const uint16_t* W,
+              uint32_t M, uint32_t K, uint32_t N,
+              uint32_t woff, uint32_t ooff, bool use7arg) {
+        npu_app app(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
+        if (use7arg)
+            gemm_->generate_seq(app.seq(), M, K, N, woff, false, Gemm::NO_Activation, 0);
+        else
+            gemm_->generate_seq(app.seq(), M, K, N, woff, false, Gemm::NO_Activation, 0, ooff);
+        app.update_ctrl_seq();
+        size_t wspan = (size_t)woff + (size_t)K * N;
+        if (!w_cache || w_cache_elems < wspan) {
+            w_cache = std::make_unique<buffer<uint16_t>>(*dev, wspan);
+            w_cache_elems = wspan;
+            w_cache_ptr = nullptr;
+        }
+        if (W != w_cache_ptr) { memcpy(w_cache->data(), W, wspan * 2); w_cache_ptr = W; }
+        size_t a_elems = (size_t)M * K, c_elems = (size_t)M * N;
+        if (!a_cache || a_cache_elems < a_elems) { a_cache = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache_elems = a_elems; }
+        if (!c_cache || c_cache_elems < c_elems) { c_cache = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache_elems = c_elems; }
+        memcpy(a_cache->data(), A, a_elems * 2);
+        app.safe_run(*c_cache, *a_cache, *w_cache);
+        memcpy(C, c_cache->data(), c_elems * 2);
+    }
+
+    void dump_w(int idx, const char* path) {
+        if (idx < 0 || idx >= (int)w_dev.size()) { fprintf(stderr, "[dump_w] idx %d out of range (%zu)\n", idx, w_dev.size()); return; }
+        w_dev[idx]->sync_from_device();
+        fprintf(stderr, "[dump_w] idx=%d size=%zu elems\n", idx, w_dev[idx]->size());
+        FILE* f = fopen(path, "wb");
+        if (f) { fwrite(w_dev[idx]->data(), 2, w_dev[idx]->size(), f); fclose(f); }
+    }
+
+    /// Dequantize a projection into a persistent DEVICE buffer (no host copy).
+    /// Returns an index into the device W cache (opaque handle for gemm_dev).
+    int run_dequant_dev(const uint8_t* q4nx, uint32_t D_in, uint32_t D_out,
+                        uint32_t q4nx_weight_offset, size_t layer_bo_bytes) {
+        if (getenv("BF16MM_DBG")) fprintf(stderr, "[dequant_dev] D_in=%u D_out=%u elems=%zu\n", D_in, D_out, (size_t)D_in * D_out);
+        npu_app app(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
+        // The dequant's DDR weight_offset is limited (~8MB), so copy only THIS
+        // projection's tiles into a fresh buffer and dequant at offset 0.
+        size_t proj_bytes = (size_t)(D_out / 32) * (D_in / 256) * 5120;
+        if (!bo_cache || bo_cache_bytes < proj_bytes) {
+            bo_cache = std::make_unique<buffer<uint8_t>>(*dev, proj_bytes);
+            bo_cache_bytes = proj_bytes;
+        }
+        memcpy(bo_cache->data(), q4nx + (size_t)q4nx_weight_offset, proj_bytes);
+        deq_->generate_dequant_q4_1_seq(app.seq(), D_in, D_out, 0, 0);
+        app.update_ctrl_seq();
+        w_dev.push_back(std::make_unique<buffer<uint16_t>>(*dev, (size_t)D_in * D_out));
+        // Diagnostic: substitute a captured weight BO (BF16MM_W_FILE) for the
+        // first projection only, to test whether FLM's GEMM W reproduces the
+        // reference boot through OUR GEMM path.
+        static int wf_used = 0;
+        const char* wf = getenv("BF16MM_W_FILE");
+        if (wf && wf_used == 0) {
+            wf_used = 1;
+            FILE* f = fopen(wf, "rb");
+            if (f) {
+                int stride = getenv("BF16MM_W_STRIDE") ? atoi(getenv("BF16MM_W_STRIDE")) : (int)D_out;
+                if (stride < (int)D_out) stride = (int)D_out;
+                std::vector<uint16_t> tmp((size_t)stride);
+                for (uint32_t i = 0; i < D_in; i++) {
+                    if (fread(tmp.data(), 2, stride, f) != (size_t)stride) break;
+                    memcpy(w_dev.back()->data() + (size_t)i * D_out, tmp.data(), (size_t)D_out * 2);
+                }
+                fclose(f);
+                fprintf(stderr, "[wfile] loaded %s stride=%d\n", wf, stride);
+            }
+            return (int)w_dev.size() - 1;
+        }
+        app.safe_run(*w_dev.back(), *bo_cache);
+        return (int)w_dev.size() - 1;
+    }
+
+    /// Upload a host-side bf16 W (D_in×D_out) to a persistent device buffer;
+    /// returns an opaque index for run_gemm_dev. Used to concatenate the
+    /// interleaved GU gate/up chunks into two contiguous N=IM device Ws.
+    int upload_w(const uint16_t* w, uint32_t D_in, uint32_t D_out) {
+        w_dev.push_back(std::make_unique<buffer<uint16_t>>(*dev, (size_t)D_in * D_out));
+        memcpy(w_dev.back()->data(), w, (size_t)D_in * D_out * 2);
+        return (int)w_dev.size() - 1;
+    }
+
+    /// bf16 GEMM reading W directly from a device buffer (2-batch M-split).
+    /// Caches the two sparse-A device buffers and rebuilds them only when the
+    /// source A/K changes — the GU gate/up chunks share one A, so 12 calls
+    /// reuse a single build instead of 12 rebuilds.
+    npu_app& get_mm_app(uint32_t K, uint32_t N, uint32_t woff) {
+        uint64_t key = ((uint64_t)K << 32) | ((uint64_t)N << 16) | (uint64_t)woff;
+        auto it = mm_app_cache.find(key);
+        if (it == mm_app_cache.end()) {
+            auto app = std::make_unique<npu_app>(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
+            gemm_->generate_seq(app->seq(), 256, K, N, woff, false, Gemm::NO_Activation, 0);
+            app->update_ctrl_seq();
+            it = mm_app_cache.emplace(key, std::move(app)).first;
+        }
+        return *it->second;
+    }
+
+    /// Stage 256 CONTIGUOUS A rows into the batch's A cache (0 or 1). A is
+    /// per-slot so two launches can be in flight and the host can convert block i
+    /// while block i+1 runs on the device.
+    ///
+    /// The cached GEMM seq is generated with M=256 (see get_mm_app), so one run
+    /// consumes 256 rows. The previous staging split A into two 128-row halves
+    /// and zero-padded each to 256: that made the kernel compute 128 useful rows
+    /// plus 128 rows of zeros per run, i.e. HALF of every launch was wasted, and
+    /// it took two launches per 256 rows. Staging the full 256 rows and reading
+    /// back 256 rows halves the launch count and does the same device work.
+    ///
+    /// Callers pass A already shifted to the block base; the engine pads its
+    /// buffers to NPAD = round_up(npt,256)+256 so the 256-row read stays in
+    /// bounds (the tail block's surplus rows are computed but never consumed).
+    void ensure_a(const uint16_t* A, uint32_t K, int batch) {
+        std::unique_ptr<buffer<uint16_t>>& ac = (batch == 0) ? a_cache0 : a_cache1;
+        size_t& ace = (batch == 0) ? a_cache0_elems : a_cache1_elems;
+        if (batch == 0) {
+            bool a_same = (A == a_src_ptr) && (K == a_src_K);
+            if (a_same) for (int i = 0; i < 64 && a_same; i++) a_same = (A[i] == a_src_sample[i]);
+            if (a_same) return;
+            a_src_ptr = A; a_src_K = K;
+            for (int i = 0; i < 64; i++) a_src_sample[i] = A[i];
+        }
+        size_t a_elems = (size_t)256 * K;
+        if (!ac || ace < a_elems) { ac = std::make_unique<buffer<uint16_t>>(*dev, a_elems); ace = a_elems; }
+        memcpy(ac->data(), A, a_elems * 2);   // 256 contiguous rows, no padding
+    }
+
+    /// ── async single-batch GEMM (for the software pipeline) ──
+    xrt::run g_run[2];
+    bool g_run_active[2] = {false, false};
+    uint32_t g_run_N[2] = {0, 0};
+    uint32_t g_run_rows[2] = {0, 0};   // rows the run actually produced
+
+    void gemm_launch(int W_idx, uint32_t K, uint32_t N, uint32_t woff, int batch, const uint16_t* A) {
+        ensure_a(A, K, batch);
+        size_t c_elems = 256 * N;
+        if (batch == 0) { if (!c_cache0 || c_cache0_elems < c_elems) { c_cache0 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache0_elems = c_elems; } }
+        else            { if (!c_cache1 || c_cache1_elems < c_elems) { c_cache1 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache1_elems = c_elems; } }
+        // DIAGNOSTIC (BF16MM_CZERO=1), off by default so the default behaviour is unchanged.
+        // The C caches are only ever GROWN, never cleared, and gemm_wait copies back 256*N -- so if a
+        // device kernel writes fewer than 256*N elements, the tail carries STALE data from a previous
+        // GEMM, which would look like a plausible but wrong value rather than like garbage. An
+        // under-writing kernel HAS been observed in this engine (the nh20 attention one writes 2048 of
+        // 2560 columns). Zeroing exactly c_elems -- the amount that will be copied back -- makes the
+        // read-back either correct or ZERO, so a CHANGE is the signal that the tail was being read.
+        // RESULTS-coverage-multifamily 225/230.
+        if (getenv("BF16MM_CZERO")) {
+            // BF16MM_CZERO_NOSYNC restores the ORIGINAL (pre-control) form: memset the host view and do
+            // NOT sync it. The other lane's controlled A/B showed that the no-sync form MOVES both models
+            // while the synced form is inert -- i.e. the movement was dirtying a BO's host view, not a
+            // stale-tail read. RESULTS-coverage-multifamily 265/280/135.
+            const bool nosync = getenv("BF16MM_CZERO_NOSYNC") != nullptr;
+            if (batch == 0) { memset(c_cache0->data(), 0, c_elems * 2); if (!nosync) c_cache0->sync_to_device(); }
+            else            { memset(c_cache1->data(), 0, c_elems * 2); if (!nosync) c_cache1->sync_to_device(); }
+        }
+        // EXTENT diagnostic (BF16MM_CEXTENT=1): fill the output with a sentinel BEFORE the launch so that
+        // gemm_wait can count exactly how many words the DEVICE changed. This is the measurement that
+        // names which GEMM under-writes and by how much -- the analogue of the per-head scale column that
+        // settled the nh20 attention kernel. RESULTS-coverage-multifamily 260/265.
+        if (getenv("BF16MM_CEXTENT")) {
+            uint16_t* p = (batch == 0 ? c_cache0 : c_cache1)->data();
+            for (size_t i = 0; i < c_elems; i++) p[i] = 0xDEAD;
+            if (batch == 0) c_cache0->sync_to_device(); else c_cache1->sync_to_device();
+        }
+        npu_app& app = get_mm_app(K, N, woff);
+        buffer<uint16_t>& a = batch == 0 ? *a_cache0 : *a_cache1;
+        buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
+        a.sync_to_device();
+        w_dev[W_idx]->sync_to_device();
+        // TRULY async: create_run + start() (no wait). The previous app.safe_run
+        // blocked inside (run.wait()), so the 'software pipeline' never overlapped
+        // device with host math. Store the run; gemm_wait() waits + syncs back.
+        g_run[batch] = app.create_run(c, a, *w_dev[W_idx]);
+        g_run[batch].start();
+        g_run_active[batch] = true;
+        g_run_N[batch] = N;
+        g_run_rows[batch] = 256;   // the cached seq is M=256 and a_cache holds 256 real rows
+    }
+
+    void gemm_wait(int batch, uint16_t* C) {
+        if (!g_run_active[batch]) return;
+        g_run[batch].wait();
+        buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
+        c.sync_from_device();
+        if (getenv("BF16MM_CEXTENT")) {
+            const size_t n = (size_t)g_run_rows[batch] * g_run_N[batch];
+            const uint16_t* p = c.data();
+            size_t changed = 0, first_unchanged = n, maxu = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (p[i] != 0xDEAD) { changed++; if (i > maxu) maxu = i; }
+                else if (first_unchanged == n) first_unchanged = i;
+            }
+            fprintf(stderr, "[CEXTENT] N=%u rows=%d total=%zu changed=%zu first_unchanged=%zu last_changed=%zu\n",
+                    g_run_N[batch], g_run_rows[batch], n, changed, first_unchanged, changed ? maxu : 0);
+        }
+        memcpy(C, c.data(), (size_t)g_run_rows[batch] * g_run_N[batch] * 2);
+        g_run_active[batch] = false;
+    }
+
+    /// bf16 GEMM over 256 tokens as two 128-token M-batches, with the batch-0
+    /// readback overlapped against the batch-1 kernel (separate C buffers).
+    void run_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
+        if (hCb.size() < 256 * N) hCb.resize(256 * N);
+        bool a_same = (A == a_src_ptr) && (K == a_src_K);
+        if (a_same) for (int i = 0; i < 64 && a_same; i++) a_same = (A[i] == a_src_sample[i]);
+        if (!a_same) {
+            if (hAb.size() < 256 * K) hAb.resize(256 * K);
+            size_t a_elems = 256 * K;
+            if (!a_cache0 || a_cache0_elems < a_elems) { a_cache0 = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache0_elems = a_elems; }
+            if (!a_cache1 || a_cache1_elems < a_elems) { a_cache1 = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache1_elems = a_elems; }
+            uint16_t* Ab = hAb.data();
+            memset(Ab, 0, a_elems * 2);
+            for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
+            memcpy(a_cache0->data(), Ab, a_elems * 2);
+            memset(Ab, 0, a_elems * 2);
+            for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
+            memcpy(a_cache1->data(), Ab, a_elems * 2);
+            a_src_ptr = A; a_src_K = K;
+            for (int i = 0; i < 64; i++) a_src_sample[i] = A[i];
+        }
+        size_t c_elems = 256 * N;
+        if (!c_cache0 || c_cache0_elems < c_elems) { c_cache0 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache0_elems = c_elems; }
+        if (!c_cache1 || c_cache1_elems < c_elems) { c_cache1 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache1_elems = c_elems; }
+        npu_app& app = get_mm_app(K, N, woff);
+        // batch 0
+        a_cache0->sync_to_device();
+        w_dev[W_idx]->sync_to_device();
+        xrt::run r0 = app.create_run(*c_cache0, *a_cache0, *w_dev[W_idx]);
+        r0.start();
+        r0.wait();
+        // batch 1: launch, then read back batch 0 while its kernel runs
+        a_cache1->sync_to_device();
+        xrt::run r1 = app.create_run(*c_cache1, *a_cache1, *w_dev[W_idx]);
+        r1.start();
+        c_cache0->sync_from_device();
+        memcpy(C, c_cache0->data(), 128 * N * 2);
+        r1.wait();
+        c_cache1->sync_from_device();
+        memcpy(C + 128 * N, c_cache1->data(), 128 * N * 2);
+    }
+};
+
+} // namespace bf16mm

@@ -33,13 +33,19 @@ def main():
     parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols (must divide N//n)")
     parser.add_argument("-b", "--batch-size", type=int, default=5,
                         help="K-tiles per DMA round")
+    parser.add_argument("-L", "--linear-b", action="store_true",
+                        help="LINEAR B tap (issue #1759): one contiguous k*n tile per DMA, "
+                             "weights packed in mmul chunk order, instead of the row-major "
+                             "4D tap that reads 8-byte bursts at N-byte stride (~2.4 GB/s "
+                             "effective -- see npu_engine_i8ctx_inc.h:777-780). The host must "
+                             "pack B with I8Ctx::pack_tile_chunk / packB_into_fused.")
     args = parser.parse_args()
     with mlir_mod_ctx() as ctx:
-        my_matmul(args.K, args.N, args.k, args.n, args.cols, args.batch_size)
+        my_matmul(args.K, args.N, args.k, args.n, args.cols, args.batch_size, args.linear_b)
         print(ctx.module)
 
 
-def my_matmul(K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
+def my_matmul(K, N, k, n, n_aie_cols=8, BATCH_SIZE=5, linear_b=False):
     dtype_in = np.int8
     dtype_out = np.int32
     m = 1  # decode M=1
@@ -137,9 +143,24 @@ def my_matmul(K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
 
                         for c in range(n_aie_cols):
                             n_tile = col_group * n_aie_cols + c
+                            if linear_b:
+                                # LINEAR tap: tile (ki, n_tile) is contiguous, packed in
+                                # mmul chunk order -- byte s = i0*1024+i1*64+i2*8+i3 holds
+                                # B[ki*64+i0*8+i2][n_tile*128+i1*8+i3]. Column-major (nt,ki)
+                                # so one BD can stream a column's k-chunks. This is the
+                                # tap npu_engine_i8ctx_inc.h:777-780 records as the fix for
+                                # the 8-byte-burst/4096-byte-stride pathology.
+                                b_off = (n_tile * n_k + ki) * (k * n)
+                                bt = shim_dma_single_bd_task(
+                                    B_s[c], B,
+                                    offset=b_off,
+                                    sizes=[1, 1, 1, k * n],
+                                    issue_token=True)
+                                dma_start_task(bt)
+                                bt_list.append(bt)
+                                continue
                             # Row-major [K,N] source (packB_into in
                             # npu_gemm_kernel.h).  A microtiled [K/8][N/8][8][8]
-                            # source + contiguous 64-byte reads was measured
                             # NO faster (~4.05 vs ~4.36 ms for 6.3 MB — the
                             # single-launch DMA path is ~1.4-1.5 GB/s
                             # regardless of source layout, BD count, or tile

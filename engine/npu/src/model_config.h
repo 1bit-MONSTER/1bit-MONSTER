@@ -13,6 +13,7 @@
 
 struct ModelConfig {
     int H = 0, NC = 0, NH = 0, NKV = 0, HD = 0, IM = 0, NV = 0;
+    int cpt = 256;  // INT4 cols-per-tile (bytes_per_tile/20): 256 for 5120-byte tiles, 64 for Gemma3-1B's 1280
     int GQA = 0, AW = 4, WQH = 0, WKVH = 0, XM = 128;
     int qkv_k_offset = 0, qkv_v_offset = 0, qkv_total = 0;
     // MoE (Qwen3.5/3.6-class, gate_exps/up_exps/down_exps + shared expert)
@@ -22,6 +23,7 @@ struct ModelConfig {
     int N_SHARED = 0;    // shared experts (1 for Qwen3.6)
     bool has_moe = false;
     bool has_gated_delta_net = false;  // linear_attn tensors present (30/40 layers)
+    bool has_i8_4736 = false;  // Qwen3.5/3.6 4736-byte "I8" dense-row tiles (3-D shapes)
     int xclbin_qkv_k = 0, xclbin_qkv_n = 0;
     int xclbin_o_k = 0, xclbin_o_n = 0;
     int xclbin_g_k = 0, xclbin_g_n = 0;
@@ -38,6 +40,36 @@ struct ModelConfig {
 
     bool valid() const { return H > 0 && NC > 0 && NH > 0 && NKV > 0 && HD > 0 && IM > 0 && NV > 0; }
     static int pad128(int v) { return (v + 127) & ~127; }
+    // Derive the xclbin GEMM dimensions from the model dims. This MUST be called on
+    // EVERY path that populates H/NH/NKV/HD/IM, because the I8Ctx contexts are sized from
+    // these fields and a zero gives a zero-length BO -- which XRT refuses deep inside
+    // alloc_bo, far from the cause. parse_q4nx_config() did this inline; the engine's own
+    // config path (npu_engine_universal.cpp) has TWO other routes -- the 1BP header and the
+    // config.json fallback used by hybrid models whose manifest lacks embed/self_attn -- and
+    // neither derived them. Qwen3.5-4B takes the fallback and died at
+    // "cq before init: MD=128 KD=0 ND=4608" while H was 2560.
+    void derive_xclbin_dims() {
+        if (NH > 0 && NKV > 0) GQA = NH / NKV;
+        if (NH > 0 && NKV > 0) { while (AW > 1 && (NH % AW != 0 || NKV % AW != 0)) AW--; }
+        WQH  = AW > 0 ? NH / AW : NH;
+        WKVH = AW > 0 ? NKV / AW : NKV;
+        qkv_k_offset = NH * HD;
+        qkv_v_offset = NH * HD + NKV * HD;
+        qkv_total   = NH * HD + 2 * NKV * HD;
+        xclbin_qkv_k = pad128(H);
+        xclbin_qkv_n = pad128(qkv_total);
+        xclbin_o_k   = pad128(NH * HD);
+        xclbin_o_n   = pad128(H);
+        if (gu_split) {
+            xclbin_g_k = pad128(H); xclbin_g_n = pad128(IM);
+            xclbin_u_k = pad128(H); xclbin_u_n = pad128(IM);
+        } else {
+            xclbin_gu_k = pad128(H); xclbin_gu_n = pad128(IM * 2);
+        }
+        xclbin_d_k = pad128(IM);
+        xclbin_d_n = pad128(H);
+    }
+
 };
 
 // Find a JSON key and extract shape[0] + data_offsets[0]
@@ -191,6 +223,53 @@ static int get_top_int(const char* js, size_t jl, const char* field) {
     return 0;
 }
 
+// Cols per tile from a tensor's bytes_per_tile (shape[1]).
+//   INT4: 0.625 B/elem * 32 rows = 20 B/col -> cpt = bpt/20 (5120 -> 256, 1280 -> 64)
+//   Q8_0: 8704 B = 512 B scales + 256 cols * 32 rows * 1 B  -> 256
+//   bpt==0 (absent) -> 256 (the historical constant; models with narrower tiles carry the width).
+static int cols_per_tile_from_bytes(int bpt) {
+    if (bpt == 8704) return 256;
+    if (bpt > 0) return bpt / 20;
+    return 256;
+}
+
+// Read "rope_theta" from <model_dir>/config.json. The q4nx JSON header carries no
+// RoPE metadata and the tag heuristics below only cover a few families, so the
+// model's own config is the authority when present. Returns NAN if absent.
+inline float read_config_rope_theta(const std::string& model_dir) {
+    const std::string p = model_dir + "/config.json";
+    FILE* f = fopen(p.c_str(), "rb");
+    if (!f) return NAN;
+    std::string s;
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
+    fclose(f);
+    const char* key = "\"rope_theta\"";
+    size_t i = s.find(key);
+    if (i == std::string::npos) return NAN;
+    i = s.find(':', i + strlen(key));
+    if (i == std::string::npos) return NAN;
+    return (float)strtod(s.c_str() + i + 1, nullptr);
+}
+
+inline float read_config_partial_rotary_factor(const std::string& model_dir) {
+    const std::string p = model_dir + "/config.json";
+    FILE* f = fopen(p.c_str(), "rb");
+    if (!f) return NAN;
+    std::string s;
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
+    fclose(f);
+    const char* key = "\"partial_rotary_factor\"";
+    size_t i = s.find(key);
+    if (i == std::string::npos) return NAN;
+    i = s.find(':', i + strlen(key));
+    if (i == std::string::npos) return NAN;
+    return (float)strtod(s.c_str() + i + 1, nullptr);
+}
+
 // Parse Q4NX JSON header and derive ModelConfig
 inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_tag) {
     ModelConfig cfg;
@@ -202,11 +281,22 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     if (strstr(cfg.model_tag.c_str(), "llama") || strstr(cfg.model_tag.c_str(), "qwen2") ||
         strstr(cfg.model_tag.c_str(), "nanbeige"))
         cfg.rope_theta = 500000.0f;
+    // Qwen3.6 (and the 35B-A3B MoE) train at rope_theta 1e7, not the 1e6
+    // default (config.json: "rope_theta": 10000000).
+    if (strstr(cfg.model_tag.c_str(), "qwen3_6") || strstr(cfg.model_tag.c_str(), "qwen3.6"))
+        cfg.rope_theta = 10000000.0f;
 
     // Extract model_dir from path
     cfg.model_dir = model_path;
     auto slash = cfg.model_dir.rfind('/');
     if (slash != std::string::npos) cfg.model_dir = cfg.model_dir.substr(0, slash);
+
+    // Prefer the model's own config.json rope_theta. The tag heuristics above are
+    // wrong for families they do not name: Nanbeige4.1-3B is tagged "nanbeige" and
+    // gets 5e5 here, but its config.json says rope_theta = 7e7 — a 140x error that
+    // corrupts every RoPE position (boot 1214 vs the reference 1033).
+    if (const float th_cfg = read_config_rope_theta(cfg.model_dir); th_cfg == th_cfg && th_cfg > 0.0f)
+        cfg.rope_theta = th_cfg;
     
     int fd = open(model_path, O_RDONLY);
     if (fd < 0) { fprintf(stderr, "[ModelConfig] Cannot open %s\n", model_path); return cfg; }
@@ -220,6 +310,18 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     memcpy(&hdr_size, md, 8);
     const char* js = (const char*)(md + 8);
     size_t jl = (size_t)hdr_size;
+
+    // 4736-byte "I8" dense-row tiles (Qwen3.5/3.6) — the 3-D shape's last dim
+    // is the byte-per-tile (shape[2]). Detected here (needs only the manifest),
+    // NOT inside the H>0 block: tied-embedding models (Qwen3.5-4B) have no
+    // embed_tokens, so H is still 0 at that point and the gate skipped this.
+    {
+        int q_bpt3 = get_shape_dim(js, jl, "model.layers.0.self_attn.q_proj.weight", 2);
+        if (q_bpt3 == 0) q_bpt3 = get_shape_dim(js, jl, "model.layer.0.self_attn.q_proj.weight", 2);
+        if (q_bpt3 == 0) q_bpt3 = get_shape_dim(js, jl, "model.layers.0.linear_attn.qkv_proj.weight", 2);
+        if (q_bpt3 == 0) q_bpt3 = get_shape_dim(js, jl, "model.layer.0.linear_attn.qkv_proj.weight", 2);
+        cfg.has_i8_4736 = (q_bpt3 == 4736);
+    }
     
     // Step 1: Get H and NV from embed_tokens
     // embed_tokens shape = [NV, H] in the JSON (logical dims, not tiles)
@@ -267,6 +369,16 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
         }
         return off;
     };
+    // bytes_per_tile (shape[1]) for a weight — 0 if absent. The tile COLUMN count is
+    // derived from this (INT4: bpt/20), not assumed to be 256; Gemma3-1B's 1280-byte
+    // tiles are 64 columns wide and the old ceil(H/256) derivation breaks on it.
+    auto bpt_of = [&](const char* base) -> int {
+        char key[256];
+        snprintf(key, sizeof(key), "model.layers.0.%s", base);
+        int v = get_shape_dim(js, jl, key, 1);
+        if (v == 0) { snprintf(key, sizeof(key), "model.layer.0.%s", base); v = get_shape_dim(js, jl, key, 1); }
+        return v;
+    };
     int q_tr = 0, k_tr = 0, o_tr = 0, g_tr = 0, d_tr = 0;
     uint64_t q_off = ti("self_attn.q_proj.weight", &q_tr);
     // Fallback: fused QKV projection (Phi-style models use qkv_proj)
@@ -300,7 +412,10 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     // tile_rows_o = ceil(H/32) * ceil(NH*HD/256)
     
     if (cfg.H > 0 && q_tr > 0) {
-        int A = (cfg.H + 255) / 256;  // ceil(H/256) = n_tile_cols for q_proj input
+        int q_bpt = bpt_of("self_attn.q_proj.weight");
+        if (q_bpt == 0) q_bpt = bpt_of("self_attn.qkv_proj.weight");
+        cfg.cpt = cols_per_tile_from_bytes(q_bpt);
+        int A = (cfg.H + cfg.cpt - 1) / cfg.cpt;  // n_tile_cols for q_proj input (in_features = H)
         if (A > 0) {
             int tile_rows_q = q_tr / A;  // ceil(NH*HD/32)
             if (tile_rows_q > 0) {
@@ -330,7 +445,9 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     
     // NKV from k_proj
     if (cfg.H > 0 && k_tr > 0) {
-        int A = (cfg.H + 255) / 256;
+        int k_cpt = cols_per_tile_from_bytes(bpt_of("self_attn.k_proj.weight"));
+        if (k_cpt <= 0) k_cpt = cfg.cpt;
+        int A = (cfg.H + k_cpt - 1) / k_cpt;
         if (A > 0) {
             int tile_rows_k = k_tr / A;
             if (tile_rows_k > 0) {
@@ -342,7 +459,14 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     
     // IM from gate_proj
     if (cfg.H > 0 && g_tr > 0) {
-        int A = (cfg.H + 255) / 256;
+        int g_bpt = bpt_of("mlp.gate_proj.weight");
+        if (g_bpt == 0) g_bpt = bpt_of("mlp.up_proj.weight");
+        int g_cpt = cols_per_tile_from_bytes(g_bpt);
+        if (g_cpt <= 0) g_cpt = cfg.cpt;
+        int A = (cfg.H + g_cpt - 1) / g_cpt;
+        if (getenv("NPU_DEBUG_IM"))
+            fprintf(stderr,"[IM] g_tr=%d g_bpt=%d g_cpt=%d H=%d A=%d -> IM would be %d\n",
+                    g_tr, g_bpt, g_cpt, cfg.H, A, A > 0 ? (g_tr / A) * 32 : 0);
         if (A > 0) {
             int tile_rows_g = g_tr / A;
             if (tile_rows_g > 0) {

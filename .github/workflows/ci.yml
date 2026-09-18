@@ -29,7 +29,7 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build build-essential python3 python3-venv ccache \
+          sudo apt-get install -y -qq cmake ninja-build build-essential python3 python3-venv \
             libcurl4-openssl-dev libzstd-dev libwebsockets-dev \
             libvulkan-dev glslc uuid-dev libdrm-dev spirv-headers  # zinc_cpp (Vulkan) + lockfile (-luuid) + lemonade amdxdna (libdrm) + llama.cpp ggml-vulkan (SPIRV)
           # XRT (Xilinx Runtime) — backend_fused.cpp/backend_fused_npu.cpp need
@@ -45,32 +45,6 @@ jobs:
         with:
           path: /opt/rocm-therock
           key: rocm-therock-${{ runner.os }}-${{ steps.rocm-week.outputs.week }}
-      # ccache for the two build steps below. Measured on run 35292288821: this job is
-      # 15.8 min, of which "Build llama.cpp ggml-vulkan libs" is 3.9 and "CMake configure
-      # + build" is 9.2. Every other step is under a minute, and the TheRock cache above
-      # already HITS (0.5 min restore, 0.0 min install), so the remaining cost is
-      # compilation - re-done from scratch for every speculative merge-queue build. The
-      # key is per-run with a restore-key so the newest cache wins; caches written on the
-      # default branch are visible to the queue's ephemeral refs, the same mechanism the
-      # TheRock cache already relies on.
-      - name: ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: ccache-${{ runner.os }}-
-      - name: Configure ccache
-        run: |
-          # 1 GB keeps this inside the repo's cache budget beside TheRock. The hit rate
-          # is printed at the end of each build, so a cache that stops helping shows up
-          # in the log instead of being assumed.
-          ccache --max-size=1G
-          ccache --zero-stats
-          ccache --version | head -1
-          # Persist for the build steps: compressed entries are what keep this inside
-          # the repo's 10 GB cache budget beside TheRock.
-          echo "CCACHE_COMPRESS=1" >> "$GITHUB_ENV"
-
       - name: Install TheRock ROCm (nightly, native gfx1151)
         if: steps.cache-rocm.outputs.cache-hit != 'true'
         run: |
@@ -93,11 +67,9 @@ jobs:
           sed -i '/llama-onnx\.cpp/d' src/CMakeLists.txt
           cmake -B build -G Ninja -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON \
             -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
-            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF
           cmake --build build -j8 --target ggml-vulkan llama llama-common
           ls -la build/ggml/src/ggml-vulkan/libggml-vulkan.a build/src/libllama.a
-          ccache --show-stats | sed -n '1,12p' || echo "(ccache stats unavailable)"
       - name: Verify CMakeLists references resolve
         run: |
           set -e
@@ -173,9 +145,7 @@ jobs:
         run: |
           if [ -x /opt/rocm-therock/bin/amdclang++ ]; then
             echo "TheRock detected — full cmake configure + build."
-            cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_HIP_COMPILER_LAUNCHER=ccache
+            cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
             # Build the server AND every test_* target so a dropped source or a
             # compile break fails CI (issue #236).
             # Also build all new C++ tools to catch compile errors.
@@ -200,9 +170,6 @@ jobs:
               exit 1
             fi
           fi
-          # Printed on both paths: the hit rate is the evidence that this cache does
-          # something, and it is the number this change is judged on.
-          ccache --show-stats | sed -n '1,12p' || echo "(ccache stats unavailable)"
       - name: CLI entry points reachable (built binary)
         run: |
           # The static list checks live in Testing/dispatch_selfcheck.py, in the
@@ -227,7 +194,15 @@ jobs:
             echo "No build/ directory (ROCm unavailable on this runner) - skipping host ctest."
           fi
       - name: ShellCheck
-        uses: ludeeus/action-shellcheck@2.0.0
+        # Pinned to a commit, like every other action in this repo: #987 (closed
+        # 2026-07-26) is the audit that removed the mutable tags, and this usage
+        # arrived after it — added by #1756 on 08-21 — as the only remaining tag pin
+        # among 56 `uses:` lines across the 34 workflows. A third-party tag can be
+        # force-pushed to different code, and this step runs in a REQUIRED job
+        # (`C++ (cmake configure + build)`), so the code it downloads executes under
+        # the ruleset's gate. 2.0.0 resolved to this commit when the step last ran
+        # (the download line in the job log prints the same SHA).
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38  # 2.0.0
         with:
           scandir: '.'
           severity: warning
@@ -246,6 +221,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Needed by the no-new-diagnostics step below: it compares each changed file
+          # against the same file at the merge base, and a depth-1 clone has neither the
+          # base commit nor the ancestry to compute one. 554 commits, so this is cheap.
+          fetch-depth: 0
       # The `| head -20` below discarded the xargs status (the default shell here is
       # `bash -e {0}`, without pipefail, so a pipeline reports head's status), which
       # meant this step could never fail regardless of its label — a latent trap for
@@ -262,11 +242,62 @@ jobs:
           # formatting failure would read as a green step. Assigned in a command
           # substitution with `|| rc=$?` so `set -e` does not abort before the cap.
           rc=0
-          out=$(find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' | \
-            grep -v build/ | grep -v _deps/ | grep -v '.git/' | \
-            xargs clang-format --dry-run --Werror 2>&1) || rc=$?
+          # Scope: the exclusions the sibling lint job now declares
+          # (`ignore_paths: build _deps third_party`). Without them this step lints
+          # third_party/, which was 62,694 of the 236,340 diagnostics this tree
+          # reported when the exclusions were added - 27% of the output it asks a
+          # reader to interpret.
+          # Current figure, measured rather than carried over: run 35305021462 (2026-09-18
+          # 03:56Z, clang-format 18.1.3) reports 184,118 diagnostics in 740 of the 744
+          # first-party files this step's find/grep selects. That 740-of-744 coverage is
+          # the number #2486's decision turns on: making this step blocking reformats
+          # essentially every file rather than tidying a few, so the two figures above are
+          # history and should not be quoted as the size of the current work.
+          # `packaging/` is deliberately NOT excluded: #2491 established it is
+          # first-party (packaging/binary/server.cpp), not vendored, and removed it
+          # from the other job for exactly that reason.
+          # -print0/-0: a path containing a space used to split into two arguments.
+          find . \( -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' \) -print0 \
+            | grep -zvE '/(build|_deps|third_party|\.git)/' > /tmp/clang-format.files
+          considered=$(tr -cd '\0' < /tmp/clang-format.files | wc -c)
+          out=$(xargs -0 clang-format --dry-run --Werror < /tmp/clang-format.files 2>&1) || rc=$?
           printf '%s\n' "$out" | head -20
+          # A count, so this informational step is worth reading: #2486's decision is
+          # between gating the diff and reformatting the tree, and the size of the
+          # second is this number.
+          diags=$(printf '%s\n' "$out" | grep -cE '^[^:]+:[0-9]+:[0-9]+: (warning|error):' || true)
+          files=$(printf '%s\n' "$out" | grep -oE '^[^:]+:[0-9]+:[0-9]+:' | cut -d: -f1 | sort -u | wc -l)
+          echo "clang-format: $diags diagnostic(s) in $files of $considered file(s) - $(clang-format --version)"
+          echo "::notice::clang-format: $diags diagnostics in $files of $considered files (informational; see #2486)"
           exit "$rc"
+
+      # The gate #2486 needs, and the reason the sweep above can never be it: with
+      # 184,118 diagnostics in 740 of 744 files, "fail on any diagnostic" is either a
+      # tree-wide reformat or nothing, and plain diff-gating fails any touched file that
+      # already had violations — it would have blocked #2554, a comment-only change.
+      # This compares each file the change touches against the same file at the MERGE
+      # BASE and fails only on an INCREASE, so it is able to fail without making the
+      # existing backlog every author's problem on every edit.
+      #
+      # Still installed behind `continue-on-error` on purpose: whether it becomes
+      # blocking is the open decision in #2486, and the first runs are what that
+      # decision needs. Deleting the label is the whole change if the answer is yes.
+      - name: 'clang-format: no new diagnostics (informational)'
+        continue-on-error: true
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -n "$base" ] || base="${{ github.event.merge_group.base_sha }}"
+          [ -n "$base" ] || base="${{ github.event.before }}"
+          # An unknown or all-zero base means there is nothing sound to compare against;
+          # say so instead of inventing a comparison that could fail for the wrong reason.
+          case "$base" in
+            ""|0000000000000000000000000000000000000000)
+              echo "no base commit for this event (${{ github.event_name }}) — skipping the comparison"
+              exit 0 ;;
+          esac
+          if mb=$(git merge-base "$base" HEAD 2>/dev/null); then base="$mb"; fi
+          echo "comparing against $(git rev-parse --short "$base") (merge base with ${{ github.event_name }} base)"
+          bash Testing/lint-new-diagnostics.sh "$base"
 
   version:
     name: Version consistency
@@ -293,6 +324,44 @@ jobs:
             exit 1
           fi
           echo "OK: $(git ls-files -s -- '*.sh' | wc -l) tracked .sh files, all mode 100755"
+
+      - name: Required check names still exist
+        # A required check is matched by NAME in ruleset 19117606. Renaming one of these
+        # jobs detaches the gate silently: the ruleset waits for a context that never
+        # reports, and a PR merges with that gate absent rather than failing. The job name
+        # above is kept as "Version consistency" for exactly this reason, and this step is
+        # what notices when someone renames one of the others.
+        #
+        # Stated blind spot, so it is not mistaken for coverage: if THIS job were renamed,
+        # the check that would catch it would not run either. The other three are covered.
+        run: |
+          set -euo pipefail
+          required=(
+            "C++ (cmake configure + build)"
+            "Lint (clang-format)"
+            "Scope Guard"
+            "Version consistency"
+          )
+          # `|| true`: a glob that matches nothing must reach the guard below, which names
+          # the cause. Letting grep fail here would exit non-zero for an unnamed reason —
+          # still loud, but it would read as a broken check rather than an empty corpus.
+          names=$( { grep -rhoE '^\s{4}name:\s*.+$' .github/workflows/*.yml 2>/dev/null || true; } \
+                  | sed 's/^\s*name:\s*//' | sed 's/[[:space:]]*$//' | sort -u)
+          if [ -z "$names" ]; then
+            echo "::error::no job names parsed from .github/workflows — this check would be vacuous"
+            exit 1
+          fi
+          missing=""
+          for r in "${required[@]}"; do
+            printf '%s\n' "$names" | grep -Fxq "$r" || missing="$missing
+            $r"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::required check name(s) from ruleset 19117606 that no workflow job declares:$missing"
+            echo "::error::a renamed job detaches its required gate silently. Keep the name, or update the ruleset in the same change."
+            exit 1
+          fi
+          echo "required check names present: ${#required[@]} of $(printf '%s\n' "$names" | grep -c .) job names in $(ls .github/workflows/*.yml | wc -l) workflows"
 
   metal:
     name: Metal backend (macOS build + smoke gate)

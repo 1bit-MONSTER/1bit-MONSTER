@@ -6,11 +6,13 @@
 #include <cstring>
 #include <cmath>
 #include <ctime>
+#include <algorithm>
 #include <filesystem>
 #include <vector>
 #include <chrono>
 #include <exception>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -24,11 +26,34 @@
 #include <aiebu/aiebu_assembler.h>
 #include <omp.h>
 #include "model_config.h"
-#include "npu_paths.h"
+#include "npu_paths.h"           // npu_xclbin_dir() — env-if-present, else repo/install layout
+#include "npu_runlist_bridge.h"  // NPU_RUNLIST=1 whole-layer per-ctx ELF decode (#2080/#2150)
 #include "npu_engine_i8ctx_inc.h"
 #include "npu_engine_hybrid_flm.h"
 #include "zaya_moe_cpu.h"           // host_h2_amax_qn_s (#1934 fused int4 GU->SiLU)
 #include "silu_quant.h"             // silu_lut / silu_quant_i8 (#1934)
+#include "npu_attn_ctx.h"           // AttnCtx: generated family attention (Nanbeige nh20/nkv4/hd128)
+
+// NPU_ATTN_CTX=1 — generated family attention through the AttnCtx driver (the
+// same one zaya_decode.cpp uses). Constructed EARLY (before the bf16 contexts)
+// so the hw_context/xclbin registration does not perturb an in-flight prefill;
+// the attention block below only *uses* it.
+static AttnCtx g_ac;
+static bool g_ac_tried = false, g_ac_ready = false;
+static bool ac_ctx_init(xrt::device& d, int nq, int nkv, int hd) {
+    if (g_ac_tried) return g_ac_ready;
+    g_ac_tried = true;
+    const char* ax = getenv("NPU_ATTN_XCLBIN") ? getenv("NPU_ATTN_XCLBIN")
+                     : "engine/npu/xclbins/attn_gen_2048_nh20_hd128.xclbin";
+    const char* ai = getenv("NPU_ATTN_INSTS") ? getenv("NPU_ATTN_INSTS")
+                     : "engine/npu/xclbins/attn_gen_2048_nh20_hd128_insts.txt";
+    if (getenv("NPU_ATTN_MAX_SEQ") && atoi(getenv("NPU_ATTN_MAX_SEQ")) > 0)
+        g_ac.MAX_SEQ = atoi(getenv("NPU_ATTN_MAX_SEQ"));
+    g_ac_ready = g_ac.init(d, ax, ai, nq, nkv, hd);
+    fprintf(stderr, "\n[NPU_ATTN_CTX] EARLY init %s (nh=%d nkv=%d hd=%d xclbin=%s)\n",
+            g_ac_ready ? "OK" : "FAILED", nq, nkv, hd, ax);
+    return g_ac_ready;
+}
 
 // Forward declarations: INT8 NPU instruction generators from gemm_npu_instructions.cpp
 void gemm_generate_sequence_i8(
@@ -63,9 +88,59 @@ void gemm_generate_sequence_i8_split(
 // FLM dependency removed — pre-compiled instructions loaded from file.
 #include <sys/wait.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
-static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
-static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
-static inline uint16_t f32_to_bf16(float f){uint32_t b;memcpy(&b,&f,4);return (uint16_t)((b+0x7FFF+((b>>16)&1))>>16);}
+extern "C" float* dequant_i8_to_float_geom(const uint8_t*,int,int,int,int*,int*);
+extern "C" float* dequant_i8_group_signed_to_float_ex(const uint8_t*,int,int,int*,int*);
+// q4nx int4 has THREE conventions, differing on two INDEPENDENT axes:
+//   dequant_i8_to_float_ex          scales group-major (group*32+row), UNSIGNED nibbles
+//   dequant_i8_signed_to_float_ex   scales row-major   (row*8+group),   SIGNED nibbles
+//   dequant_i8_group_signed_...     scales group-major,                 SIGNED nibbles
+// The AMD *-NPU2 bundles are group+UNSIGNED except LFM2-1.2B-NPU2, which is
+// group+SIGNED. The wrong pairing is SILENT -- it still yields a plausible weight
+// distribution, so the model runs and answers confidently with the WRONG token -- and
+// the convention is NOT recorded in the q4nx header (a flat tensor-name -> offset dict),
+// so it cannot be read from the file. It has to be selected per family.
+static bool g_q4_group_signed = false;   // true => LFM2-NPU2 (two's-complement nibbles)
+static inline float* q4_dequant(const uint8_t* d, int rows, int inf, int* or_, int* oc) {
+    return g_q4_group_signed ? dequant_i8_group_signed_to_float_ex(d, rows, inf, or_, oc)
+                             : dequant_i8_to_float_ex(d, rows, inf, or_, oc);
+}
+// Geometry-aware variant: cols_per_tile comes from the BUNDLE's row width (row_bytes/20). 5120 B
+// rows give 256, Gemma3-1B's 1280 B rows give 64 -- and the quantizer only writes tiles that
+// divide K, so with the right width both the column AND row counts divide evenly (1152/64 = 18,
+// 576/18 = 32). cols_per_tile <= 0 falls back to the 256 constant.
+static inline float* q4_dequant_geom(const uint8_t* d, int rows, int inf, int cpt, int* or_, int* oc) {
+    return g_q4_group_signed ? dequant_i8_group_signed_to_float_ex(d, rows, inf, or_, oc)
+                             : dequant_i8_to_float_geom(d, rows, inf, cpt, or_, oc);
+}
+// bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
+extern "C" void bf16mm_dump_w(int idx, const char* path);
+extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
+extern "C" void bf16mm_set_attn_qout(int qout);
+extern "C" void bf16mm_set_attn_hd(int hd);
+extern "C" void bf16mm_set_attn_kv_region(uint32_t region);
+extern "C" void bf16mm_set_attn_tokens(int n);
+extern "C" void bf16mm_set_attn_rows(int n);
+extern "C" int flm_prefill_init(const char* model_dir, const char* family);
+extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* prefill_ms);
+extern "C" int flm_decode_run(int token, int* next_token, double* decode_ms);
+extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32_t D_out, uint32_t woff_bytes, size_t layer_bo_bytes);
+extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff_elements);
+extern "C" void bf16mm_gemm_launch(int W_idx, uint32_t K, uint32_t N, uint32_t woff, int batch, const uint16_t* A);
+extern "C" void bf16mm_gemm_wait(int batch, uint16_t* C);
+extern "C" void bf16mm_dequant(uint16_t* wout, const uint8_t* q4nx, uint32_t D_in, uint32_t D_out, uint32_t q4nx_weight_offset);
+extern "C" void bf16mm_dequant_mode(uint16_t* wout, const uint8_t* q4nx, uint32_t D_in, uint32_t D_out, uint32_t q4nx_weight_offset, int mode);
+extern "C" int bf16mm_upload_w(const uint16_t* w, uint32_t D_in, uint32_t D_out);
+extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);
+static inline float bf16f(uint16_t v){uint32_t b=v<<16;return __builtin_bit_cast(float,b);}
+// Branch-free NaN/Inf->0 bf16 decode (the branch version blocked SIMD vectorization
+// of the dense-prefill conversion loops).
+static inline float bf16g(uint16_t v){
+    uint32_t b=(uint32_t)v<<16;
+    uint32_t ni=(b&0x7F800000u)==0x7F800000u?0xFFFFFFFFu:0u;
+    b&=~ni;
+    return __builtin_bit_cast(float,b);
+}
+static inline uint16_t f32_to_bf16(float f){uint32_t b=__builtin_bit_cast(uint32_t,f);return (uint16_t)((b+0x7FFF+((b>>16)&1))>>16);}
 // bfp16ebs8: 8 f32 -> 1 shared exponent byte + 8 x 7-bit mantissa bytes (9B/8vals)
 static inline void f32_to_bfp16ebs8(const float* in, int n, uint8_t* out){
     for(int b=0;b<n/8;b++){
@@ -101,6 +176,7 @@ static void shuffle_B_atb(const float* in, int K, int N, int l1k, int l1n, float
         }
 }
 extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
+extern "C" float* dequant_i8_4736_to_float(const uint8_t*,int,int,int*,int*);
 
 // ── Q4NX tile dequant matching the 1BP writer (gguf_to_onebp.cpp) ──
 // Tile = [32 rows × 256 cols], 5120 B/row: tr*grps*2 B bf16 scales + same
@@ -245,9 +321,14 @@ static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];
     for(int i=0;i<n;i++){float d=sc[i]-mx;if(d>80)d=80;else if(d<-80)d=-80;sc[i]=expf(d);s+=sc[i];}
     if(s<=0){float iv=1.0f/n;for(int i=0;i<n;i++)sc[i]=iv;return;}
     float is=1.0f/(float)s;for(int i=0;i<n;i++)sc[i]*=is;}
-static inline void rn_c(float*x,const float*w,int n){cn(x,n);double ss=0;
-    for(int i=0;i<n;i++)if(std::isfinite(x[i]))ss+=(double)x[i]*x[i];
-    float ir=1.0f/sqrtf((float)(ss/n)+EPS);for(int i=0;i<n;i++)x[i]=std::isfinite(x[i])?x[i]*ir*w[i]:0.0f;}
+static inline void rn_c(float*x,const float*w,int n){cn(x,n);float ss=0;
+    for(int i=0;i<n;i++)ss+=x[i]*x[i];
+    float ir=1.0f/sqrtf(ss/n+EPS);for(int i=0;i<n;i++)x[i]=x[i]*ir*w[i];}
+// RMSNorm + f32->bf16 fused: write the scaled norm straight to bf16 out (skip
+// the f32 write + re-read). x is only NaN-clamped in place (overwritten later).
+static inline void rn_bf16(uint16_t*out,float*x,const float*w,int n){cn(x,n);float ss=0;
+    for(int i=0;i<n;i++)ss+=x[i]*x[i];
+    float ir=1.0f/sqrtf(ss/n+EPS);for(int i=0;i<n;i++)out[i]=f32_to_bf16(x[i]*ir*w[i]);}
 
 // ── Cross-layer pipeline (roadmap step 3): fused D-output → next-QKV-input ──
 // Consumes the D GEMM output of layer l (Cm, int32 legacy / int16 FLM) and
@@ -337,7 +418,42 @@ static inline void ra2(float*x, int p, int rope_dim, int slot = 0) {
         x[d]=a*c-b*s; x[d+hd2]=b*c+a*s;
     }
 }
+// Host-side thread count for the prefill/decode math. Was hardcoded to 8.
+// MEASURED (256-token bf16 prefill, token parity held at boot=1614 throughout):
+//   threads  8 -> prefill 361ms (conv+other 358)   <-- best, now the default
+//           16 -> 379ms (375)
+//           24 -> 427ms (422)
+//           32 -> 973ms (969)
+// The host math is memory-bandwidth-bound, so more threads make it WORSE.
+// The lever is reducing host work (kernel fusion), not adding threads.
+// NPU_HOST_THREADS overrides for experiments.
+// Host-math worker count. The optimum depends on BOTH prompt length and model
+// size (measured on this box, paired A/B):
+//   npt <= 256 : 8 threads (0.6B @256 324-328 ms vs 16 thr 336 vs 24 thr 357)
+//   npt >  256 : 16 for small models, 24 for large ones (paired, 3 pairs each:
+//                4B @1024 16 thr 2183/2191/2218 ms vs 24 thr 2106/2142/2163 ms
+//                -> 24 wins every pair; 0.6B @1024 16 thr 659/654/662 vs
+//                24 thr 694/643/701 -> 16 wins; 1.7B @1024 is a tie.
+//                28+ threads degrades, 32 collapses (4B 5377 ms).)
+// The bf16 prefill sets g_host_threads_default accordingly; NPU_HOST_THREADS wins.
+static int g_host_threads_default = 8;
+static inline int host_threads(){
+    if (const char* e = getenv("NPU_HOST_THREADS")) { const int v = atoi(e); if (v > 0) return v; }
+    return g_host_threads_default;
+}
 static inline float silu_f(float x){return x/(1.0f+expf(-x));}
+// Fast sigmoid via a Padé tanh rational (sigmoid = 0.5*(1+tanh(x/2))). Max
+// abs err 7.5e-6 over [-8,8] — far under bf16 precision. Vectorizable (no
+// LUT gather, no libm call), replaces the per-element expf in the dense
+// bf16-prefill GU SiLU (22M+ expf per 256-token batch).
+static inline float sigmoid_fast(float x){
+    float y=0.5f*x; float ax=y<0.0f?-y:y;
+    if(ax>4.0f) return y>0.0f?1.0f:0.0f;
+    float y2=y*y;
+    float num=y*(135135.0f+17325.0f*y2+378.0f*y2*y2+y2*y2*y2);
+    float den=135135.0f+62370.0f*y2+3150.0f*y2*y2+28.0f*y2*y2*y2;
+    return 0.5f+0.5f*(num/den);
+}
 static inline float softplus_f(float x){return x>20.0f?x:log1pf(expf(x));}
 // Safety net: if glibc's malloc detects heap corruption (free(): invalid size)
 // SIGABRT handler: prints diagnostic, then re-raises for default core dump
@@ -490,18 +606,22 @@ static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);
 // v12: OpenMP attention — parallelize across heads, with optional causal mask
 static inline void attn_omp(float*qo,float*at,int cl,const float*kv_k,const float*kv_v,int NH,int NKV,int HD,int GQA,int max_pos=-1){
     if(max_pos<0)max_pos=cl;
-    #pragma omp parallel for
-    for(int hh=0;hh<NH;hh++){int kvh=hh/GQA;
-        std::vector<float> scores(cl);float mx=-1e30f;
-        for(int p=0;p<cl;p++){if(p>=max_pos){scores[p]=-1e30f;continue;}
-            double s=0;int qoff=hh*HD,koff=p*NKV*HD+kvh*HD;
-            #pragma omp simd reduction(+:s)
-            for(int d=0;d<HD;d++)s+=(double)qo[qoff+d]*kv_k[koff+d];scores[p]=(float)(s/sqrtf((float)HD));if(scores[p]>mx)mx=scores[p];}
-        double sw=0;for(int p=0;p<cl;p++){scores[p]=expf(scores[p]-mx);sw+=scores[p];}
-        float isw=sw>0?1.0f/(float)sw:1.0f/cl;
-        for(int d=0;d<HD;d++){float acc=0;int aoff=hh*HD+d;
-            #pragma omp simd reduction(+:acc)
-            for(int p=0;p<cl;p++)acc+=scores[p]*kv_v[p*NKV*HD+kvh*HD+d];at[aoff]=acc*isw;}}
+    #pragma omp parallel
+    {
+        std::vector<float> scores(cl);   // one scratch buffer per THREAD (not per head)
+        #pragma omp for
+        for(int hh=0;hh<NH;hh++){int kvh=hh/GQA;
+            float mx=-1e30f;
+            for(int p=0;p<max_pos;p++){
+                double s=0;int qoff=hh*HD,koff=p*NKV*HD+kvh*HD;
+                #pragma omp simd reduction(+:s)
+                for(int d=0;d<HD;d++)s+=(double)qo[qoff+d]*kv_k[koff+d];scores[p]=(float)(s/sqrtf((float)HD));if(scores[p]>mx)mx=scores[p];}
+            double sw=0;for(int p=0;p<max_pos;p++){scores[p]=expf(scores[p]-mx);sw+=scores[p];}
+            float isw=sw>0?1.0f/(float)sw:1.0f/cl;
+            for(int d=0;d<HD;d++){float acc=0;int aoff=hh*HD+d;
+                #pragma omp simd reduction(+:acc)
+                for(int p=0;p<max_pos;p++)acc+=scores[p]*kv_v[p*NKV*HD+kvh*HD+d];at[aoff]=acc*isw;}}
+    }
 }
 
 // v12: OpenMP LM head with f32 embeddings — top-K sampling
@@ -511,6 +631,10 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
     for(int n=0;n<NV;n++){double s=0;const float*e=&emb[(size_t)n*H];const float*h=hidden;
         #pragma omp simd reduction(+:s)
         for(int k=0;k<H;k++)s+=(double)h[k]*e[k];lg[n]=(float)s;if(lg[n]>mx)mx=lg[n];}
+    if (getenv("NPU_DUMP_LOGITS")) {
+        FILE* fl = fopen("/tmp/native_logits.txt", "wb");
+        if (fl) { for (int n = 0; n < NV; n++) fprintf(fl, "%d %.6g\n", n, lg[n]); fclose(fl); }
+    }
     double sum=0;
     #pragma omp parallel for reduction(+:sum)
     for(int n=0;n<NV;n++){float d=lg[n]-mx;if(d<-80)d=-80;lg[n]=expf(d);sum+=lg[n];}
@@ -528,6 +652,34 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
 int zaya_decode_main(int argc, char** argv);
 int main(int argc,char**argv){
     setvbuf(stdout,NULL,_IONBF,0);
+    // Exclusive device lock — repair for ERT_CMD_STATE_TIMEOUT.
+    // Concurrent hwctx submissions queue behind one another and can exceed the
+    // amdxdna driver TDR (timeout_in_sec), which tears the submission down with
+    // ERT_CMD_STATE_TIMEOUT. Serialise engine invocations unless opted out.
+    // Held for the life of the process (the fd is intentionally not closed).
+    if (!getenv("NPU_NO_DEVICE_LOCK")) {
+        const char* lk = getenv("NPU_DEVICE_LOCK");
+        if (!lk || !lk[0]) lk = "/tmp/1bit-npu-device.lock";
+        int lfd = open(lk, O_CREAT | O_RDWR, 0666);
+        if (lfd >= 0) {
+            if (flock(lfd, LOCK_EX | LOCK_NB) != 0) {
+                fprintf(stderr, "[npu] waiting for the exclusive device lock (%s)...\n", lk);
+                if (flock(lfd, LOCK_EX) != 0)
+                    fprintf(stderr, "[npu] device lock unavailable; continuing unlocked\n");
+                else
+                    fprintf(stderr, "[npu] device lock acquired\n");
+            }
+        }
+    }
+    // NPU_UNIFIED=1 means "bf16 prefill + runlist decode", and the unified
+    // session is initialised INSIDE the bf16 prefill block, so the flag cannot
+    // do anything on its own. Fold it into NPU_PREFILL_BF16 here, before anything
+    // reads either, so one flag means what it says — the combination used to
+    // require knowing to pass both, and passing only NPU_UNIFIED was silently a
+    // no-op (the runlist gate would take the runlist path and return first).
+    // An explicit NPU_PREFILL_BF16 setting is left alone.
+    if (getenv("NPU_UNIFIED") && atoi(getenv("NPU_UNIFIED")) == 1 && !getenv("NPU_PREFILL_BF16"))
+        setenv("NPU_PREFILL_BF16", "1", 0);
     // issue #1431: sampling was deterministic
     // NPU_SEED=<n> pins the RNG so e2e token comparisons are reproducible.
     const char* npu_seed = getenv("NPU_SEED");
@@ -605,9 +757,37 @@ int main(int argc,char**argv){
             cfg.HD = oh.head_dim; cfg.IM = oh.intermediate_size;
             cfg.NV = oh.vocab_size; cfg.GQA = cfg.NH / cfg.NKV;
             cfg.XM = 128; cfg.has_lm_head = true;
+            cfg.derive_xclbin_dims();
         } else
     #endif
         cfg = parse_q4nx_header(mp,model_tag.c_str());
+
+    // Fallback: models whose q4nx manifest lacks embed/self_attn tensors
+    // (e.g. LFM2's tied-embedding hybrid block/mamba) — read the config.json.
+    if (!cfg.valid()) {
+        std::string cj = cfg.model_dir + "/config.json";
+        FILE* cf = fopen(cj.c_str(), "rb");
+        if (cf) {
+            fseek(cf, 0, SEEK_END); long n = ftell(cf); fseek(cf, 0, SEEK_SET);
+            std::string js((size_t)n, '\0');
+            if (n > 0 && fread(&js[0], 1, n, cf) == (size_t)n) {
+                auto gi = [&](const char* k){ long v = 0; size_t kl = strlen(k);
+                    const char* p = js.c_str(); const char* e = p + n;
+                    while (p < e) { auto q = strstr(p, k); if (!q) break;
+                        if ((q == js.c_str() || *(q-1) == '"') && *(q+kl) == '"') {
+                            const char* vp = strchr(q + kl, ':'); if (vp) v = strtol(vp + 1, nullptr, 10); break; }
+                        p = q + kl; } return (int)v; };
+                cfg.H = gi("hidden_size"); cfg.NC = gi("num_hidden_layers");
+                cfg.NH = gi("num_attention_heads"); cfg.NKV = gi("num_key_value_heads");
+                cfg.HD = gi("head_dim"); cfg.IM = gi("intermediate_size"); cfg.NV = gi("vocab_size");
+                if (cfg.NKV > 0 && cfg.NH > 0) cfg.GQA = cfg.NH / cfg.NKV;
+                // This path sets H/NH/NKV/HD/IM but used to leave the xclbin GEMM dims at
+                // their zero defaults, so every I8Ctx was a zero-length BO. Derive them here.
+                cfg.derive_xclbin_dims();
+            }
+            fclose(cf);
+        }
+    }
 
     if(!cfg.valid()){fprintf(stderr,"ERR: invalid model config H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d\n",cfg.H,cfg.NC,cfg.NH,cfg.NKV,cfg.HD,cfg.IM,cfg.NV);return 1;}
     // Zaya (CCA attention + TQ1 MoE, alternating layers + running residual) is
@@ -628,9 +808,214 @@ int main(int argc,char**argv){
             }
         }
     }
+    // Set by the runlist gate below when it hands the run to the unified path on
+    // its own initiative (not because the user asked). Read at the unified
+    // session's init failure to fall back rather than abort.
+    bool unified_auto = false;
+    // NPU_RUNLIST=1: single-launch whole-layer per-ctx ELF decode for dense
+    // Qwen3-0.6B (28 layers, H=1024, vocab 151936, no MoE). The RuntimeLayerEngine
+    // path is byte-identical to the FastFlowLM runtime and runs ~71 tok/s vs the
+    // ~2 tok/s 112-launch split loop below; it is opt-in and the split path is
+    // the untouched fallback. (issue #2080/#2150)
+    // Dense Qwen3 (0.6B/1.7B/4B): default to the single-launch whole-layer
+    // per-ctx ELF path (RuntimeLayerEngine + xrt::runlist, byte-identical to
+    // FastFlowLM). NPU_RUNLIST=0 opts out to the 112-launch split path below.
+    // If the whole-layer path cannot initialize, fall back to the split path.
+    {
+        const char* rl = getenv("NPU_RUNLIST");
+        const bool dense_qwen3 = cfg.NV == 151936 && !cfg.has_moe &&
+            ((cfg.NC == 28 && cfg.H == 1024) || (cfg.NC == 28 && cfg.H == 2048) ||
+             (cfg.NC == 36 && cfg.H == 2560) || (cfg.NC == 36 && cfg.H == 4096));
+        // Also allow any non-MoE model when the caller has supplied a per-ctx ELF dir
+        // (NPU_LAYER_ELF_DIR). Two things make that safe now: the runlist resolves its model
+        // dir from the MODEL PATH rather than from H (b35f0914d), and gen_layer_elfs can
+        // generate the per-ctx ELFs for every family (dd6068041). Without an ELF dir the
+        // attempt fails cleanly (rc != 0) and execution falls through to exactly the paths
+        // below, so this is additive -- it exists so the four families whose prefill is wrong
+        // can finally be run against FLM's own kernels as a reference.
+        const char* elf_env = getenv("NPU_LAYER_ELF_DIR");
+        const bool runlist_eligible = dense_qwen3 ||
+            (!cfg.has_moe && elf_env && elf_env[0]);
+        // NPU_UNIFIED=1 asks for the bf16-prefill + runlist-decode COMBINATION,
+        // which is built further down (the bf16 block hands its final hidden and
+        // its KV to the runlist session and _exit()s from there). This block
+        // returns 0, so without the exception below the flag was silently
+        // ignored: `NPU_PREFILL_BF16=1 NPU_UNIFIED=1` alone ran the plain
+        // runlist path and never reached the unified decode. Measured cost of
+        // that shadowing, Qwen3-0.6B, same prompt and tokens: the unified
+        // prefill is 546 ms at npt=1024 and 1755 ms at npt=4095 against this
+        // block's 13783 ms and 70417 ms (25x / 40x), which is the whole reason
+        // the flag exists.
+        //
+        // The exception is deliberately narrow: the unified session is
+        // initialised INSIDE the bf16 prefill block, so NPU_UNIFIED without
+        // NPU_PREFILL_BF16 cannot work. Skipping this block for that
+        // combination would silently demote the runlist DECODE to the 112-launch
+        // split path, i.e. a flag typo would cost the fast decode too. So it is
+        // not honoured, and it says so rather than doing nothing.
+        const char* uni = getenv("NPU_UNIFIED");
+        const bool unified_requested = uni && atoi(uni) == 1;
+        // ---- automatic selection for dense Qwen3 -----------------------------
+        // The two halves of this engine are fast at different things, and the
+        // numbers are measured (Qwen3-0.6B, 2026-09-15): the bf16 prefill costs
+        // ~0.53 ms per prompt token against the runlist prefill's ~13.46 — it is
+        // one whole-layer forward PER TOKEN, which is why its TTFT is 25-40x
+        // FLM's — and the runlist decode is ~11.4 ms/token against the unified
+        // decode's ~13.8.
+        //
+        // Break-even, written out so the rule is checkable rather than a hunch:
+        //     npt*13.46 + ng*11.4   >   npt*0.53 + ng*13.8
+        // <=> npt*12.93           >   ng*2.4
+        // <=> ng                  <   5.4*npt
+        // So the combination wins for every prompt above a handful of tokens, and
+        // the ONLY case that favours the runlist path is a short prompt with a
+        // long generation. The bound used here is 4x rather than 5.4x, which keeps
+        // the margin on the side of the path whose decode is verified
+        // token-for-token against FLM (RESULTS-ctx2200-cliff / the tie analysis).
+        //
+        // An explicit NPU_RUNLIST or NPU_UNIFIED always wins over this.
+        auto count_ids = [](const char* path) -> int {
+            if (!path || !path[0] || strcmp(path, "-") == 0) return -1;  // stdin: cannot peek
+            FILE* f = fopen(path, "r");
+            if (!f) return -1;
+            int n = 0, t;
+            while (fscanf(f, "%d", &t) == 1) n++;
+            fclose(f);
+            return n;
+        };
+        const int npt_hint = count_ids(input_tok_file);
+        if (dense_qwen3 && !unified_requested && !rl && npt_hint > 0 && npt_hint * 4 > ng) {
+            // Set both, because the NPU_UNIFIED -> NPU_PREFILL_BF16 fold happens at
+            // the top of main and has already run by now.
+            setenv("NPU_UNIFIED", "1", 1);
+            setenv("NPU_PREFILL_BF16", "1", 1);
+            unified_auto = true;
+            fprintf(stderr, "[auto] dense Qwen3, npt=%d ng=%d: bf16 prefill + runlist decode "
+                            "(the runlist prefill is ~13.5 ms/prompt-token against ~0.5, and this "
+                            "prompt is long enough that the prefill dominates). Force the runlist "
+                            "path with NPU_RUNLIST=1.\n", npt_hint, ng);
+        }
+        const bool want_unified =
+            (unified_requested || unified_auto) && getenv("NPU_PREFILL_BF16") != nullptr;
+        // The bf16 prefill caps the prompt at NPU_PREFILL_MAX, defaulting to 256
+        // ("the historical 256"). Every non-runlist path below therefore answers
+        // from a TRUNCATED context unless the caller raises it -- so selecting the
+        // unified path has to carry the prompt length with it. Measured before
+        // this: `NPU_UNIFIED=1 ... ids1024.txt` ran `Prefill 256 [bf16]` and
+        // returned the 256-token answer for a 1024-token prompt, silently.
+        if (want_unified && !getenv("NPU_PREFILL_MAX") && npt_hint > 0) {
+            char pb[32];
+            snprintf(pb, sizeof pb, "%d", npt_hint);
+            setenv("NPU_PREFILL_MAX", pb, 0);
+            fprintf(stderr, "[unified] NPU_PREFILL_MAX defaulted to the prompt length (%d); the "
+                            "bf16 path caps at 256 otherwise and would answer from a truncated "
+                            "context\n", npt_hint);
+        }
+        if (unified_requested && !want_unified)
+            fprintf(stderr, "[unified] NPU_UNIFIED=1 needs NPU_PREFILL_BF16=1 (the unified "
+                            "session is initialised inside the bf16 prefill block) — ignoring "
+                            "it and using the runlist path\n");
+        if (runlist_eligible && !getenv("NPU_FLM_PREFILL") && !want_unified &&
+            (!rl || atoi(rl) != 0)) {
+            int rc = npu_runlist_decode(mp, ng, input_tok_file,
+                                        cfg.H, cfg.NC, cfg.NH, cfg.NKV, cfg.IM, cfg.NV);
+            if (rc == 0) return 0;
+            fprintf(stderr, "[runlist] whole-layer path failed (rc=%d); falling back to split path\n", rc);
+        }
+    }
     int H=cfg.H,NC=cfg.NC,NH=cfg.NH,NKV=cfg.NKV,HD=cfg.HD,IM=cfg.IM,NV=cfg.NV,GQA=cfg.GQA,XM=cfg.XM;
     fprintf(stderr,"=== NPU Engine Universal — %s ===\n",model_tag.c_str());
     fprintf(stderr,"H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GU_split=%d rope_theta=%.0f\n",H,NC,NH,NKV,HD,IM,NV,cfg.gu_split,cfg.rope_theta);
+
+    // ── TILE ALIGNMENT ──────────────────────────────────────────────
+    // The tile width is a property of the BUNDLE: a tile costs 0.625 bytes per element, so
+    //   cols_per_tile = (row_bytes / 0.625) / 32
+    // giving 256 for a 5120-byte row and 64 for Gemma3-1B's 1280-byte one. parse_q4nx_header now
+    // derives H/NH/NKV/IM from that width (cols_per_tile_from_bytes) and the dequant takes the
+    // width from the row (q4_dequant_geom), so an unaligned H is handled and this note fires.
+    //
+    // The refusal below is a last-resort safety net, not the Gemma3-1B case any more: its IM is
+    // now derived correctly (6912, from gate_proj [3888, 1280] -> 18 tiles across -> 216 x 32),
+    // and 6912 % 256 == 0, so the model passes. If a future model still derives an IM that is not
+    // a multiple of 256 the gate/up/down blocks would index out of bounds, so refuse instead of
+    // crashing: an unexplained SIGSEGV is worse than an explained "no".
+    {
+        const int q = NH * HD;
+        const bool tile_misaligned = (H % 256) || (IM % 256) || (q % 256);
+        if (tile_misaligned)
+            fprintf(stderr, "[dequant] unaligned dims H=%d IM=%d NH*HD=%d -- tile width taken from\n"
+                            "          the bundle's row size (row_bytes/20), not the 256 constant.\n",
+                    H, IM, q);
+        // Only IM is still a hard stop. H and NH*HD reach the dequant, which now derives its tile
+        // width from the bundle's row (H=1152 -> 64 cols -> 18 tiles, exact), whereas IM drives the
+        // gate/up/down GEMM geometry and is NOT geometry-covered. Gemma3-1B now derives IM=6912
+        // (27 x 256, aligned) from its mlp tensors, so it passes this.
+        if (IM % 256 != 0) {
+            fprintf(stderr,
+                "UNSUPPORTED: intermediate_size=%d is not a multiple of 256 and was DERIVED, so\n"
+                "  the gate/up/down blocks would index out of bounds. (H and NH*HD are handled by\n"
+                "  the row-derived tile width; IM is not.) Refusing here instead of crashing.\n", IM);
+            return 1;
+        }
+    }
+
+    // ===== NPU_FLM_PREFILL=1: drive FLM's real qwen3_npu::prefill for the
+    // prefill/TTFT measurement (architectural change — FLM's own prefill is
+    // byte-correct + fast; the hand-rolled bf16 reimplementation diverges at
+    // H>1024). Runs BEFORE the native weight loading so it needs no native
+    // xclbins. ====
+    if (getenv("NPU_FLM_PREFILL")) {
+        // model dir = parent of the model.q4nx path (mp); the MoE is the one
+        // exception (needs the v0.9.45-flm_version config dir).
+        auto mls = mp_s.rfind('/');
+        std::string mdir_s = (mls != std::string::npos) ? mp_s.substr(0, mls) : ".";
+        const char* family = "qwen3";
+        if (NV == 248320) { mdir_s = "/home/bcloud/.local/flm-v0946/model/Qwen3.6-35B-A3B-NPU2"; family = "qwen3_6_moe"; }
+        else if (NV == 128256) family = "llama";
+        else if (NV == 262144) family = "gemma4e";
+        else if (NV == 200064) family = "phi4";
+        else if (NV == 166144) family = "nanbeige";
+        else if (NV == 65536) family = "lfm2";
+        else if (NV == 151936) family = "qwen3";
+        else family = "qwen3";  // unknown -> dense qwen3 fallback
+        // The int4 nibble convention is detected from the tensor data itself just
+        // below, once the header offsets are available (see the probe there).
+        const char* mdir = mdir_s.c_str();
+        std::vector<int> flm_ids;
+        if (input_tok_file) {
+            FILE* tf = strcmp(input_tok_file, "-") == 0 ? stdin : fopen(input_tok_file, "r");
+            if (tf) { int t; while (fscanf(tf, "%d", &t) == 1) flm_ids.push_back(t); if (tf != stdin) fclose(tf); }
+        } else {
+            flm_ids = {151644,872,198,13048,151645,198,151644,77091,198};
+        }
+        if (!flm_ids.empty() && flm_prefill_init(mdir, family) == 0) {
+            int boot = 0; double ms = 0;
+            if (flm_prefill_run(flm_ids.data(), (int)flm_ids.size(), &boot, &ms) == 0) {
+                printf("=== Prefill %d [flm-ref] ===\n", (int)flm_ids.size()); fflush(stdout);
+                printf("Prefill: %.0fms (%.2f ms/tok)\n\n", ms, ms / flm_ids.size());
+                printf("  [0] boot=%d\n", boot);
+                // NPU_FLM_DECODE=1 continues with FLM's forward() for the decode
+                // (architectural change extended — FLM's own decode orchestration).
+                if (getenv("NPU_FLM_DECODE")) {
+                    auto tgs = std::chrono::steady_clock::now();
+                    int prev = boot, total = 0;
+                    for (int i = 0; i < ng; i++) {
+                        int next = 0; double dms = 0;
+                        if (flm_decode_run(prev, &next, &dms) != 0) break;
+                        printf("  [%d] %d\n", i + 1, next);
+                        prev = next; total++;
+                    }
+                    auto tge = std::chrono::steady_clock::now();
+                    double tts = std::chrono::duration<double>(tge - tgs).count();
+                    printf("\n=== %.1f ms/tok (%.0f tok/s) | tokens=%d ===\n",
+                           total > 0 ? tts * 1000.0 / total : 0, total > 0 ? total / tts : 0, total);
+                }
+                fflush(stdout); fflush(stderr);
+                _exit(0);
+            }
+        }
+        fprintf(stderr, "[flm_prefill] failed — falling back to native path\n");
+    }
 
     // Open model
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
@@ -649,6 +1034,74 @@ int main(int argc,char**argv){
     }
     auto i8p=[&](uint64_t o){return md+df+o;};
     const char*js=(const char*)(md+8);size_t jl=hsz;
+    // ── The int4 nibble convention, detected FROM THE DATA ────────────────────
+    // q4nx int4 differs between bundles on two independent axes: the scale layout
+    // (group-major vs row-major) and the nibble sign (unsigned vs two's complement).
+    // The header carries NO convention tag, but the stored zero-points give it away,
+    // because the two encodings are two parameterisations of the same affine map:
+    //   UNSIGNED: out = q*s + zp, q in [0,15], zp centred on the range
+    //   SIGNED  : out = v*s + zp, v in [-8,7], zp == 0
+    // Measured across every installed *-NPU2 bundle: all 14 non-LFM2 bundles store a
+    // centred zero-point (zp/scale between -7.26 and -7.73), and both LFM2 bundles
+    // store zp == 0 for all 256 groups (256/256 exactly 0.0). So one 512-byte read of
+    // a single zero-point block settles it. This matters because a mis-detection is
+    // SILENT -- the wrong pairing still yields a plausible weight distribution, so the
+    // model runs and answers confidently with the wrong token -- hence the log line.
+    {
+        // Try SEVERAL tensor names, because a single one is not universal: Zaya names its
+        // MoE projections model.layers.0.mlp.experts.down_proj.weight, so the plain
+        // down_proj name is ABSENT there -- and the name-based fallback below was absent too
+        // (Zaya's embedding is not model.token_embd.weight), so the engine fell through to
+        // UNSIGNED for a bundle that is SIGNED (0/256 zero-points, exactly 0.000, verified
+        // independently). A single hardcoded probe name is exactly the "assumed shape"
+        // mistake this session kept finding; try the known variants in order.
+        static const char* kProbeCands[] = {
+            "model.layers.0.mlp.down_proj.weight",
+            "model.layers.0.mlp.experts.down_proj.weight",
+            "model.layers.0.mlp.gate.down_proj.weight",
+            "model.layer.0.mlp.down_proj.weight",
+            "model.layer.0.mlp.down_exps_proj.weight",
+        };
+        const char* probe_t = nullptr;
+        uint64_t po = 0;
+        for (const char* cand : kProbeCands) {
+            uint64_t o = jo(js, jl, cand);
+            if (o || key_exists(js, jl, cand)) { probe_t = cand; po = o; break; }
+        }
+        if (!probe_t) {
+            // Nothing matched. Fall back to the LFM2 name (it is SIGNED and names its embedding
+            // model.token_embd.weight), else UNSIGNED, and SAY SO -- a silent mis-detection here
+            // still yields a plausible weight distribution, so it answers confidently and wrongly.
+            g_q4_group_signed = key_exists(js, jl, "model.token_embd.weight");
+            fprintf(stderr,"[q4] convention probe: no known probe tensor found; name-probe -> %s nibbles\n",
+                    g_q4_group_signed ? "SIGNED (two's complement)" : "UNSIGNED");
+        } else {
+            const unsigned char* zp = i8p(po) + 512;  // zero-points at +512 in a 5120-B row
+            int nz = 0; for (int i = 0; i < 512; i++) nz += (zp[i] != 0);
+            g_q4_group_signed = (nz == 0);
+            fprintf(stderr,"[q4] convention probe: %d/512 zero-point bytes non-zero -> %s nibbles\n",
+                    nz, g_q4_group_signed ? "SIGNED (two's complement)" : "UNSIGNED");
+        }
+    }
+    // LFM2 is a hybrid: 10 of its 16 layers are gated short-conv layers, and the
+    // conv block is NOT implemented yet. Say so LOUDLY. Without this the engine runs
+    // to completion and emits a plausible token that is simply WRONG (observed boot
+    // 63260 against the verified FLM reference 5242) -- exactly the failure mode that
+    // costs days, because nothing looks broken.
+    {
+        int conv_layers = 0;
+        for (int l = 0; l < NC; l++) {
+            char nb[160];
+            snprintf(nb, sizeof nb, "model.layers.%d.shortconv.in_proj.weight", l);
+            if (key_exists(js, jl, nb)) conv_layers++;
+        }
+        if (conv_layers > 0) {
+            fprintf(stderr,"[HYBRID] %d/%d layers are gated short-conv layers and the conv block\n"
+                           "         is NOT implemented -- the token below WILL BE WRONG.\n"
+                           "         Gate for a correct LFM2 forward: boot=5242.\n",
+                    conv_layers, NC);
+        }
+    }
     // Embeddings by JSON offset, NOT data-start-by-assumption — the first
     // data tensor is layer 0's ssm_a (offset 0); embed_tokens sits at 7680
     // for this model. Reading from md+df gave misaligned garbage embeddings
@@ -670,6 +1123,10 @@ int main(int argc,char**argv){
     #endif
     emb_f32.resize((size_t)NV*H);
     for(int n=0;n<NV;n++)for(int i=0;i<H;i++)emb_f32[(size_t)n*H+i]=bf16g(emb[n*H+i]);
+    if (getenv("NPU_DUMP_L0")) {
+        FILE* fe = fopen("/tmp/l0_emb.bin", "wb");
+        if (fe) { fwrite(emb_f32.data() + (size_t)151644 * H, 4, H, fe); fclose(fe); }
+    }
     fprintf(stderr,"  %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-te).count());
     #ifdef ONEBP_SUPPORT
     }
@@ -714,13 +1171,21 @@ int main(int argc,char**argv){
         op[l]=jo2("model.layers.%d.self_attn.o_proj.weight",l);
         // GDN fused QKV (if separate q_proj not found):
         if (!qp[l]) {
-            snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l);
+            // BOTH NAME FORMS. The direct jo() calls here used only "model.layer.N" (SINGULAR),
+            // while this model's JSON uses "model.layers.N" (PLURAL) -- the same mismatch fixed in
+            // the gi8() fallbacks, in a different place. Because it did not fire, is_gdn_layer[]
+            // stayed FALSE FOR EVERY LAYER (observed: "[shapes] std_l=0 of NC=32 (gdn layers=0)"),
+            // so the hybrid structure was never recognised and the standard-attention path was used
+            // for the entire model.
+            snprintf(bn, 128, "model.layers.%d.linear_attn.qkv_proj.weight", l);
             qp_fused[l] = jo(js, jl, bn);
+            if (!qp_fused[l]) { snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l); qp_fused[l] = jo(js, jl, bn); }
             if (qp_fused[l]) {
                 is_gdn_layer[l] = true;
                 // O projection for GDN layers: linear_attn.ssm_out_proj
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_out_proj.weight", l);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_out_proj.weight", l);
                 op[l] = jo(js, jl, bn);
+                if (!op[l]) { snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_out_proj.weight", l); op[l] = jo(js, jl, bn); }
             }
         }
         gp[l]=jo2("model.layers.%d.mlp.gate_proj.weight",l);
@@ -736,8 +1201,19 @@ int main(int argc,char**argv){
     std::vector<float> fin_v(H);
     for(int l=0;l<NC;l++){auto iw=(const uint16_t*)(md+df+in_off[l]),pw=(const uint16_t*)(md+df+pa_off[l]);
         for(int i=0;i<H;i++){in_n[l][i]=bf16g(iw[i]);pa_n[l][i]=bf16g(pw[i]);}
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fn = fopen("/tmp/l0_inn.bin", "wb");
+            if (fn) { fwrite(in_n[0].data(), 4, H, fn); fclose(fn); }
+        }
         if(cfg.has_q_norm&&qn_off[l]){auto qq=(const uint16_t*)(md+df+qn_off[l]);for(int i=0;i<HD;i++)qn_w[l][i]=bf16g(qq[i]);}
-        if(cfg.has_k_norm&&kn_off[l]){auto kk=(const uint16_t*)(md+df+kn_off[l]);for(int i=0;i<HD;i++)kn_w[l][i]=bf16g(kk[i]);}}
+        if(cfg.has_k_norm&&kn_off[l]){auto kk=(const uint16_t*)(md+df+kn_off[l]);for(int i=0;i<HD;i++)kn_w[l][i]=bf16g(kk[i]);}
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            fprintf(stderr, "[qknorm] qn_off=%lld kn_off=%lld qn_w:", (long long)qn_off[0], (long long)kn_off[0]);
+            for (int i = 0; i < 8; i++) fprintf(stderr, " %.4f", qn_w[0][i]);
+            fprintf(stderr, " kn_w:");
+            for (int i = 0; i < 8; i++) fprintf(stderr, " %.4f", kn_w[0][i]);
+            fprintf(stderr, "\n");
+        }}
     {auto fw=(const uint16_t*)(md+df+no);for(int i=0;i<H;i++)fin_v[i]=bf16g(fw[i]);}
 
     // I8 tile rows — for Qwen3.6 Q8_0 tensors (8704 bytes/row) vs INT4 (5120 bytes/row)
@@ -772,9 +1248,13 @@ int main(int argc,char**argv){
     auto dequant_auto = [&](uint64_t off, int i8_rows, int in_features,
                              int* out_rows, int* out_cols, const char* key) -> float* {
         int bpt = get_bytes_per_tile(key);
+        // cols_per_tile = row_bytes / 20 (0.625 bytes per element, 32 rows per tile). 5120 -> 256,
+        // 1280 -> 64. Passing 0 keeps the historical 256 constant.
+        const int cpt = (bpt > 0) ? (bpt / 20) : 0;
+        (void)bpt;
         if (bpt == 8704)
             return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, out_rows, out_cols);
-        return dequant_i8_to_float_ex(i8p(off), i8_rows, in_features, out_rows, out_cols);
+        return q4_dequant_geom(i8p(off), i8_rows, in_features, cpt, out_rows, out_cols);
     };
     auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);
         if(r<=0){std::string ak=k;size_t p=ak.find("model.layers.");if(p!=std::string::npos){ak.replace(p,14,"model.layer.");find_tensor_info(js,jl,ak.c_str(),&r);}}
@@ -785,18 +1265,48 @@ int main(int argc,char**argv){
             // Default tile_cols = in_features / 256. Compute from known dims.
         }
         return r;};
-    int q_i8=gi8("model.layers.0.self_attn.q_proj.weight"),k_i8=gi8("model.layers.0.self_attn.k_proj.weight"),v_i8=gi8("model.layers.0.self_attn.v_proj.weight");
-    // Fallback: GDN fused QKV
+    // LAYER 0 IS NOT ALWAYS A STANDARD-ATTENTION LAYER. In a hybrid GDN model (Qwen3.5-4B:
+    // layer_types is three linear_attention to one full_attention) layer 0 has NO
+    // self_attn.q_proj at all, so these lookups returned 0 and the row counts for the
+    // STANDARD layers came out zero -- observed as "qr=0 qc=2560" and a fault in the fused-gate
+    // branch. Find the first STANDARD layer (`!is_gdn_layer[l]`) as the primary source, keeping
+    // layer 0 for homogeneous models, and try BOTH name forms on the GDN fallback: this model's
+    // JSON uses "model.layers.N.linear_attn.*" (plural) while the code asked for "model.layer.N.*".
+    int std_l = 0;
+    for (int l = 0; l < NC; l++) if (!is_gdn_layer[l]) { std_l = l; break; }
+    auto gi8_std = [&](const char* suffix) -> int {
+        char b[160];
+        snprintf(b, sizeof(b), "model.layers.%d.%s", std_l, suffix);
+        int v = gi8(b);
+        if (v <= 0) { snprintf(b, sizeof(b), "model.layers.0.%s", suffix); v = gi8(b); }
+        return v;
+    };
+    int q_i8=gi8_std("self_attn.q_proj.weight"),k_i8=gi8_std("self_attn.k_proj.weight"),v_i8=gi8_std("self_attn.v_proj.weight");
+    if (getenv("RT_PACK_DEBUG")) {
+        int ngdn = 0; for (int l = 0; l < NC; l++) if (is_gdn_layer[l]) ngdn++;
+        fprintf(stderr, "[shapes] std_l=%d of NC=%d (gdn layers=%d)  q_i8=%d k_i8=%d v_i8=%d\n",
+                std_l, NC, ngdn, q_i8, k_i8, v_i8);
+    }
+    // Fallback: GDN fused QKV (try both name forms). Looked up ALWAYS, not only
+    // when q_i8<=0 — hybrid models (Qwen3.5) have BOTH a STD q_proj (full-attn
+    // layers) AND a linear_attn.qkv_proj (GDN layers); gating on q_i8<=0 left
+    // qkv_fused_i8=0 and silently skipped every GDN layer's pack.
     int qkv_fused_i8 = 0;
-    if (q_i8 <= 0) { q_i8 = gi8("model.layer.0.linear_attn.qkv_proj.weight"); qkv_fused_i8 = q_i8; }
-    int o_i8=gi8("model.layers.0.self_attn.o_proj.weight"),g_i8=gi8("model.layers.0.mlp.gate_proj.weight"),u_i8=gi8("model.layers.0.mlp.up_proj.weight"),d_i8=gi8("model.layers.0.mlp.down_proj.weight");
-    // GDN fallbacks
-    if (o_i8 <= 0) o_i8 = gi8("model.layer.0.linear_attn.ssm_out_proj.weight");
+    {
+        int a = gi8("model.layers.0.linear_attn.qkv_proj.weight");
+        if (a <= 0) a = gi8("model.layer.0.linear_attn.qkv_proj.weight");
+        qkv_fused_i8 = a;
+        if (q_i8 <= 0) q_i8 = a;
+    }
+    int o_i8=gi8_std("self_attn.o_proj.weight"),g_i8=gi8_std("mlp.gate_proj.weight"),u_i8=gi8_std("mlp.up_proj.weight"),d_i8=gi8_std("mlp.down_proj.weight");
+    // GDN fallbacks (both name forms)
+    if (o_i8 <= 0) { o_i8 = gi8("model.layers.0.linear_attn.ssm_out_proj.weight"); if (o_i8 <= 0) o_i8 = gi8("model.layer.0.linear_attn.ssm_out_proj.weight"); }
+    if (g_i8 <= 0) { g_i8 = gi8("model.layers.0.self_attn.gate_proj.weight"); if (g_i8 <= 0) g_i8 = gi8("model.layer.0.self_attn.gate_proj.weight"); }
     if (g_i8 <= 0) g_i8 = gi8("model.layer.0.self_attn.gate_proj.weight");
     // Qwen3.6 uses 3D Q4NX shapes [tile_rows, tile_cols, bytes].
     // gi8 returns shape[0] (tile_rows); multiply by tile_cols = in_features/256.
-    // Only for 3D-shape models (MoE); 2D-shape models (Qwen3) have cols already included.
-    if (cfg.has_moe) {
+    // Only for 3D-shape models (MoE + the GDN Qwen3.5); 2D-shape models (Qwen3) have cols already included.
+    if (cfg.has_moe || cfg.has_gated_delta_net) {
     int q_cols = H / 256;      // 8 for H=2048
     int o_cols = (NH * HD) / 256; // 16 for NH*HD=4096
     int d_cols = IM / 256;     // 2 for IM=512
@@ -807,14 +1317,37 @@ int main(int argc,char**argv){
     d_i8 *= d_cols;
     }
     int lm_i8=gi8("lm_head.weight");
+    // lm_head tile format: 2-D [tiles, 5120] (int4) vs 3-D [tile_rows, tile_cols, bytes]
+    // (Qwen3.5/3.6: 8704=Q8_0 or 4736=int4). For 3-D, multiply shape[0] by tile-cols
+    // and dispatch the dequant; the old path read shape[0] only and used int4, which
+    // gave a 10x-short lm_head (24832 vs 248320 rows) and garbage logits.
+    int lm_bpt = get_shape_dim(js, jl, "lm_head.weight", 2);
+    if (lm_bpt == 0) lm_bpt = get_shape_dim(js, jl, "lm_head.weight", 1);
+    if (lm_bpt == 4736 || lm_bpt == 8704) { int lm_cols = H / 256; if (lm_cols > 0) lm_i8 *= lm_cols; }
 
     // Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model
-    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=dequant_i8_to_float_ex(i8p(lo),lm_i8,H,&lr,&lc);if(lm_raw){
+    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=
+        (lm_bpt==8704) ? dequant_q8_0_to_float_ex(i8p(lo),lm_i8,H,&lr,&lc)
+        : (lm_bpt==4736) ? dequant_i8_4736_to_float(i8p(lo),lm_i8,H,&lr,&lc)
+        : q4_dequant_geom(i8p(lo),lm_i8,H,cfg.cpt,&lr,&lc);
+        if(lm_raw){
         lm_head_f32.assign(lm_raw,lm_raw+(size_t)lr*lc);free(lm_raw);
         fprintf(stderr,"  lm_head: %dx%d (loaded from JSON), using for final logits\n",lr,lc);
     }else{fprintf(stderr,"  lm_head: dequant failed, falling back to emb\n");}}
     if(lm_head_f32.empty()){fprintf(stderr,"  lm_head: using emb_f32 (tied embeddings)\n");}
     const float* lm_emb = lm_head_f32.empty() ? emb_f32.data() : lm_head_f32.data();
+    // Tied embeddings (no embed_tokens.weight): the INPUT embedding is the SAME
+    // matrix as the lm_head. emb_f32 above was filled from data offset 0 (garbage
+    // for a tied model) — replace it with the dequantized lm_head so the prefill's
+    // embedding lookup emb_f32[token*H] is correct.
+    if (!key_exists(js, jl, "model.embed_tokens.weight") && !lm_head_f32.empty()) {
+        emb_f32 = lm_head_f32;
+        fprintf(stderr, "  emb: tied to lm_head (%zu rows x %d)\n", emb_f32.size() / H, H);
+        if (getenv("NPU_DUMP_L0")) {
+            FILE* fe = fopen("/tmp/l0_emb16.bin", "wb");
+            if (fe) { fwrite(emb_f32.data() + (size_t)16 * H, 4, H, fe); fclose(fe); }
+        }
+    }
     // Qwen3.6 embed_tokens rows (NV) are 8× the text vocab (multimodal expansion);
     // the LM head only scores the text vocab — OOB read fixed by using its rows.
     int lm_nv = lm_head_f32.empty() ? NV : (int)(lm_head_f32.size() / H);
@@ -842,7 +1375,7 @@ int main(int argc,char**argv){
         }
         return xd+"/final_i8_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";
     };
-    auto ip=[&](const char*t, int K, int N) -> std::string {
+    auto ip=[&](const char*t, int K=-1, int N=-1) -> std::string {
         // Mirror xp(): try the full model_tag, then progressively strip leading
         // underscore-separated vendor/format tokens, so vendor-prefixed model
         // dirs find their per-model instruction file with no --model-tag.
@@ -863,8 +1396,12 @@ int main(int argc,char**argv){
         // for QKV and O: no insts_i8_QKV_qwen3_4b.txt / insts_i8_O_qwen3_4b.txt
         // exists, while the committed insts_i8_QKV_K2560_N6144.txt and
         // insts_i8_O_K4096_N2560.txt were present and never tried.
-        return base+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".txt";
+        if (K > 0 && N > 0) return base+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".txt";
+        return base+"_"+cfg.model_tag+".txt";
     };
+    // M-suffixed small-M xclbin/insts (decode M=1 -> _m1; batch -> _m8/_m32).
+    auto xpm=[&](const char*t, int M){return xd+"/final_i8_"+t+"_"+cfg.model_tag+"_m"+std::to_string(M)+".xclbin";};
+    auto ipm=[&](const char*t, int M){return xd+"/insts_i8_"+t+"_"+cfg.model_tag+"_m"+std::to_string(M)+".txt";};
     // bf16 path (n1_core_placed.py: bf16 activations + v8bfp16ebs8 weights)
     bool bf16_mode = getenv("NPU_BF16") != nullptr;
     auto xpb=[&](const char*t, int K, int N){return xd+"/final_bf16_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";};
@@ -885,7 +1422,15 @@ int main(int argc,char**argv){
 
     // GEMM contexts: I8Ctx (legacy) or HybridFlmCtx (FLM path)
     bool flm_xclbin_available = false;
-    bool cpu_gemm_fallback = false;  // set when NPU GEMM can't init (MoE models)
+    // NEVER ASSIGNED anywhere in this repository: the initialiser is the only write, so
+    // this is always false and everything it guards is dead code today. The comment that
+    // used to sit here said "set when NPU GEMM can't init (MoE models)", describing a
+    // mechanism that has never existed — no setter appears on any ref (
+    // `git log -S'cpu_gemm_fallback = true' --all` is empty). The guarded region holds
+    // the only call sites of sync_weights (5/5), dq( (8/8) and 15/16 transpose_pack, so
+    // removing it is not a cleanup either. #2527 tracks the wire-or-delete decision; this
+    // states the fact rather than making it.
+    bool cpu_gemm_fallback = false;
     std::string flm_mm_path;
     if (use_flm_xclbin) {
         // Try to find mm.xclbin. Priority:
@@ -971,8 +1516,14 @@ int main(int argc,char**argv){
 
     // Legacy I8Ctx pointers (always available, fallback if FLM xclbin not found)
     I8Ctx cq,co,cg,cd;
+    const bool bf16_only = getenv("NPU_PREFILL_BF16") != nullptr;
+    bool i8_ready = !bf16_only;
     std::unique_ptr<I8Ctx> cu_ptr;
     std::unique_ptr<I8Ctx> cg_fused_i4;   // env-gated #1934 int4 fused GU->SiLU (dense FFN)
+    // task-2: small-M decode contexts (GU/D run M=1 per decode token; the M=128
+    // xclbin wastes 127 rows). _m1/_m8/_m32 built by build_qwen3_0_6b_m{1,8,32}.sh.
+    I8Ctx cg_m, cd_m;
+    bool have_small_m = false;
     // #1934: per-layer fused GU (P1) weight BO + h2 (C1->silu) scratch BOs.
     std::vector<std::unique_ptr<xrt::bo>> cg_fuse_bo, cg_fuse_h2;
     std::vector<std::vector<float>> cg_fuse_scl;   // per-layer S_col (amax pass)
@@ -1015,7 +1566,9 @@ int main(int argc,char**argv){
         // Sync weights after all packB calls (done at pack time in the pipeline below)
     } else {
         // ── Legacy path: per-op xclbins + per-layer weight BOs ──
-        if (!cpu_gemm_fallback) {
+        // bf16-only mode (NPU_PREFILL_BF16=1) skips the whole int8 machinery
+        // (ctx init + weight packing) — it is not used by the bf16 prefill.
+        if (!cpu_gemm_fallback && !bf16_only) {
         // init_i8: load pre-compiled insts if available, else generate at runtime.
         // This makes any model with compatible GEMM shapes (K,N multiples of 128)
         // work without pre-compiling per-model instruction files.
@@ -1033,8 +1586,8 @@ int main(int argc,char**argv){
             return ctx.init_with_generator(dev,xp_s.c_str(),XM,K,N,NC);
         };
         fprintf(stderr,"  cq before init: MD=%d KD=%d ND=%d\n", cq.MD, cq.KD, cq.ND);
-        if(!init_i8(cq,"QKV",cfg.xclbin_qkv_k,cfg.xclbin_qkv_n)){fprintf(stderr,"FAIL QKV\n");return 1;}
-        if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){fprintf(stderr,"FAIL O\n");return 1;}
+        if(!init_i8(cq,"QKV",cfg.xclbin_qkv_k,cfg.xclbin_qkv_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL QKV\n");return 1;} }
+        if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL O\n");return 1;} }
         // #2329: a bare "FAIL G" made the reader reconstruct the shape selection
         // from the source (the issue body had to explain IM*2 > 14336 by hand).
         // Name the routing decision, the exact artifacts the split path wants,
@@ -1074,8 +1627,36 @@ int main(int argc,char**argv){
                 "  final_i8_G_K%d_N%d.xclbin.\n",
                 cfg.xclbin_g_k, cfg.xclbin_g_n);
         };
-        if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){diag_split_g();return 1;}}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){fprintf(stderr,"FAIL GU\n");return 1;}}
-        if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){fprintf(stderr,"FAIL D\n");return 1;}
+        if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){ if(bf16_only) i8_ready=false; else {diag_split_g();return 1;} }}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL GU\n");return 1;} }}
+        if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL D\n");return 1;} }
+        // task-2: init small-M decode contexts (GU + D) when the _m{M} xclbin/insts
+        // pair is present. M defaults to 1 (single-token decode); NPU_SMALL_M overrides.
+        {
+            int sm = 0;   // default OFF: the _m1 kernel's weight contract differs from the M=128 path (garbage decode, no perf win — launch-bound)
+            const char* e = getenv("NPU_SMALL_M");
+            if (e && *e) sm = atoi(e);
+            if (sm != 1 && sm != 8 && sm != 32) sm = 0;
+            std::string gx1 = xpm("GU", sm), gi1 = ipm("GU", sm);
+            std::string dx1 = xpm("D", sm),  di1 = ipm("D", sm);
+            FILE* fg = fopen(gx1.c_str(),"rb"); FILE* fgi = fopen(gi1.c_str(),"rb");
+            FILE* fd = fopen(dx1.c_str(),"rb"); FILE* fdi = fopen(di1.c_str(),"rb");
+            if (fg && fgi && fd && fdi) {
+                fclose(fg); fclose(fgi); fclose(fd); fclose(fdi);
+                cg_m.MD = sm; cg_m.KD = cfg.xclbin_gu_k; cg_m.ND = cfg.xclbin_gu_n;
+                cd_m.MD = sm; cd_m.KD = cfg.xclbin_d_k; cd_m.ND = cfg.xclbin_d_n;
+                if (cg_m.init(dev, gx1.c_str(), gi1.c_str(), 4, NC) &&
+                    cd_m.init(dev, dx1.c_str(), di1.c_str(), 4, NC)) {
+                    have_small_m = true;
+                    fprintf(stderr, "  small-M(_m%d) decode contexts ready (GU KD=%d ND=%d, D KD=%d ND=%d)\n",
+                            sm, cg_m.KD, cg_m.ND, cd_m.KD, cd_m.ND);
+                } else {
+                    fprintf(stderr, "  small-M(_m%d) ctx init FAILED; decode falls back to M=128\n", sm);
+                }
+            } else {
+                if (fg) fclose(fg); if (fgi) fclose(fgi); if (fd) fclose(fd); if (fdi) fclose(fdi);
+                fprintf(stderr, "  small-M(_m%d) xclbins absent; decode uses M=128 ctx\n", sm);
+            }
+        }
         // #1934: env-gated int4 fused GU->SiLU (GUSILU_i4) for the DENSE FFN
         // (qwen3-0.6b). Kernel contract silicon-verified (zaya 0.999336); this
         // inits the fused P1 context so the dense GU->host-SiLU->D can be
@@ -1243,10 +1824,22 @@ struct Bf16Ctx {
         return true;
     }
     inline xrt::run launch_async(int l, const float* A, int am, int ak, float ascale) {
-        quantize_async(A,am,ak,ascale); return sync_and_launch(l);
+        quantize_async(A,am,ak,ascale);
+        auto r = sync_and_launch(l);
+        // NPU_ASYNC_SERIALIZE=1 is a DIAGNOSTIC: this context has ONE activation BO (bA), and both
+        // quantize_async and sync_and_launch overwrite it. If a previous launch on the same context
+        // is still in flight, the kernel reads a half-updated activation -- timing-dependent,
+        // unaffected by zeroing, and absent from FLM's own path. Waiting here removes the overlap
+        // and, if the boot token becomes deterministic, identifies it as the cause
+        // (RESULTS-coverage-multifamily 66).
+        if (getenv("NPU_ASYNC_SERIALIZE")) r.wait();
+        return r;
     }
     inline xrt::run launch_async_rows(int l, const float* A, int am, int ak, const float* ascales_q) {
-        quantize_async_rows(A,am,ak,ascales_q); return sync_and_launch(l);
+        quantize_async_rows(A,am,ak,ascales_q);
+        auto r = sync_and_launch(l);
+        if (getenv("NPU_ASYNC_SERIALIZE")) r.wait();   // same diagnostic as launch_async above
+        return r;
     }
     inline void finish_async_rows(xrt::run& r, float* C, int am, int an, const float* ascales, float Bscale, int layer = -1) {
         r.wait(); readback(); dequant_only_rows(C,am,an,ascales,Bscale,layer);
@@ -1347,7 +1940,15 @@ struct Bf16Ctx {
     std::vector<int> gdn_vh(NC, 32), gdn_hd(NC, 128), gdn_conv_k(NC, 4), gdn_conv_dim(NC, 8192);
     std::vector<int> std_nh(NC, cfg.NH), std_nkv(NC, cfg.NKV), std_hd(NC, cfg.HD);
     std::vector<float> rope_theta_per_layer(NC, cfg.rope_theta);
-    std::vector<float> partial_rotary_factor(NC, 0.25f);
+    std::vector<float> partial_rotary_factor(NC, 1.0f);
+    {   // Qwen3.5 stores partial_rotary_factor inside rope_parameters (0.25: rotary on
+        // the first quarter of each head). Default 1.0 applies rotary to the whole head and
+        // corrupts the full-attention layers' attention.
+        float prf = read_config_partial_rotary_factor(cfg.model_dir);
+        if (const char* e = getenv("NPU_PRF")) prf = (float)atof(e);
+        if (prf == prf && prf > 0.0f && prf <= 1.0f)
+            for (int l = 0; l < NC; l++) partial_rotary_factor[l] = prf;
+    }
     if (cfg.has_moe || cfg.has_gated_delta_net) {
         // Per-layer detection: probe every layer individually so heterogeneous
         // models (e.g. DS V4 Flash layers 0-1 sliding-window vs. CSA/HCA rest)
@@ -1412,10 +2013,11 @@ struct Bf16Ctx {
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
-    if (!cpu_gemm_fallback) {
+    if (!cpu_gemm_fallback && !bf16_only) {
     auto dq = [&](uint64_t off, int i8_rows, int in_features, int* or_, int* oc, bool is_q8_0) -> float* {
         if (is_q8_0) return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
-        return dequant_i8_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
+        if (cfg.has_i8_4736) return dequant_i8_4736_to_float(i8p(off), i8_rows, in_features, or_, oc);
+        return q4_dequant_geom(i8p(off), i8_rows, in_features, cfg.cpt, or_, oc);
     };
     bool use_q8 = cfg.has_moe;  // MoE models use Q8_0 for attention projections
     for(int l=0;l<NC;l++){
@@ -1444,6 +2046,19 @@ struct Bf16Ctx {
             transpose_pack(qkv_w, gdn_k_off, H, w.data(), t, 0);                     // Q
             transpose_pack(qkv_w + (size_t)gdn_k_off * H, gdn_k_off, H, w.data(), t, gdn_k_off);  // K
             transpose_pack(qkv_w + (size_t)gdn_v_off * H, gdn_v_off, H, w.data(), t, gdn_v_off);  // V
+            // The GDN fused QKV also packs q+k+v = 2*NH*HD = 8192 rows into a
+            // context sized for the plain layout (6144); widen exactly like the
+            // STD fused branch (dimension-keyed xclbin, shape set before init).
+            if (cq.ND < t) {
+                std::string xp_w = xd + "/final_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".xclbin";
+                std::string ip_w = xd + "/insts_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".txt";
+                fprintf(stderr, "  layer %d GDN: widening QKV context %d -> %d rows\n", l, cq.ND, t);
+                cq.KD = H; cq.ND = t;
+                if (!cq.init(dev, xp_w.c_str(), ip_w.c_str(), 4, NC)) {
+                    fprintf(stderr, "FAIL QKV (GDN widening to N=%d, need %s)\n", t, xp_w.c_str());
+                    free(qkv_w); free(ow); continue;
+                }
+            }
             FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
             free(qkv_w);
             // O projection
@@ -1456,9 +2071,28 @@ struct Bf16Ctx {
         fflush(stderr);
         // Standard layer: fused QKV in q_proj, split same as GDN
         int qr, qc, or2, oc2;
+        // RT_PACK_DEBUG bisect: the STD-fused block is inlined into main and faulted at
+        // layer 3 with no symbol, so name each step. Silent unless the flag is set.
+        const bool pdbg = getenv("RT_PACK_DEBUG") != nullptr;
+        if (pdbg) fprintf(stderr, "    std: dq(q_proj) off=%llu K=%d\n", (unsigned long long)qp[l], H);
         float* qkv_w = dq(qp[l], q_i8, H, &qr, &qc, use_q8);
+        if (pdbg) fprintf(stderr, "    std: q=%p qr=%d qc=%d\n", (void*)qkv_w, qr, qc);
+        if (pdbg) fprintf(stderr, "    std: dq(o_proj) off=%llu K=%d\n", (unsigned long long)op[l], OIN);
         float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
+        if (pdbg) fprintf(stderr, "    std: o=%p or2=%d oc2=%d\n", (void*)ow, or2, oc2);
         if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
+        // A non-NULL dequantized buffer with ZERO rows means the tensor's shape was not
+        // resolved, not that the projection is empty. The branch below then takes the
+        // fused-gate path on a zero-row buffer and faults with no symbol -- observed on
+        // Qwen3.5-4B layer 3 as "qr=0 qc=2560" / "or2=0 oc2=4096". Fail loudly and skip the
+        // layer instead of crashing, so the cause is the message rather than the signal.
+        if (qr <= 0 || or2 <= 0) {
+            fprintf(stderr, "  layer %d STD fused: unresolved weight shape (qr=%d or2=%d) -- skipping layer\n",
+                    l, qr, or2);
+            free(qkv_w); free(ow);
+            continue;
+        }
+        if (pdbg) fprintf(stderr, "    std: branch qr==NH*HD? %d kp=%llu vp=%llu\n", (int)(qr == NH*HD), (unsigned long long)kp[l], (unsigned long long)vp[l]);
 // Plain layout (Qwen3, Llama, Gemma4, …): q_proj=[NH*HD,H] with
         // separate k/v tensors. The dequantized q_proj row count disambiguates
         // it from Qwen3.5/3.6 std-attn layers, whose q_proj fuses the output
@@ -1495,7 +2129,44 @@ struct Bf16Ctx {
             transpose_pack(qkv_w + h * 2 * std_hd[l], std_hd[l], H, w.data(), t, h * std_hd[l]);                                          // q
             transpose_pack(qkv_w + h * 2 * std_hd[l] + std_hd[l], std_hd[l], H, w.data(), t, std_nh[l] * std_hd[l] + h * std_hd[l]);  // gate
         }
+        // SIZE THE QKV CONTEXT FOR THE LAYOUT THIS BRANCH ACTUALLY PACKS. The context was
+        // initialised from pad128(NH*HD + 2*NKV*HD) -- the PLAIN layout (q + k + v) -- but the
+        // fused branch packs q + gate = 2*NH*HD rows with k/v on the CPU. For Qwen3.5-4B that is
+        // 8192 rows into a context sized 6144: a 2048-row overrun, observed as a segfault at its
+        // first standard layer. Widening only when the context is too small means a model that
+        // packs the plain layout (Qwen3-4B: 6144 rows) never asks for the larger xclbin -- which a
+        // max-of-the-two rule in the general derivation would have made it do.
+        if (cq.ND < t) {
+            // The widened context must load the DIMENSION-KEYED xclbin/insts
+            // (final_i8_QKV_K<H>_N<t>), NOT the model-tag file: xp()/ip() prefer the
+            // per-model file, which was built for the PLAIN layout (q+k+v) and is the
+            // size this branch is escaping (the first attempt re-inited with the SAME
+            // 6144-row file and still segfaulted). Also update the context's shape
+            // BEFORE init() -- init() reads MD/KD/ND from the members, not its args.
+            std::string xp_w = xd + "/final_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".xclbin";
+            std::string ip_w = xd + "/insts_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".txt";
+            fprintf(stderr, "  layer %d STD fused: widening QKV context %d -> %d rows (fused layout)\n",
+                    l, cq.ND, t);
+            cq.KD = H; cq.ND = t;
+            if (!cq.init(dev, xp_w.c_str(), ip_w.c_str(), 4, NC)) {
+                fprintf(stderr, "FAIL QKV (fused widening to N=%d, need %s)\n", t, xp_w.c_str());
+                free(qkv_w); free(ow); continue;
+            }
+        }
         FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
+        // THE LAST UNVERIFIED HOST BRANCH (NPU_DBG=1), and this is the branch Nanbeige actually takes
+        // (the run prints "layer N STD fused"). Everything else the host supplies has been checked
+        // stable across runs -- embedding rows, final-norm weights -- and FLM's own path is stable on
+        // the same device. So the question is whether the DEQUANTIZED weights differ. Identical
+        // checksums with a varying boot token put the fault in execution with identical inputs and
+        // weights; differing checksums put it in the host dequant.
+        // RESULTS-coverage-multifamily 66.
+        if (npu_dbg() && l < 3) {
+            unsigned long long hh = 1469598103934665603ULL;
+            const unsigned char* pp = (const unsigned char*)w.data();
+            for (size_t i = 0; i < (size_t)H * t * sizeof(float); i++) { hh ^= pp[i]; hh *= 1099511628211ULL; }
+            fprintf(stderr, "[WCHK] layer %d qkv_w[%d x %d] fnv=%016llx\n", l, H, t, hh);
+        }
         } // plain vs fused qkv layout
         free(qkv_w);
         std::vector<float> wo((size_t)OIN * OOUT);
@@ -1508,6 +2179,7 @@ struct Bf16Ctx {
         if(cfg.gu_split){
             std::vector<float>wg((size_t)H*gr);transpose_pack(gw,GUOUT,H,wg.data(),gr,0);
             FLM_PACKB(cg,l,wg.data(),H,gr,gsc[l]);
+            if(have_small_m) cg_m.packB(l,wg.data(),H,gr,gsc[l]);
             std::vector<float>wu((size_t)H*ur);transpose_pack(uw,GUOUT,H,wu.data(),ur,0);
             FLM_PACKB_PTR(cu_ptr,l,wu.data(),H,ur,usc[l]);
         }else{
@@ -1552,6 +2224,18 @@ struct Bf16Ctx {
                 for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)rr*(H/32)+gg]=rg.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)rr*(H/32)+gg]=rg.zp[(size_t)rr*(H/32)+gg]; }
                 for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)(IM+rr)*(H/32)+gg]=ru.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)(IM+rr)*(H/32)+gg]=ru.zp[(size_t)rr*(H/32)+gg]; }
                 cg_fused_i4->packB_into_fused_i4(*cg_fuse_bo[l], raw_gu, 0, H, IM, cg_fuse_scl[l], cg_fuse_row[l]);
+                // Weight-content checksum (NPU_DBG=1). The whole nondeterminism question reduces to
+                // one branch: either the PACKED WEIGHTS differ across runs (a host packing fault) or
+                // they do not, in which case the same weights and same input produce different output
+                // and the fault is in execution. Host-side checks so far all came back stable
+                // (embedding rows, final-norm weights), but the packed layer weights were never
+                // checked. FNV-1a over the first 1 MB of the GU BO, three layers.
+                if (npu_dbg() && l < 3) {
+                    const uint8_t* m = (const uint8_t*)cg_fuse_bo[l]->map();
+                    unsigned long long h = 1469598103934665603ULL;
+                    for (size_t i = 0; i < 1048576; i++) { h ^= m[i]; h *= 1099511628211ULL; }
+                    fprintf(stderr, "[WCHK] layer %d gu_bo[0..1MB) fnv=%016llx\n", l, h);
+                }
                 if (getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1 && l < 2) {
                     // Verify B_shadow (the C1h reference) matches the packed tile's
                     // bf16-pair dequant for gate/up columns — distinguishes a pack
@@ -1614,9 +2298,10 @@ struct Bf16Ctx {
         }free(gw);free(uw);
         }
         if (dp[l]) {
-        int dr2,dc2;float*dw=dequant_i8_to_float_ex(i8p(dp[l]),d_i8,DIN,&dr2,&dc2);
+        int dr2,dc2;float*dw=q4_dequant_geom(i8p(dp[l]),d_i8,DIN,cfg.cpt,&dr2,&dc2);
         std::vector<float>wd((size_t)DIN*DOUT);transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
         FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);
+        if(have_small_m) cd_m.packB(l,wd.data(),DIN,DOUT,dsc[l]);
         }
         } // end else if (standard layer)
         } // end for l
@@ -1677,10 +2362,18 @@ struct Bf16Ctx {
             if (roff) {
                 router_w[l].resize((size_t)H * N_EXPERTS);
                 const uint16_t* rb = (const uint16_t*)i8p(roff);
+                if (l == 0 && getenv("NPU_DUMP_L0")) {
+                    FILE* fr = fopen("/tmp/l0_rtr_raw.bin", "wb");
+                    if (fr) { fwrite(rb, 2, 64, fr); fclose(fr); }
+                }
                 for (int i = 0; i < H; i++)
                     for (int j = 0; j < N_EXPERTS; j++)
                         router_w[l][i * N_EXPERTS + j] =
                             bf16g(rb[(size_t)(i % 8) * 65536 + j * 256 + i / 8]);
+                if (l == 0 && getenv("NPU_DUMP_L0")) {
+                    FILE* fw = fopen("/tmp/l0_rtr_w.bin", "wb");
+                    if (fw) { fwrite(router_w[0].data(), 4, (size_t)H * N_EXPERTS, fw); fclose(fw); }
+                }
             }
             // Expert weights: store offsets + tile rows (dequant on demand)
             snprintf(bn, 128, "model.layer.%d.mlp.gate_exps_proj.weight", l);
@@ -1736,76 +2429,132 @@ struct Bf16Ctx {
     // Full-attn layers: k/v 2×256 separate; q/k RMSNorm weights [256].
     std::vector<std::vector<float>> gdn_alpha_w, gdn_beta_w, gdn_conv_w, gdn_norm_w, gdn_z_w;
     std::vector<std::vector<float>> gdn_ssm_a, gdn_dt_bias, std_k_w, std_v_w, std_qn_w, std_kn_w;
-    if (has_moe) {  // this model family: GDN + full-attn mix, all MoE
+        // Name-form fallback: Qwen3.5 uses plural "model.layers.N", the MoE 35B uses
+        // singular "model.layer.N". Try the plural form first, then the singular.
+        auto jo_b = [&](const char* bn) -> uint64_t {
+            uint64_t o = jo(js, jl, bn);
+            if (o) return o;
+            std::string alt = bn;
+            size_t p = alt.find("model.layers.");
+            if (p != std::string::npos) { alt.replace(p, 13, "model.layer."); return jo(js, jl, alt.c_str()); }
+            return 0;
+        };
+        auto key_b = [&](const char* bn) -> bool {
+            if (key_exists(js, jl, bn)) return true;
+            std::string alt = bn;
+            size_t p = alt.find("model.layers.");
+            if (p != std::string::npos) { alt.replace(p, 13, "model.layer."); return key_exists(js, jl, alt.c_str()); }
+            return false;
+        };
+    if (has_moe || cfg.has_gated_delta_net) {  // GDN+full-attn mix (MoE 35B AND non-MoE Qwen3.5)
         gdn_alpha_w.resize(NC); gdn_beta_w.resize(NC); gdn_conv_w.resize(NC);
         gdn_norm_w.resize(NC); gdn_z_w.resize(NC); gdn_ssm_a.resize(NC); gdn_dt_bias.resize(NC);
         std_k_w.resize(NC); std_v_w.resize(NC); std_qn_w.resize(NC); std_kn_w.resize(NC);
         for (int l = 0; l < NC; l++) {
             if (is_gdn_layer[l]) {
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_alpha_proj.weight", l);
-                uint64_t o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_alpha_proj.weight", l);
+                uint64_t o = jo_b(bn);
+                if (key_b(bn)) {
                     gdn_alpha_w[l].resize((size_t)H * gdn_vh[l]);
-                    for (int i = 0; i < H; i++)
-                        for (int h = 0; h < gdn_vh[l]; h++)
-                            gdn_alpha_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_beta_proj.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                    // Qwen3.5 stores alpha/beta as I8 Q8_0 [vh, H] (3-D); Qwen3.6 as BF16 [H, vh].
+                    int ab_bpt = get_shape_dim(js, jl, bn, 2);
+                    if (ab_bpt == 8704) {
+                        int a_tiles = (gdn_vh[l] / 32) * (H / 256);
+                        int ar, ac; float* a = dequant_q8_0_to_float_ex(i8p(o), a_tiles, H, &ar, &ac);
+                        if (a && ar == gdn_vh[l]) {
+                            for (int i = 0; i < H; i++)
+                                for (int h = 0; h < gdn_vh[l]; h++)
+                                    gdn_alpha_w[l][(size_t)i * gdn_vh[l] + h] = a[(size_t)h * H + i];
+                        }
+                        free(a);
+                    } else { const uint16_t* rb = (const uint16_t*)i8p(o);
+                        for (int i = 0; i < H; i++)
+                            for (int h = 0; h < gdn_vh[l]; h++)
+                                gdn_alpha_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
+                }
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_beta_proj.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) {
                     gdn_beta_w[l].resize((size_t)H * gdn_vh[l]);
-                    for (int i = 0; i < H; i++)
-                        for (int h = 0; h < gdn_vh[l]; h++)
-                            gdn_beta_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_conv1d.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                    int ab_bpt = get_shape_dim(js, jl, bn, 2);
+                    if (ab_bpt == 8704) {
+                        int a_tiles = (gdn_vh[l] / 32) * (H / 256);
+                        int ar, ac; float* a = dequant_q8_0_to_float_ex(i8p(o), a_tiles, H, &ar, &ac);
+                        if (a && ar == gdn_vh[l]) {
+                            for (int i = 0; i < H; i++)
+                                for (int h = 0; h < gdn_vh[l]; h++)
+                                    gdn_beta_w[l][(size_t)i * gdn_vh[l] + h] = a[(size_t)h * H + i];
+                        }
+                        free(a);
+                    } else { const uint16_t* rb = (const uint16_t*)i8p(o);
+                        for (int i = 0; i < H; i++)
+                            for (int h = 0; h < gdn_vh[l]; h++)
+                                gdn_beta_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
+                }
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_conv1d.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
                     gdn_conv_w[l].resize((size_t)gdn_conv_k[l] * gdn_conv_dim[l]);
                     for (int i = 0; i < gdn_conv_k[l] * gdn_conv_dim[l]; i++)
                         gdn_conv_w[l][i] = bf16g(rb[i]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_a", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const float* ab = (const float*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_a", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const float* ab = (const float*)i8p(o);
                     gdn_ssm_a[l].assign(ab, ab + gdn_vh[l]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_dt.bias", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const float* db = (const float*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_dt.bias", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const float* db = (const float*)i8p(o);
                     gdn_dt_bias[l].assign(db, db + gdn_vh[l]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_norm.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_norm.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
                     gdn_norm_w[l].resize(gdn_hd[l]);
                     for (int d = 0; d < gdn_hd[l]; d++) gdn_norm_w[l][d] = bf16g(nb[d]); }
                 // z-gate [4096, 2048] Q8_0 f32 (CPU GEMM per token)
-                snprintf(bn, 128, "model.layer.%d.self_attn.gate_proj.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { int zr, zc; float* z = dequant_q8_0(i8p(o), 128 * 8, H, &zr, &zc);
+                snprintf(bn, 128, "model.layers.%d.self_attn.gate_proj.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { int zr, zc;
+                    float* z = cfg.has_i8_4736 ? dequant_i8_4736_to_float(i8p(o), 128 * (H / 256), H, &zr, &zc)
+                                               : dequant_q8_0(i8p(o), 128 * 8, H, &zr, &zc);
                     if (z && zr == 4096) { gdn_z_w[l].assign(z, z + (size_t)zr * zc); }
                     free(z); }
             } else {
                 // Full attention: k/v [512, 2048] Q8_0 f32 (CPU per token), q/k norms
-                snprintf(bn, 128, "model.layer.%d.self_attn.k_proj.weight", l);
-                uint64_t o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { int kr, kc; float* kw = dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
+                snprintf(bn, 128, "model.layers.%d.self_attn.k_proj.weight", l);
+                uint64_t o = jo_b(bn);
+                if (key_b(bn)) { int kr, kc;
+                    float* kw = cfg.has_i8_4736 ? dequant_i8_4736_to_float(i8p(o), k_i8, H, &kr, &kc)
+                                                : dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
                     if (kw && kr == std_nkv[l] * std_hd[l]) std_k_w[l].assign(kw, kw + (size_t)kr * kc);
                     free(kw); }
-                snprintf(bn, 128, "model.layer.%d.self_attn.v_proj.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { int kr, kc; float* vw = dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
+                snprintf(bn, 128, "model.layers.%d.self_attn.v_proj.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { int kr, kc;
+                    float* vw = cfg.has_i8_4736 ? dequant_i8_4736_to_float(i8p(o), v_i8, H, &kr, &kc)
+                                                : dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
                     if (vw && kr == std_nkv[l] * std_hd[l]) std_v_w[l].assign(vw, vw + (size_t)kr * kc);
+                    if (l == 3 && vw && getenv("NPU_DUMP_L0")) {
+                        FILE* fv = fopen("/tmp/l3_vw.bin", "wb");
+                        if (fv) { fwrite(vw, 4, (size_t)kr * kc, fv); fclose(fv); }
+                    }
                     free(vw); }
-                snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.self_attn.q_norm.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
                     std_qn_w[l].resize(std_hd[l]);
                     for (int d = 0; d < std_hd[l]; d++) std_qn_w[l][d] = bf16g(nb[d]); }
-                snprintf(bn, 128, "model.layer.%d.self_attn.k_norm.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.self_attn.k_norm.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
                     std_kn_w[l].resize(std_hd[l]);
                     for (int d = 0; d < std_hd[l]; d++) std_kn_w[l][d] = bf16g(nb[d]); }
             }
         }
-
+        if (getenv("NPU_DBG") && std_l >= 0 && std_l < NC) {
+            fprintf(stderr, "[gdblk] std_l=%d std_k_w[%d]=%zu std_v_w=%zu qn=%zu kn=%zu\n",
+                    std_l, std_l, std_k_w[std_l].size(), std_v_w[std_l].size(),
+                    std_qn_w[std_l].size(), std_kn_w[std_l].size());
+        }
     }
 
     // ── NPU MoE FFN: 4 per-op xclbins (GU/D concat + shared GU/D) ──
@@ -1867,10 +2616,23 @@ struct Bf16Ctx {
             auto moe_ctx = [&](std::unique_ptr<I8Ctx>& c, const char* t,
                                int K, int N, int nlayers) -> bool {
                 c = std::make_unique<I8Ctx>();
-                c->MD = XM; c->KD = K; c->ND = N;
-                if (!c->init(dev, xp(t, K, N).c_str(), ip(t, K, N).c_str(), 4, nlayers)) {
+                int mdx = XM;
+                std::string xf = xp(t, K, N), ifn = ip(t, K, N);
+                // NPU_MOE_SMALL_M=1: use the true M=1 (1-row tile) kernel pair when
+                // present (final_i8_<t>_<tag>_m1.xclbin/.txt). The m1 generator keeps
+                // the SAME 8x8-microtile B (weight) tap, so the packed weights and the
+                // concat layout are unchanged; only A/C become linear 1-row taps.
+                if (getenv("NPU_MOE_SMALL_M") && atoi(getenv("NPU_MOE_SMALL_M")) == 1) {
+                    std::string a = xpm(t, 1), b = ipm(t, 1);
+                    FILE* fa = fopen(a.c_str(), "rb"); FILE* fb = fopen(b.c_str(), "rb");
+                    if (fa && fb) { mdx = 1; xf = a; ifn = b; }
+                    if (fa) fclose(fa); if (fb) fclose(fb);
+                }
+                c->MD = mdx; c->KD = K; c->ND = N;
+                if (!c->init(dev, xf.c_str(), ifn.c_str(), 4, nlayers)) {
                     c.reset(); return false;
                 }
+                if (mdx != XM) fprintf(stderr, "  moe_ctx %s M=%d (m1 kernel) K=%d N=%d\n", t, mdx, K, N);
                 return true;
             };
             bool ok = moe_ctx(mgu, "MOE_GU", H, moe_n, 1) &&
@@ -1941,8 +2703,31 @@ struct Bf16Ctx {
         }
     }
 
+    // How many positions this RUN needs: the prompt plus the tokens generated
+    // from it, with the historical 4096 as the floor so nothing changes unless a
+    // longer prompt is actually requested (NPU_PROMPT_MAX). Computed HERE, before
+    // the tables and the K/V caches below, because BOTH of those were sized for
+    // exactly 4096 positions and both are indexed unchecked:
+    //   * ra()/ra2() read rc[p*hd+d] for the token's position, so a longer prompt
+    //     READ past the RoPE table — wrong cos/sin, hence the wrong,
+    //     context-independent answer at 4200/5000/7000;
+    //   * the bf16 prefill WRITES kv_caches[..].k[(sp+pi)*NKV*HD+..], so a longer
+    //     prompt overran that buffer — the `double free or corruption (out)`.
+    // Two independent 4096-sized structures, two symptoms, both fixed by using
+    // the run's own length. RESULTS-ctx8192-blocked-2026-09-15.md.
+    int ctx_need = 4096;
+    if (input_tok_file && input_tok_file[0] && strcmp(input_tok_file, "-") != 0) {
+        FILE* cf = fopen(input_tok_file, "r");
+        if (cf) {
+            int t, n = 0;
+            while (fscanf(cf, "%d", &t) == 1) n++;
+            fclose(cf);
+            if (n + ng > ctx_need) ctx_need = n + ng;
+        }
+    }
+
     // RoPE — primary table for GDN/dense layers
-    ri(HD,cfg.rope_theta,4096);
+    ri(HD,cfg.rope_theta,ctx_need);
     // Partial rotary tables for full-attention (STD) layers.
     // Slot 0: primary theta (most STD layers, or the single theta for
     //         homogeneous models).
@@ -1969,9 +2754,9 @@ struct Bf16Ctx {
             }
         }
         if (rdim0 <= 0) rdim0 = 64;  // fallback: Qwen3.6 default
-        ri2_build(0, th0, 4096, rdim0);
+        ri2_build(0, th0, ctx_need, rdim0);
         if (th1 != 0.0f && rdim1 > 0)
-            ri2_build(1, th1, 4096, rdim1);
+            ri2_build(1, th1, ctx_need, rdim1);
         else
             g_rt2[1] = g_rt2[0];  // alias slot 1 → slot 0 for single-theta models
     }
@@ -1999,10 +2784,37 @@ struct Bf16Ctx {
     int BS=8;
     if (getenv("NPU_BS")) BS = atoi(getenv("NPU_BS"));
     struct KVCache{std::vector<float>k,v;int n;KVCache(int size):k(size),v(size),n(0){}};
-    int kv_size=4096*NKV*HD;
+    // The host K/V caches must hold the whole prompt plus the tokens generated
+    // from it. They were sized for exactly 4096, and the bf16 prefill writes one
+    // row per PROMPT TOKEN into them (:4559), so any prompt longer than 4096
+    // wrote past the end of every layer's cache — 28 overruns of ~100k floats
+    // for a 4200-token prompt. That is the whole >4096 failure:
+    //   * `double free or corruption (out)` at exit, once per run;
+    //   * a CONTEXT-INDEPENDENT answer (49691 at 4200, 5000 and 7000 alike),
+    //     because the overrun lands on adjacent heap and the victim depends on
+    //     the allocation layout, not on the input;
+    //   * identical with the CPU attention reference and with the 8192-context
+    //     NPU capture — which is what proved the attention kernel was innocent
+    //     (RESULTS-ctx8192-blocked-2026-09-15.md).
+    // A prompt longer than the cap only reaches here via NPU_PROMPT_MAX, so the
+    // default allocation is unchanged.
+    int kv_size=ctx_need*NKV*HD;
     std::vector<std::vector<KVCache>> kv_caches;
     for(int i=0;i<NC;i++){ kv_caches.emplace_back(); for(int b=0;b<BS;b++) kv_caches[i].emplace_back(kv_size); }
     int qkv_n=cfg.qkv_total;
+    // Qwen3.5/3.6 (GDN + fused full-attn) widen the QKV GEMM output past the
+    // plain q+k+v layout. GDN packs q+k+v = 2*KD+VD (max_gdn_conv_dim), and
+    // fused full-attn packs q+gate = 2*NH*HD; both are 8192 for the current
+    // families vs qkv_total = NH*HD + 2*NKV*HD = 6144. The pack path widens
+    // cq.ND to match, but qkv_n (the output buffer width + finish `an`) still
+    // used qkv_total, so the GDN v-tail / fused gate-tail was silently dropped
+    // and gdn_attn_step read zeros for the second half of v — boot 163554 vs
+    // FLM's 16. Size the buffer/finish to the widened width.
+    if (cfg.has_gated_delta_net || cfg.has_moe) {
+        if (max_gdn_conv_dim > qkv_n) qkv_n = max_gdn_conv_dim;
+        int fused_w = 2 * NH * HD;
+        if (fused_w > qkv_n) qkv_n = fused_w;
+    }
     std::vector<float> h_b(XM*H), qo_b(XM*qkv_n), at_b(XM*NH*HD), oo_b(XM*H), gt_b(XM*(cfg.gu_split?IM:2*IM)), su_b(XM*IM), dw_b(XM*H);
     std::vector<float> h_data(H), qo_data(qkv_n*BS), ko_data((size_t)NKV*HD*BS), vo_data((size_t)NKV*HD*BS), at_data((size_t)NH*HD*BS), oo_data(H*BS);
     std::vector<float> gt_data((cfg.gu_split?IM:2*IM)*BS), su_data(IM*BS), dwo_data(H*BS), sb_data(XM*H), lg_buf(NV);
@@ -2045,6 +2857,13 @@ struct Bf16Ctx {
         for (int j = 0; j < N_EXPERTS; j++) topk[j] = j;
         std::partial_sort(topk.begin(), topk.begin() + TOP_K, topk.end(),
             [&](int a, int b) { return probs[a] > probs[b]; });
+
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fp = fopen("/tmp/l0_router.bin", "wb");
+            if (fp) { fwrite(logits.data(), 4, N_EXPERTS, fp); fclose(fp); }
+            FILE* ft = fopen("/tmp/l0_topk.txt", "w");
+            if (ft) { for (int e = 0; e < TOP_K; e++) fprintf(ft, "%d %.6f\n", topk[e], probs[topk[e]]); fclose(ft); }
+        }
 
         memset(out, 0, H * sizeof(float));
         // Per-expert tile-rows: gate/up each have IM_EXP/32 tile rows per expert
@@ -2731,15 +3550,29 @@ struct Bf16Ctx {
     // RMSNorm'd core (feeds the O GEMM). Probe-validated math (#1466).
     auto gdn_attn_step = [&](int l, const float* x, float* fqo,
                              float* conv_state, float* delta_state, float* out) {
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fx = fopen("/tmp/l0_x.bin", "wb");
+            if (fx) { fwrite(x, 4, H, fx); fclose(fx); }
+            FILE* fq = fopen("/tmp/l0_fqo_raw.bin", "wb");
+            if (fq) { fwrite(fqo, 4, gdn_conv_dim[l], fq); fclose(fq); }
+        }
         // causal depthwise conv1d on the fused QKV (kernel 4)
         memmove(conv_state, conv_state + gdn_conv_dim[l], (size_t)gdn_conv_dim[l] * (gdn_conv_k[l] - 1) * 4);
         memcpy(conv_state + (size_t)gdn_conv_dim[l] * (gdn_conv_k[l] - 1), fqo, (size_t)gdn_conv_dim[l] * 4);
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fcs = fopen("/tmp/l0_convstate.bin", "wb");
+            if (fcs) { fwrite(conv_state, 4, (size_t)gdn_conv_k[l] * gdn_conv_dim[l], fcs); fclose(fcs); }
+        }
         const float* cw = gdn_conv_w[l].data();
         for (int cc = 0; cc < gdn_conv_dim[l]; cc++) {
             double s = 0;
             for (int kk = 0; kk < gdn_conv_k[l]; kk++)
                 s += (double)conv_state[(size_t)kk * gdn_conv_dim[l] + cc] * cw[(size_t)kk * gdn_conv_dim[l] + cc];
             fqo[cc] = silu_f((float)s);
+        }
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fc = fopen("/tmp/l0_conv.bin", "wb");
+            if (fc) { fwrite(fqo, 4, gdn_conv_dim[l], fc); fclose(fc); }
         }
         // split q [0,k_off) k [k_off,v_off) v [v_off,2*v_off); repeat q/k vh/2→vh + l2norm
         const int gdn_k_off = (gdn_vh[l] / 2) * gdn_hd[l];
@@ -2760,6 +3593,12 @@ struct Bf16Ctx {
                 kk[(size_t)h * gdn_hd[l] + d] *= ik;
             }
         }
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fq = fopen("/tmp/l0_qq.bin", "wb");
+            if (fq) { fwrite(qq.data(), 4, gdn_vh[l] * gdn_hd[l], fq); fclose(fq); }
+            FILE* fk = fopen("/tmp/l0_kk.bin", "wb");
+            if (fk) { fwrite(kk.data(), 4, gdn_vh[l] * gdn_hd[l], fk); fclose(fk); }
+        }
         // alpha/beta projections → g = ssm_a*softplus(a+dt_bias), beta = sigmoid(b)
         // (ssm_a stored already negated, #1460 convention — used directly)
         std::vector<float> ga(gdn_vh[l]), gb(gdn_vh[l]), ggate((size_t)gdn_vh[l] * gdn_hd[l]);
@@ -2775,26 +3614,45 @@ struct Bf16Ctx {
             gb[h] = 1.0f / (1.0f + expf(-(float)sb));
             for (int d = 0; d < gdn_hd[l]; d++) ggate[(size_t)h * gdn_hd[l] + d] = ga[h];
         }
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fg = fopen("/tmp/l0_g.bin", "wb");
+            if (fg) { fwrite(ga.data(), 4, gdn_vh[l], fg); fclose(fg); }
+            FILE* fb = fopen("/tmp/l0_b.bin", "wb");
+            if (fb) { fwrite(gb.data(), 4, gdn_vh[l], fb); fclose(fb); }
+        }
         // recurrent delta rule over v-heads
         gdn_attn_cpu(qq.data(), kk.data(), fqo + gdn_v_off, ggate.data(), gb.data(),
                      delta_state, out, gdn_hd[l], gdn_vh[l], 1.0f / sqrtf((float)gdn_hd[l]));
-        // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm
-        std::vector<float> zout((size_t)gdn_vh[l] * gdn_hd[l]);
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fr = fopen("/tmp/l0_rawcore.bin", "wb");
+            if (fr) { fwrite(out, 4, gdn_vh[l] * gdn_hd[l], fr); fclose(fr); }
+        }
+        // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm.
+        // Qwen3.5 has no self_attn.gate_proj (attn_output_gate is fused into
+        // q_proj), so when the z-gate is absent the gated RMSNorm is plain RMSNorm.
+        std::vector<float> zout;
         const float* zw = gdn_z_w[l].data();
-        for (int i = 0; i < gdn_vh[l] * gdn_hd[l]; i++) {
-            double s = 0;
-            for (int j = 0; j < H; j++) s += (double)zw[(size_t)i * H + j] * x[j];
-            zout[i] = (float)s;
+        if (zw) {
+            zout.resize((size_t)gdn_vh[l] * gdn_hd[l]);
+            for (int i = 0; i < gdn_vh[l] * gdn_hd[l]; i++) {
+                double s = 0;
+                for (int j = 0; j < H; j++) s += (double)zw[(size_t)i * H + j] * x[j];
+                zout[i] = (float)s;
+            }
         }
         const float* nw = gdn_norm_w[l].data();
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            if (zw) { FILE* fz = fopen("/tmp/l0_z.bin", "wb");
+            if (fz) { fwrite(zout.data(), 4, gdn_vh[l] * gdn_hd[l], fz); fclose(fz); } }
+        }
         for (int h = 0; h < gdn_vh[l]; h++) {
             float* ch = out + (size_t)h * gdn_hd[l];
             double var = 0;
             for (int d = 0; d < gdn_hd[l]; d++) var += (double)ch[d] * ch[d];
             float ir = 1.0f / sqrtf((float)(var / gdn_hd[l]) + EPS);
             for (int d = 0; d < gdn_hd[l]; d++) {
-                float zv = zout[(size_t)h * gdn_hd[l] + d];
-                ch[d] = ch[d] * ir * nw[d] * silu_f(zv);
+                float g = zw ? silu_f(zout[(size_t)h * gdn_hd[l] + d]) : 1.0f;
+                ch[d] = ch[d] * ir * nw[d] * g;
             }
         }
     };
@@ -2815,6 +3673,10 @@ struct Bf16Ctx {
             }
             kv[i] = (float)sk; kv[std_kv_dim + i] = (float)sv;
         }
+        if (l == 3 && getenv("NPU_DUMP_L0")) {
+            FILE* fv = fopen("/tmp/l3_v.bin", "wb");
+            if (fv) { fwrite(kv.data() + std_kv_dim, 4, std_kv_dim, fv); fclose(fv); }
+        }
         const float* qnw = std_qn_w[l].data();
         const float* knw = std_kn_w[l].data();
         int l_rope_dim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);
@@ -2831,22 +3693,39 @@ struct Bf16Ctx {
             for (int d = 0; d < std_hd[l]; d++) qh[d] *= iq * qnw[d];
             ra2(qh, pos, l_rope_dim, l_slot);
             int kvh = h / (std_nh[l] / std_nkv[l]);
-            float* kh = kv.data() + (size_t)kvh * std_hd[l];
-            double sk = 0;
-            for (int d = 0; d < std_hd[l]; d++) sk += (double)kh[d] * kh[d];
-            float ik = 1.0f / sqrtf((float)(sk / std_hd[l]) + EPS);
-            for (int d = 0; d < std_hd[l]; d++) kh[d] *= ik * knw[d];
-            ra2(kh, pos, l_rope_dim, l_slot);
-            if (pos >= 4096) {
-                fprintf(stderr, "[npu] KV overflow (pos=%d) — restarting context\n", pos);
-                pos = 0;
+            // k norm + rotary + KV write once per KV head (not once per query
+            // head: with GQA the same kvh is visited std_nh/std_nkv times and
+            // the in-place norm+rotary would otherwise be applied repeatedly).
+            if (h % (std_nh[l] / std_nkv[l]) == 0) {
+                float* kh = kv.data() + (size_t)kvh * std_hd[l];
+                double sk = 0;
+                for (int d = 0; d < std_hd[l]; d++) sk += (double)kh[d] * kh[d];
+                float ik = 1.0f / sqrtf((float)(sk / std_hd[l]) + EPS);
+                for (int d = 0; d < std_hd[l]; d++) kh[d] *= ik * knw[d];
+                ra2(kh, pos, l_rope_dim, l_slot);
+                if (pos >= 4096) {
+                    fprintf(stderr, "[npu] KV overflow (pos=%d) — restarting context\n", pos);
+                    pos = 0;
+                }
+                memcpy(&kvc.k[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kh, std_hd[l] * 4);
+                memcpy(&kvc.v[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kv.data() + std_kv_dim + (size_t)kvh * std_hd[l], std_hd[l] * 4);
             }
-            memcpy(&kvc.k[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kh, std_hd[l] * 4);
-            memcpy(&kvc.v[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kv.data() + std_kv_dim + (size_t)kvh * std_hd[l], std_hd[l] * 4);
         }
         kvc.n = pos + 1;
         attn_omp(fqo, out, kvc.n, kvc.k.data(), kvc.v.data(),
                  std_nh[l], std_nkv[l], std_hd[l], std_nh[l] / std_nkv[l]);
+        if (l == 3 && pos == 0 && getenv("NPU_DUMP_KV")) {
+            fprintf(stderr, "[nat_kv] layer=3\n");
+            fprintf(stderr, "[nat_rawk] ");
+            for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", kv[i]);
+            fprintf(stderr, "\n");
+            fprintf(stderr, "[nat_k] ");
+            for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", kvc.k[i]);
+            fprintf(stderr, "\n");
+            fprintf(stderr, "[nat_v] ");
+            for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", kvc.v[i]);
+            fprintf(stderr, "\n");
+        }
         const float* gt = fqo + std_nh[l] * std_hd[l];
         for (int i = 0; i < std_nh[l] * std_hd[l]; i++) out[i] *= 1.0f / (1.0f + expf(-gt[i]));
     };
@@ -3420,7 +4299,8 @@ struct Bf16Ctx {
                                 fflush(stderr);
                             }
                         } else {
-                        FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
+                        if (have_small_m) cg_m.go(l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
+                        else FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
                         cn(fuse_gt_b.data(), fmlp_out);
                         if (cfg.gu_split) {
                             float au = dynamic_ascale(fh, H);
@@ -3553,7 +4433,8 @@ struct Bf16Ctx {
                             fprintf(stderr, "[DDBG l=%d] su[0..3]=%.3f %.3f %.3f %.3f ad=%f\n",
                                     l, fuse_su_b[0], fuse_su_b[1], fuse_su_b[2], fuse_su_b[3], ad);
                         }
-                        FLM_GO(cd, l, fuse_su_b.data(), 1, IM, ad, dsc[l], fuse_dw_b.data(), H);
+                        if (have_small_m) cd_m.go(l, fuse_su_b.data(), 1, IM, ad, dsc[l], fuse_dw_b.data(), H);
+                        else FLM_GO(cd, l, fuse_su_b.data(), 1, IM, ad, dsc[l], fuse_dw_b.data(), H);
                         cn(fuse_dw_b.data(), H);
                         if (getenv("NPU_FUSED_USE") && atoi(getenv("NPU_FUSED_USE")) == 1
                             && getenv("NPU_FUSED_DDBG") && atoi(getenv("NPU_FUSED_DDBG")) == 1) {
@@ -3561,7 +4442,7 @@ struct Bf16Ctx {
                                     l, fuse_dw_b[0], fuse_dw_b[1], fuse_dw_b[2], fuse_dw_b[3]);
                             if (dp[l]) {
                                 int dr2, dc2;
-                                float* dwf = dequant_i8_to_float_ex(i8p(dp[l]), d_i8, DIN, &dr2, &dc2);
+                                float* dwf = q4_dequant_geom(i8p(dp[l]), d_i8, DIN, cfg.cpt, &dr2, &dc2);
                                 // Host float D GEMM: dequant_i8_to_float_ex outputs
                                 // [out_rows, out_cols] = [H, IM] row-major (in_features=DIN=IM
                                 // -> out_cols=IM, rows=H). D_ref[o] = sum_i fuse_su_b[i] * W[o][i].
@@ -3638,26 +4519,670 @@ struct Bf16Ctx {
         while(fscanf(tf,"%d",&tid)==1) pt_vec.push_back(tid);
         if(tf!=stdin) fclose(tf);
         if(pt_vec.empty()){ fprintf(stderr,"Empty input token file: %s\n",input_tok_file); return 1; }
-        if((int)pt_vec.size() > 4095) pt_vec.resize(4095);
+        // The cap keeps a run inside the KV window the artifacts are baked for.
+        // That window is 8192 tokens (MAX_L=8192 for the layer ELFs and for the
+        // 8192-context attention capture), and the WHOLE run has to fit it — the
+        // prompt plus the tokens generated from it — so the cap is 8193-ng, not a
+        // flat 8192.
+        //
+        // Only the nh16 shapes get the raised cap: the 8192-context attention
+        // capture exists for nh16 alone, so every other shape would fall to the
+        // CPU attention reference (~60 ms/token, ~8 minutes for 8191 tokens),
+        // which is correct but is not a useful default. NPU_PROMPT_MAX overrides
+        // either way.
+        // A shape gets the raised cap only when ITS 8192 capture is on disk:
+        // without one the selector falls through to the CPU attention reference
+        // (~60 ms/token, ~8 minutes for 8191 tokens), which is correct but is not
+        // a useful default. Both captures are committed; the check is here so a
+        // missing file degrades to the old cap instead of to a very slow run.
+        const char* k8name = (cfg.NH * cfg.HD == 2048) ? "attn_mha_8192_nh16.elf"
+                          : (cfg.NH * cfg.HD == 4096) ? "attn_mha_8192_nh32.elf" : nullptr;
+        bool have8k = false;
+        if (k8name) {
+            const char* xd = getenv("NPU_XCLBIN_DIR");
+            const std::string c1 = std::string(xd ? xd : "engine/npu/xclbins") + "/" + k8name;
+            const std::string c2 = std::string("engine/npu/xclbins/") + k8name;
+            FILE* f = fopen(c1.c_str(), "rb");
+            if (f) { have8k = true; fclose(f); }
+            else if ((f = fopen(c2.c_str(), "rb"))) { have8k = true; fclose(f); }
+        }
+        int prompt_cap = 4095;
+        if (have8k) {
+            prompt_cap = 8193 - ng;
+            if (prompt_cap < 4095) prompt_cap = 4095;
+        }
+        if (const char* pm = getenv("NPU_PROMPT_MAX")) {
+            int v = atoi(pm);
+            if (v > 0) {
+                prompt_cap = v;
+                fprintf(stderr, "input: NPU_PROMPT_MAX=%d — prompts longer than 4095 tokens take "
+                                "the CPU attention reference (~59 ms/token at 4095): correct, and slow\n", v);
+            }
+        }
+        if((int)pt_vec.size() > prompt_cap) {
+            // Announce, as the bf16 and fallback caps do. A SILENT 4095-token cap is the same defect
+            // class as the fallback's silent 128-token truncation (RESULTS-coverage-multifamily
+            // 83/84), which cost this investigation several checkpoints precisely because it left no
+            // trace beyond a banner count. The cap ITSELF is correct -- 4096 is the runlist's
+            // max_seq_len and the KV window the per-ctx ELFs are built for -- so only the silence is
+            // fixed here.
+            //
+            // RAISING THIS IS NOT ENOUGH FOR LONG CONTEXTS (2026-09-15). The cap was lifted
+            // to 8191 while testing an 8192-context attention capture, and the paths below
+            // then run, but with the 8192 kernel they return a CONTEXT-INDEPENDENT token
+            // (49691 at 4200, 5000 and 7000 alike) and corrupt the heap on exit, while the
+            // same kernel at 4095 returns the known-good 44353. So >4096 has no working
+            // attention kernel yet; the cap stays where a correct path exists. See
+            // RESULTS-ctx8192-blocked-2026-09-15.md.
+            fprintf(stderr, "input: prompt %d tokens -> %d (max_seq_len 4096: the KV window and the "
+                            "per-ctx ELFs are built for 4096; raise with NPU_PROMPT_MAX)\n",
+                    (int)pt_vec.size(), prompt_cap);
+            pt_vec.resize(prompt_cap);
+        }
     }else{
         pt_vec={151644,872,198,13048,151645,198,151644,77091,198};
     }
     int npt=(int)pt_vec.size(); if(npt<1)npt=1;
-    if(input_tok_file && npt > XM) npt = XM;
+    // EXPERIMENT (dsh round 13): the 256 cap is what bounds native prefill.
+    // Prefill time is ~flat in npt (64->352ms, 256->366ms), so a higher cap is
+    // nearly free IF the attention ELF can handle >256 keys. Raise via
+    // NPU_PREFILL_MAX (default keeps the historical 256).
+    // The bf16 prefill path now tiles the prompt in 256-row (2x128) blocks for
+    // every GEMM (QKV/O/GU/D) and calls attention once per 256-query block, so
+    // arbitrary npt is COMPUTED — before this it hardcoded exactly two batches =
+    // 256 rows and NPU_PREFILL_MAX>256 silently returned stale rows for tokens
+    // >= 256 (see benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md).
+    // The bf16 layer body now tiles every GEMM in 256-row (2x128) blocks and
+    // the attention falls back to CPU for npt>256, so ANY NPU_PREFILL_MAX is
+    // computed CORRECTLY (verified vs NPU_RUNLIST=1 byte-exact int8 and
+    // NPU_FLM_PREFILL=1: 256 -> 1614, 512 -> 220, 1024 -> 25 with CPU attn).
+    // The only speed limit is attention: the captured embedded ELF is only
+    // verified for a single <=256-row call (its key-window/position semantics
+    // do not compose under chunking — see
+    // benchmarks/RESULTS-bf16-prefill-generalize-2026-09-13.md), so npt>256
+    // pays ~10x attention cost on CPU. NPU_PREFILL_MAX (default 256) bounds
+    // the prompt; raise it to compute longer prefills correctly-but-slowly.
+    if(getenv("NPU_PREFILL_BF16")){
+        int cap=256; const char* e=getenv("NPU_PREFILL_MAX");
+        if(e){ cap=atoi(e); if(cap<1)cap=256; }
+        if(input_tok_file && npt > cap){ fprintf(stderr, "bf16 prefill: npt %d -> %d (cap)\n", npt, cap); npt = cap; }
+    }
+    else if(input_tok_file && npt > XM) {
+        // The fallback used to process ONE XM-row batch and TRUNCATE here (npt = XM). It now
+        // walks the prompt in XM-row blocks instead, so the cap is gone -- but h_b is still XM
+        // rows, so announce that a long prompt costs proportionally more time.
+        // RESULTS-coverage-multifamily 83.
+        fprintf(stderr, "fallback prefill: npt %d walked in %d-row blocks (%d blocks; the \
+"
+                        "activation BO holds %d rows)\n",
+                npt, XM, (npt + XM - 1) / XM, XM);
+    }
+    bool bf16_done = false;
+
+    // ===== PREFILL — bf16 mm.xclbin path (dequant.xclbin + 2-batch GEMM) =====
+    if (getenv("NPU_PREFILL_BF16") && !has_moe) {
+        // Derive the FLM model + xclbin dirs from the MODEL PATH first. The old
+        // H-based table silently gave non-Qwen3 models Qwen3 xclbins: Llama-3.1-8B
+        // (H=4096) loaded Qwen3-8B's mm.xclbin (boot=11) and Qwen3-VL-4B (H=2560)
+        // loaded Qwen3-4B's (boot=300 vs FLM 220). Fall back to the H table only
+        // when the model's own dirs are missing (keeps the dense-Qwen3 defaults).
+        std::string fmd_own, fxd_own;
+        {
+            const size_t mls = mp_s.rfind('/');
+            const std::string mdir_s = (mls != std::string::npos) ? mp_s.substr(0, mls) : std::string();
+            const size_t mls2 = mdir_s.rfind('/');
+            const std::string base = (mls2 != std::string::npos) ? mdir_s.substr(mls2 + 1) : mdir_s;
+            struct stat st;
+            auto isdir = [&](const std::string& p) { return !p.empty() && stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode); };
+            if (isdir(mdir_s)) fmd_own = mdir_s;
+            const std::string xd = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + base;
+            if (isdir(xd)) fxd_own = xd;
+        }
+        std::string fmd_def = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2";
+        std::string fxd_def = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-0.6B-NPU2";
+        if (H == 2048) { fmd_def = "/home/bcloud/.config/flm/models/Qwen3-1.7B-NPU2"; fxd_def = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-1.7B-NPU2"; }
+        else if (H == 2560) { fmd_def = "/home/bcloud/.config/flm/models/Qwen3-4B-NPU2"; fxd_def = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-4B-NPU2"; }
+        else if (H == 4096) { fmd_def = "/home/bcloud/.config/flm/models/Qwen3-8B-NPU2"; fxd_def = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-8B-NPU2"; }
+        const std::string fmd_use = fmd_own.empty() ? fmd_def : fmd_own;
+        const std::string fxd_use = fxd_own.empty() ? fxd_def : fxd_own;
+        const char* fmd = fmd_use.c_str();
+        const char* fxd = fxd_use.c_str();
+        fprintf(stderr, "bf16 prefill: model=%s xclbins=%s\n", fmd, fxd);
+        bool unified = getenv("NPU_UNIFIED") && atoi(getenv("NPU_UNIFIED")) == 1;
+        if (unified && npu_runlist_session_init(mp, H, NC, NH, NKV, IM, NV) != 0) {
+            // When the gate chose this path on its own, its failure must not take
+            // the run down: nothing has run yet, so the runlist path is exactly
+            // where execution would have gone anyway. An EXPLICIT NPU_UNIFIED is
+            // still a hard error — the user asked for this specific combination.
+            if (unified_auto) {
+                fprintf(stderr, "[auto] unified session init failed — falling back to the runlist path\n");
+                int rc = npu_runlist_decode(mp, ng, input_tok_file,
+                                            cfg.H, cfg.NC, cfg.NH, cfg.NKV, cfg.IM, cfg.NV);
+                if (rc == 0) return 0;
+                // Both are unavailable. Clear `unified` so the bf16 prefill below
+                // does not hand its KV to a session that was never built — that
+                // path returns 1 after a full prefill, which reads as a crash
+                // rather than as "this box has no per-ctx ELFs".
+                fprintf(stderr, "[auto] runlist path failed too (rc=%d) — continuing without the "
+                                "unified decode\n", rc);
+                unified = false;
+            } else {
+                fprintf(stderr, "bf16 prefill: runlist session init failed — aborting unified path\n");
+                return 1;
+            }
+        }
+        int qout = NH * HD, kout = NKV * HD, qkvn = qout + 2 * kout;
+        const int gu_chunks = IM / 512;   // GU: 512-out-row chunks (16 tile-rows x 32)
+        std::vector<int> Wqkv(NC), Wo(NC), Wgu(NC), Wd(NC);
+        // The attention shape MUST be set BEFORE init(): init() loads the attention ELFs
+        // and now searches a shape-specific name first (attn_mha_<tok>_nh<NH>_hd<HD>.elf),
+        // so the shape has to be known by then. That lookup is what makes a per-family
+        // attention ELF a drop-in file instead of a code change.
+        bf16mm_set_attn_qout(NH * HD);
+        bf16mm_set_attn_hd(HD);
+        if (getenv("NPU_ATTN_CTX") && atoi(getenv("NPU_ATTN_CTX")) == 1
+            && NH == 20 && NKV == 4 && HD == 128) ac_ctx_init(dev, NH, NKV, HD);
+        if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV, HD) == 0) {
+            // KV cache region stride is baked into the captured attention ELF
+            // (region = MAX_L x 4 heads x HD x 2 bytes): the NH=16 ELF was
+            // captured at MAX_L=8192 -> 8MB; the NH=32 ELF (4B/8B) at
+            // MAX_L=4096 -> 4MB. Must match the ELF, not the model's decode
+            // MAX_L (the 4B/8B whole-layer path uses 12/24MB, but the standalone
+            // attention ELF uses 4MB).
+            uint32_t kv_region = 4194304;
+            if (H == 2560) kv_region = 2097152;
+            else if (H == 4096) kv_region = 2097152;
+            // ...but the stride must follow the CAPTURE that will actually run,
+            // not just the shape. The <=4096 nh32 kernels were taken with
+            // MAX_L=4096 (a 4096-token region) and the 8192 nh32 capture with
+            // MAX_L=8192 (8192 tokens), so above 4096 the wider stride is the
+            // correct one — and with the narrow one the kernel would read past
+            // the region, which is wrong rather than slower.
+            if (npt > 4096 && (H == 2560 || H == 4096)) kv_region = 4194304;
+            // NPU_ATTN_KV_REGION: override for the shape the H table conflates.
+            // The table keys on H (a proxy for nh16-vs-nh32), so Nanbeige (H=2560,
+            // nh20) inherits Qwen3-4B's nh32 4MB region even though it runs the
+            // nh20 ELF. RESULTS-coverage-multifamily 93: the bf16 attention is
+            // context-free, so the region stride baked into the ELF is a suspect.
+            if (const char* kr = getenv("NPU_ATTN_KV_REGION")) { int v = atoi(kr); if (v > 0) kv_region = (uint32_t)v; }
+            // NPU_ATTN_V_REGION_ADD: bKv places K at region (kvh<4?0:1) and V at region+add.
+            // add=2 is the FOUR-REGION convention (K in regions 0-1, V in 2-3) and is what
+            // the embedded nh16 ELF consumes. The earlier hedge -- that an nkv4 model
+            // (Nanbeige) "may expect the packed K|V layout (add=1)" -- is REFUTED: FLM's own
+            // nanbeige_npu_sequence.hpp exposes get_k03/get_k47/get_v03/get_v47 offsets, i.e.
+            // the SAME four-region split (K in halves 0-3 and 4-7, then V the same), so add=2
+            // is right for nkv4 as well. RESULTS-coverage-multifamily 166. The add=1 branch is
+            // therefore DEAD, and this knob cannot move a number that means anything; it is
+            // kept only as an inertness control, with the default 2 being correct.
+            int v_add = 2; if (const char* e = getenv("NPU_ATTN_V_REGION_ADD")) { int v = atoi(e); if (v >= 1 && v <= 3) v_add = v; }
+            fprintf(stderr, "bf16 attn: kv_region=%u v_region_add=%d (H=%d NKV=%d)\n", kv_region, v_add, H, NKV);
+            bf16mm_set_attn_kv_region(kv_region);
+            // layer_bo_bytes must be read AFTER prefill_init (it needs the loaded
+            // model; before init g_bf16_mw is null -> the 10MB 0.6B fallback).
+            int layer_bo_bytes = npu_bf16_layer_bo_bytes();
+            if (layer_bo_bytes <= 0) layer_bo_bytes = 2048 * 5120;
+            std::vector<uint8_t> bo(layer_bo_bytes);
+            int offs[6];
+            for (int l = 0; l < NC; l++) {
+                npu_bf16_pack_layer(l, bo.data(), offs);
+                if (l == 0 && getenv("NPU_DUMP_BO")) {
+                    FILE* fbo = fopen("/tmp/bo_dump.bin", "wb");
+                    if (fbo) { fwrite(bo.data(), 1, layer_bo_bytes, fbo); fclose(fbo); }
+                    fprintf(stderr, "[BODUMP] layer_bo_bytes=%d offs=[%d,%d,%d,%d,%d,%d]\n",
+                            layer_bo_bytes, offs[0],offs[1],offs[2],offs[3],offs[4],offs[5]);
+                }
+                // GU: dequant per 512-out-row chunk. The packed BO alternates
+                // up/gate in CH=H/16-tile chunks (each = 16 tile-rows x 32 =
+                // 512 out-rows), so up chunk c sits at gu_off + c*2*CH and gate
+                // chunk c at gu_off + c*2*CH + CH. D_out=512 keeps each dequant
+                // output (H x 512 bf16) far under the dequant output-BD capacity
+                // that broke D_out=IM/2*IM for 1.7B+ (25/50 MB).
+                const int CH_tiles = H / 16;
+                const int gu_off = offs[4];
+                // Concatenate the interleaved gate/up chunks into one contiguous
+                // [gate | up] N=2·IM device W so the GU FFN is a single GEMM.
+                // GU: dequant the FULL up (mode=1) + gate (mode=2) — the dequant
+                // seq reads the alternating up/gate tiles from the interleaved
+                // region (matches FLM's two D_out=3072 calls).
+                std::vector<uint16_t> gu_full((size_t)H * 2 * IM);
+                bf16mm_dequant_mode(gu_full.data(), bo.data(), H, IM, (uint32_t)gu_off * 5120, 2);  // gate
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fw = fopen("/tmp/bf16_l0_W.bin", "wb"); if (fw) { fwrite(gu_full.data(), 2, H * IM, fw); fclose(fw); } }
+                bf16mm_dequant_mode(gu_full.data() + (size_t)H * IM, bo.data(), H, IM, (uint32_t)gu_off * 5120, 1);  // up
+                Wgu[l] = bf16mm_upload_w(gu_full.data(), H, 2 * IM);
+                Wqkv[l]  = bf16mm_dequant_dev(bo.data(), H, qkvn, (uint32_t)offs[0] * 5120, (size_t)layer_bo_bytes);
+                if (l == 0 && getenv("NPU_DUMP_L0")) { fprintf(stderr, "[init] H=%d qkvn=%d Wqkv[0]=%d\n", H, qkvn, Wqkv[0]); bf16mm_dump_w(Wqkv[0], "/tmp/bf16_l0_Wqkv.bin"); }
+                Wo[l]    = bf16mm_dequant_dev(bo.data(), qout, H, (uint32_t)offs[3] * 5120, (size_t)layer_bo_bytes);
+                Wd[l]    = bf16mm_dequant_dev(bo.data(), IM, H, (uint32_t)offs[5] * 5120, (size_t)layer_bo_bytes);
+            }
+            fprintf(stderr, "bf16 prefill: %d layers dequant done\n", NC);
+            printf("=== Prefill %d [bf16] ===\n", npt); fflush(stdout);
+            // npt- and model-size-dependent host-thread default (see host_threads()).
+            if (!getenv("NPU_HOST_THREADS"))
+                g_host_threads_default = (npt <= 256) ? 8 : (H >= 2560 ? 24 : 16);
+            bf16mm_set_attn_tokens(npt);
+            auto t0 = std::chrono::steady_clock::now();
+            // Row tiling. Bf16Mm::ensure_a() stages exactly two 128-row halves
+            // starting at the A pointer it is handed, so ONE launch covers 128
+            // rows when the base is shifted by 128 rows and batch 0 is used.
+            // Everything below therefore walks the prompt in 128-row blocks;
+            // the previous code hardcoded exactly two of them, which silently
+            // capped this whole path at 256 rows (rows >= 256 kept stale data
+            // and NPU_PREFILL_MAX>256 reported the 256-row wall time as if it
+            // had prefetched npt tokens — see
+            // benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md).
+            // +256 rows of slack: ensure_a now stages a full 256-row block from
+            // the shifted base, and gemm_wait reads 256 rows back, so the tail
+            // block must be able to run past npt without leaving the buffer.
+            const int NPAD = ((npt + 255) / 256) * 256 + 512;
+            const int NP = NPAD;
+            std::vector<float> bh(NP * H), bqo(NP * qkvn), bat(NP * NH * HD), boo(NP * H),
+                               bdw(NP * H), bsb(NP * H);
+            std::vector<uint16_t> bA((size_t)NP * std::max({H, qout, IM})), bC((size_t)NP * 2 * IM);
+            // SiLU(GU) output gets its own buffer. Writing it back into bA is
+            // only safe when every block's kernel has been launched first (the
+            // old 2-batch pipeline relied on that), which a block loop cannot
+            // guarantee — bA[pi*IM] overlaps unread rows of bA[pi*H] for H<IM.
+            std::vector<uint16_t> bGu((size_t)NP * IM);
+            std::vector<uint16_t> bActQ((size_t)NP * qout), bKv((size_t)kv_region * 4);
+            memset(bActQ.data(), 0, (size_t)NP * qout * 2);
+            memset(bKv.data(), 0, (size_t)kv_region * 4 * 2);
+            for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = emb_f32[pt_vec[pi] * H + i];
+            for (int pi = npt; pi < NP; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = 0;
+            double tg = 0, ta = 0, tc = 0;
+            for (int l = 0; l < NC; l++) {
+                fprintf(stderr, "  L%d", l); fflush(stderr);
+                auto tc0 = std::chrono::steady_clock::now();
+                #pragma omp parallel for schedule(static) num_threads(host_threads())
+                for (int pi = 0; pi < npt; pi++) {
+                    for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
+                    rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
+                }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fb = fopen("/tmp/bf16_l0_bA.bin", "wb"); if (fb) { fwrite(bA.data(), 2, 4 * H, fb); fclose(fb); } }
+                auto tg0 = std::chrono::steady_clock::now();
+                // QKV in ONE GEMM (N=qkvn) — 128-row blocks, batch 0 each time
+                // with the A base shifted to the block. Single N=qkvn GEMM is
+                // byte-exact at all lengths (verified vs FLM, n=1..256).
+                auto qk_norm_pi = [&](int pi, int brow) {
+                    for (int i = 0; i < qkvn; i++) bqo[pi * qkvn + i] = bf16g(bC[brow * qkvn + i]);
+                    for (int hh = 0; hh < NH; hh++) {
+                        double s = 0;
+                        for (int d = 0; d < HD; d++) s += (double)bqo[pi * qkvn + hh * HD + d] * bqo[pi * qkvn + hh * HD + d];
+                        float iq = 1.0f / sqrtf((float)(s / HD) + EPS);
+                        if (cfg.has_q_norm) for (int d = 0; d < HD; d++) bqo[pi * qkvn + hh * HD + d] *= iq * qn_w[l][d];
+                        ra(&bqo[pi * qkvn + hh * HD], HD, sp + pi);
+                    }
+                    for (int kvh = 0; kvh < NKV; kvh++) {
+                        float* ks = &bqo[pi * qkvn + cfg.qkv_k_offset + kvh * HD];
+                        float* vs = &bqo[pi * qkvn + cfg.qkv_v_offset + kvh * HD];
+                        double sk = 0; for (int d = 0; d < HD; d++) sk += (double)ks[d] * ks[d];
+                        float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
+                        if (cfg.has_k_norm) for (int d = 0; d < HD; d++) ks[d] *= ik * kn_w[l][d];
+                        ra(ks, HD, sp + pi);
+                        memcpy(&kv_caches[l][0].k[(sp + pi) * NKV * HD + kvh * HD], ks, HD * 4);
+                        memcpy(&kv_caches[l][0].v[(sp + pi) * NKV * HD + kvh * HD], vs, HD * 4);
+                        // build bKv directly from the norm'd+RoPE'd ks/vs (skip
+                        // the kv_caches re-read round-trip)
+                        int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
+                        for (int d = 0; d < HD; d++) {
+                            bKv[(size_t)region * kv_region + (size_t)pi * 512 + (size_t)lh * HD + d] = f32_to_bf16(ks[d]);
+                            bKv[(size_t)(region + v_add) * kv_region + (size_t)pi * 512 + (size_t)lh * HD + d] = f32_to_bf16(vs[d]);
+                        }
+                    }
+                };
+                kv_caches[l][0].n = sp + npt;
+                // 256 rows per block: batch 0 = rows b..b+127, batch 1 =
+                // b+128..b+255. ensure_a() stages both halves from the SAME
+                // pointer, so batch 1 costs no extra staging (cache hit) while
+                // giving the kernel M=128 per launch and overlapping batch 1's
+                // kernel with batch 0's norm/RoPE.
+                {
+                    // Double-buffered blocks: launch block i+1 (the other slot)
+                    // BEFORE converting block i, so the device runs while the host
+                    // converts. Each block reads/writes its own bC region.
+                    const int nblk = (npt + 255) / 256;
+                    for (int i = 0; i < nblk && i < 2; i++)
+                        bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, i & 1, bA.data() + (size_t)(i * 256) * H);
+                    for (int i = 0; i < nblk; i++) {
+                        const int b = i * 256;
+                        const int rows = npt - b < 256 ? npt - b : 256;
+                        bf16mm_gemm_wait(i & 1, bC.data() + (size_t)b * qkvn);
+                        if (i + 2 < nblk)
+                            bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, i & 1, bA.data() + (size_t)((i + 2) * 256) * H);
+                        #pragma omp parallel for schedule(static) num_threads(host_threads())
+                        for (int pi = b; pi < b + rows; pi++) qk_norm_pi(pi, pi);   // readback lands at bC[pi*qkvn]
+                    }
+                }
+                auto ta0 = std::chrono::steady_clock::now();
+                tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fq = fopen("/tmp/bf16_l0_qkv.bin", "wb"); if (fq) { fwrite(bqo.data(), 4, getenv("NPU_DUMP_L0_FULL") ? (size_t)npt * qkvn : (size_t)qkvn, fq); fclose(fq); } }
+                // NPU_DUMP_L0_FULL also dumps the post-attention activation (bA) for all npt rows:
+                // RESULTS-coverage-multifamily 133 needs row 1, not row 0, to test the single-block
+                // hypothesis (npt>1 && npt<=256 is always wrong; npt=1 is exact).
+                if (l == 0 && getenv("NPU_DUMP_L0_FULL")) { FILE* fa = fopen("/tmp/bf16_l0_attnin.bin", "wb"); if (fa) { fwrite(bA.data(), 2, (size_t)npt * qout, fa); fclose(fa); } }
+                // Build attention inputs from the host-norm'd + RoPE'd Q/K/V.
+                // attn.xclbin expects PRE-RoPE'd Q and K + raw V — the host
+                // applies q_norm/k_norm + RoPE, the kernel does NOT.
+                #pragma omp parallel for schedule(static) num_threads(host_threads())
+                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qout; i++)
+                    bActQ[pi * qout + i] = f32_to_bf16(bqo[pi * qkvn + i]);
+                if (unified && npu_runlist_write_kv(l, sp, npt, bKv.data(), (int)kv_region) != 0) {
+                    fprintf(stderr, "\nbf16 prefill: runlist KV write L%d failed\n", l);
+                    return 1;
+                }
+                if (l == 0 && getenv("NPU_DUMP_ATTNIO")) {
+                    FILE* fa = fopen("/tmp/eng_act.bin", "wb"); if (fa) { fwrite(bActQ.data(), 2, 256 * qout, fa); fclose(fa); }
+                    FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, bKv.size(), fk); fclose(fk); }
+                }
+                bool attn_host = false;
+                // VERIFIED ENVELOPE for the captured attention ELF. Gate = boot
+                // token equal to the two trusted paths (NPU_RUNLIST=1, byte-exact
+                // int8, and NPU_FLM_PREFILL=1), which agree with each other:
+                //
+                //   npt <= 256            -> NPU, 1 chunk   correct (boot=1614 @256)
+                //   npt == 512            -> NPU, 2 chunks  correct (boot=220  @512)
+                //   other 256-multiples   -> WRONG          (768 -> 220, want 125959;
+                //                                            1024 -> 220, want 25)
+                //   partial chunks        -> WRONG          (320/384/640/896 all diverge)
+                //
+                // So the kernel composes over at most TWO full 256-row chunks; a
+                // growing key prefix beyond 512 keys and any partial chunk break
+                // it. (A concurrent session independently reported "partial chunks
+                // and >512 keys diverge" — same conclusion.) Outside the envelope
+                // the CPU reference runs instead: correct, ~10-18x slower.
+                // SOLVED (round 32): ONE call now covers all npt query rows and
+                // all npt keys. run_attn selects the embedded captured kernel for
+                // npt <= 256 and the long-context ELF captured from FLM's REAL
+                // 1024-token prefill (npu-infer/tools/capture, elf_0012, 98848 B)
+                // above that. The earlier embedded-only kernel genuinely did not
+                // compose past ~512 keys — that was a property of the SHORT
+                // capture, not a law: the 1024-context capture is correct.
+                //
+                // Verified against the byte-exact NPU_RUNLIST=1 int8 path:
+                //   256 -> 1614   512 -> 220   896 -> 29978   1024 -> 25
+                // 768 -> 16 vs the int8 path's 17, which is the known near-tied
+                // argmax between the bf16 and int8 decompositions: bf16 with CPU
+                // attention returns 16 at that length as well.
+                bool attn_npu_ok = !getenv("NPU_ATTN_CPU");
+                bool attn_ctx_ok = false;
+                // NPU_ATTN_CTX=1: drive the GENERATED family attention kernel through
+                // the AttnCtx host driver (the same one zaya_decode.cpp uses) instead of
+                // Bf16Mm's captured (act,out,kv) ELF. The generated kernel is a
+                // decode-shape (M=8) kernel, so this issues one query row per call: it is
+                // the CORRECTNESS path for families whose generated ELF is AttnCtx-ABI
+                // (Nanbeige nh20/nkv4/hd128) and is much slower than the captured
+                // short-context ELF. NPU_ATTN_XCLBIN / NPU_ATTN_INSTS / NPU_ATTN_MAX_SEQ
+                // select the build; NPU_ATTN_KV_REGION (already handled above) sizes bKv.
+                if (attn_npu_ok && getenv("NPU_ATTN_CTX") && atoi(getenv("NPU_ATTN_CTX")) == 1
+                    && NH == 20 && NKV == 4 && HD == 128) {
+                    if (!g_ac_tried) ac_ctx_init(dev, NH, NKV, HD);
+                    if (g_ac_ready) {
+                        AttnCtx& ac = g_ac;
+                        static std::vector<float> ac_ao;
+                        ac_ao.resize((size_t)qout);
+                        for (int pi = 0; pi < npt; pi++) {
+                            const int keys2 = sp + pi + 1;
+                            ac.run(&bqo[(size_t)pi * qkvn],
+                                   kv_caches[l][0].k.data(), kv_caches[l][0].v.data(),
+                                   keys2, ac_ao.data());
+                            for (int j = 0; j < qout; j++)
+                                bA[(size_t)pi * qout + j] = f32_to_bf16(ac_ao[j]);
+                        }
+                        attn_ctx_ok = true;
+                        if (l == 0 || l == NC - 1)
+                            fprintf(stderr, "[NPU_ATTN_CTX] L%d rows=%d keys=%d..%d\n",
+                                    l, npt, sp + 1, sp + npt);
+                    }
+                }
+                if (attn_npu_ok && !attn_ctx_ok) {
+                    // BF16MM_ATTN_CUMKEYS (default OFF, behaviour unchanged): pass the
+                    // CUMULATIVE key count (sp + npt) instead of the chunk size. The member
+                    // doc defines attn_tokens as "keys present in the KV BO" -- and this
+                    // prefill loop processes the prompt in XM-token blocks (:4503, measured
+                    // rows=256 at npt=1024 in section 194), with the KV BO holding the whole
+                    // prefix. So passing npt makes blocks 2..N attend over only the LAST XM
+                    // keys, which is exactly the context-free signature section 92 measured
+                    // (boot = f(last token) alone; first token 16 vs 220 -> same 188).
+                    // Order matters: set_attn_tokens RESETS rows to 0, so rows must follow.
+                    const int keys = getenv("BF16MM_ATTN_CUMKEYS") ? (sp + npt) : npt;
+                    bf16mm_set_attn_tokens(keys);
+                    bf16mm_set_attn_rows(npt);
+                    attn_npu_ok = bf16mm_attn(bA.data(), bActQ.data(), bKv.data()) != 0;
+                }
+                if (!attn_npu_ok) {
+                    if (getenv("NPU_ATTN_CPU")) fprintf(stderr, "\n[NPU_ATTN_CPU] forced CPU attn_omp\n");
+                    else if (npt > 256) fprintf(stderr, "\nbf16 attn: npt %d outside the verified envelope (<=256, or exactly 512) — CPU attn_omp fallback\n", npt);
+                    else fprintf(stderr, "\nbf16 attn unavailable — CPU attn_omp fallback\n");
+                    attn_host = true;
+                    #pragma omp parallel for
+                    for (int pi = 0; pi < npt; pi++)
+                        attn_omp(&bqo[pi * qkvn], &bat[pi * NH * HD], kv_caches[l][0].n, kv_caches[l][0].k.data(),
+                                 kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
+                } else {
+                    // attn writes its bf16 output straight into bA (the O-GEMM A)
+                    if (l == 0 && getenv("NPU_DUMP_ATTNIO")) {
+                        FILE* fo = fopen("/tmp/eng_out.bin", "wb"); if (fo) { fwrite(bA.data(), 2, 256 * qout, fo); fclose(fo); }
+                    }
+                    // NPU_ATTN_DIFF: run the HOST attention on the SAME layer-0 data and compare.
+                    // The two paths consume different buffers (bActQ/bKv vs bqo/kv_caches) holding the
+                    // same underlying Q/K/V, so a large difference localises the fault to the NPU
+                    // attention step or its bKv/bActQ layout (RESULTS-coverage-multifamily 113/118).
+                    if (getenv("NPU_ATTN_DIFF")) {
+                        #pragma omp parallel for
+                        for (int pi = 0; pi < npt; pi++)
+                            attn_omp(&bqo[pi * qkvn], &bat[pi * NH * HD], kv_caches[l][0].n,
+                                     kv_caches[l][0].k.data(), kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
+                        double mx = 0; int mpi = -1, mj = -1;
+                        for (int pi = 0; pi < npt; pi++)
+                            for (int j = 0; j < qout; j++) {
+                                double d = fabs((double)bf16g(bA[(size_t)pi * qout + j]) - (double)bat[pi * NH * HD + j]);
+                                if (d > mx) { mx = d; mpi = pi; mj = j; }
+                            }
+                        double sabs = 0; for (int j = 0; j < qout; j++) sabs += fabs((double)bat[j]);
+                        double qmax = 0, kvmax = 0;
+                        for (size_t i = 0; i < (size_t)npt * qout; i++) { double v = fabs((double)bf16g(bActQ[i])); if (v > qmax) qmax = v; }
+                        for (size_t i = 0; i < bKv.size(); i++) { double v = fabs((double)bf16g(bKv[i])); if (v > kvmax) kvmax = v; }
+                        fprintf(stderr, "[ATTN-DIFF L%d] npt=%d max|npu-host|=%.6g at (tok %d, dim %d) | max|bActQ|=%.6g max|bKv|=%.6g | npu[0][0]=%.6g host[0][0]=%.6g\n",
+                                l, npt, mx, mpi, mj, qmax, kvmax, bf16g(bA[0]), bat[0]);
+                        if (l == 0) {
+                            // Per-head max diff, plus the scale of the host output, so a concentrated
+                            // (layout) vs uniform (bf16 rounding) difference can be told apart.
+                            std::vector<double> hmax(NH, 0.0), hscale(NH, 0.0), nscale(NH, 0.0);
+                            for (int pi = 0; pi < npt; pi++)
+                                for (int hh = 0; hh < NH; hh++) {
+                                    for (int d = 0; d < HD; d++) {
+                                        double nv = fabs((double)bf16g(bA[(size_t)pi * qout + hh * HD + d]));
+                                        double dv = fabs(nv - (double)bat[pi * NH * HD + hh * HD + d]);
+                                        double hv = fabs((double)bat[pi * NH * HD + hh * HD + d]);
+                                        if (dv > hmax[hh]) hmax[hh] = dv;
+                                        if (hv > hscale[hh]) hscale[hh] = hv;
+                                        if (nv > nscale[hh]) nscale[hh] = nv;
+                                    }
+                                }
+                            fprintf(stderr, "[ATTN-DIFF-H0]");
+                            for (int hh = 0; hh < NH; hh++) fprintf(stderr, " h%d:%.4g/%.4g/%.4g", hh, hmax[hh], nscale[hh], hscale[hh]);
+                            fprintf(stderr, "   (per head: max|npu-host| / max|npu| / max|host|)\n");
+                        }
+                    }
+                }
+                auto ta1 = std::chrono::steady_clock::now();
+                ta += std::chrono::duration<double, std::milli>(ta1 - ta0).count();
+                // O GEMM (K = NH*HD) — 128-row blocks.
+                if (attn_host) for (int k = 0; k < npt; k++) for (int j = 0; j < qout; j++) bA[(size_t)k * qout + j] = f32_to_bf16(bat[k * qout + j]);
+                // NPU_DUMP_L0_FULL: the POST-attention activation, for all npt rows (RESULTS 133).
+                if (l == 0 && getenv("NPU_DUMP_L0_FULL")) { FILE* fa = fopen("/tmp/bf16_l0_attnout.bin", "wb"); if (fa) { fwrite(bA.data(), 2, (size_t)npt * qout, fa); fclose(fa); } }
+                {
+                    const int nblk = (npt + 255) / 256;
+                    for (int i = 0; i < nblk && i < 2; i++)
+                        bf16mm_gemm_launch(Wo[l], qout, H, 0, i & 1, bA.data() + (size_t)(i * 256) * qout);
+                    for (int i = 0; i < nblk; i++) {
+                        const int b = i * 256;
+                        const int rows = npt - b < 256 ? npt - b : 256;
+                        bf16mm_gemm_wait(i & 1, bC.data() + (size_t)b * H);
+                        if (i + 2 < nblk)
+                            bf16mm_gemm_launch(Wo[l], qout, H, 0, i & 1, bA.data() + (size_t)((i + 2) * 256) * qout);
+                        #pragma omp parallel for schedule(static) num_threads(host_threads())
+                        for (int pi = b; pi < b + rows; pi++) {
+                            #pragma omp simd
+                            for (int i2 = 0; i2 < H; i2++) boo[pi * H + i2] = bf16g(bC[pi * H + i2]);
+                            #pragma omp simd
+                            for (int i2 = 0; i2 < H; i2++) bh[pi * H + i2] = bsb[pi * H + i2] + boo[pi * H + i2];
+                        }
+                    }
+                }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
+                // FFN: RMSNorm + GU + SiLU×up + D (bsb copy fused into the norm region)
+                #pragma omp parallel for schedule(static) num_threads(host_threads())
+                for (int pi = 0; pi < npt; pi++) {
+                    for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
+                    rn_bf16(&bA[pi * H], &bh[pi * H], pa_n[l].data(), H);
+                }
+                // GU FFN: [gate | up] = A×Wgu in ONE GEMM (N=2·IM); SiLU on host.
+                // 128-row blocks; SiLU lands in bGu so bA stays intact for the
+                // next block's A readback.
+                {
+                    const int nblk = (npt + 255) / 256;
+                    for (int i = 0; i < nblk && i < 2; i++)
+                        bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, i & 1, bA.data() + (size_t)(i * 256) * H);
+                    for (int i = 0; i < nblk; i++) {
+                        const int b = i * 256;
+                        const int rows = npt - b < 256 ? npt - b : 256;
+                        bf16mm_gemm_wait(i & 1, bC.data() + (size_t)b * 2 * IM);
+                        if (i + 2 < nblk)
+                            bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, i & 1, bA.data() + (size_t)((i + 2) * 256) * H);
+                        #pragma omp parallel for schedule(static) num_threads(host_threads())
+                        for (int pi = b; pi < b + rows; pi++) {
+                            // Branchless finite test: (g0-g0==0) is false for NaN and
+                            // +-inf, so this is std::isfinite with no control flow, which
+                            // lets the loop vectorize.
+                            #pragma omp simd
+                            for (int i2 = 0; i2 < IM; i2++) {
+                                const float g0 = bf16g(bC[pi * 2 * IM + i2]);
+                                const float gv = (g0 - g0 == 0.0f) ? g0 : 0.0f;
+                                bGu[(size_t)pi * IM + i2] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[pi * 2 * IM + IM + i2]));
+                            }
+                        }
+                    }
+                }
+                // D GEMM — 128-row blocks, A = the SiLU'd GU output.
+                {
+                    const int nblk = (npt + 255) / 256;
+                    for (int i = 0; i < nblk && i < 2; i++)
+                        bf16mm_gemm_launch(Wd[l], IM, H, 0, i & 1, bGu.data() + (size_t)(i * 256) * IM);
+                    for (int i = 0; i < nblk; i++) {
+                        const int b = i * 256;
+                        const int rows = npt - b < 256 ? npt - b : 256;
+                        bf16mm_gemm_wait(i & 1, bC.data() + (size_t)b * H);
+                        if (i + 2 < nblk)
+                            bf16mm_gemm_launch(Wd[l], IM, H, 0, i & 1, bGu.data() + (size_t)((i + 2) * 256) * IM);
+                        #pragma omp parallel for schedule(static) num_threads(host_threads())
+                        for (int pi = b; pi < b + rows; pi++) {
+                            #pragma omp simd
+                            for (int i2 = 0; i2 < H; i2++) bdw[pi * H + i2] = bf16g(bC[pi * H + i2]);
+                            #pragma omp simd
+                            for (int i2 = 0; i2 < H; i2++) bh[pi * H + i2] = bsb[pi * H + i2] + bdw[pi * H + i2];
+                        }
+                    }
+                }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
+                tc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();
+                // NPU_DUMP_HIDDEN: full [token][H] block for this layer (was H
+                // floats = token 0 only, which cannot see rows the fixed-width
+                // attention ELF may not have written).
+                if (const char* dh = getenv("NPU_DUMP_HIDDEN")) { FILE* df = fopen(dh, "ab"); if (df) { fwrite(bh.data(), 4, (size_t)npt * H, df); fclose(df); } }
+                fprintf(stderr, "\n"); fflush(stderr);
+            }
+            sp += npt;
+            memcpy(h_data.data(), &bh[(npt - 1) * H], H * 4);
+            if (getenv("NPU_DUMP_L0")) { FILE* fh = fopen("/tmp/bf16_l0_hidden.bin", "wb"); if (fh) { fwrite(h_data.data(), 4, H, fh); fclose(fh); } }
+            printf("Prefill: %.0fms (%.3f ms/tok) [GEMM %.0fms, attn %.0fms, conv+other %.0fms]\n\n",
+                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / npt, tg, ta, tc);
+
+            // ===== unified decode: bf16-prefill KV + final hidden -> runlist =====
+            if (unified) {
+                std::vector<uint16_t> bfh(H);
+                // The runlist lm_head kernel applies the final norm (fnorm BO) to
+                // the act BO itself — hand it the PRE-final-norm hidden state.
+                for (int i = 0; i < H; i++) bfh[i] = f32_to_bf16(bh[(npt - 1) * H + i]);
+                if (npu_runlist_write_act(bfh.data()) != 0) {
+                    fprintf(stderr, "[unified] act handoff failed\n");
+                    return 1;
+                }
+                std::vector<float> lg(NV);
+                std::vector<int> uni_ids(ng, 0);
+                auto tgs = std::chrono::steady_clock::now();
+                int ctx = sp;   // tokens already in KV (prefill length)
+                for (int i = 0; i < ng; i++) {
+                    int rc;
+                    if (i == 0) {
+                        rc = npu_runlist_lmhead(lg.data(), NV);
+                    } else {
+                        rc = npu_runlist_embed(uni_ids[i - 1]);
+                        if (rc == 0) rc = npu_runlist_forward(++ctx, lg.data(), NV);
+                    }
+                    if (rc != 0) { fprintf(stderr, "[unified] decode step %d failed\n", i); return 1; }
+                    int best = 0;
+                    for (int v = 1; v < NV; v++) if (lg[v] > lg[best]) best = v;
+                    uni_ids[i] = best;
+                    printf("  [%d] %d\n", i + 1, best);
+                    // RT_ARGMAX_MARGIN: top-2 logits and their gap, for every step
+                    // including the boot. A token that differs from the reference
+                    // implementation at a gap of ~bf16 noise is a tie; the same
+                    // difference at a large gap is a defect. Without this every
+                    // token-level disagreement in a comparison table is
+                    // uninterpretable — 220 vs 16 is a big difference in ID and can
+                    // still be a coin flip in logits.
+                    if (getenv("RT_ARGMAX_MARGIN")) {
+                        int b2 = -1;
+                        for (int v = 0; v < NV; v++)
+                            if (v != best && (b2 < 0 || lg[v] > lg[b2])) b2 = v;
+                        fprintf(stderr, "[margin] step=%d top=%d(%.6g) second=%d(%.6g) gap=%.6g\n",
+                                i + 1, best, (double)lg[best], b2,
+                                b2 >= 0 ? (double)lg[b2] : 0.0,
+                                b2 >= 0 ? (double)(lg[best] - lg[b2]) : 0.0);
+                    }
+                }
+                auto tge = std::chrono::steady_clock::now();
+                double tts = std::chrono::duration<double>(tge - tgs).count();
+                printf("\n=== %.1f ms/tok (%.0f tok/s) | tokens=%d ===\n",
+                       tts * 1000.0 / ng, ng / tts, ng);
+                fflush(stdout); fflush(stderr);
+                _exit(0);
+            }
+        }
+        bf16_done = true;
+    }
 
     // Direct-mode GDN state (per-layer conv + delta rule buffers) — the
     // worker op=32 path has its own fuse_* copies (#1472). Sized by per-layer
     // maxima: access strides are per-layer, so fixed Qwen3.6 sizes overflow
     // on sibling geometry (#1482 review).
     std::vector<float> dm_gdn_conv, dm_gdn_delta;
-    if (has_moe) {
+    if (has_moe || cfg.has_gated_delta_net) {
         dm_gdn_conv.resize((size_t)NC * max_gdn_conv_dim * max_gdn_conv_k, 0.0f);
         dm_gdn_delta.resize((size_t)NC * max_gdn_vh * max_gdn_hd * max_gdn_hd, 0.0f);
     }
 
     // ===== PREFILL (pipelined: parallel QKV+GU launch, overlapped dequant) =====
-    printf("=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
-    for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[pt_vec[pi]*H+i];
+    if (!bf16_done) {
+    printf("=== Prefill %d [fallback] ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
+    // Block walk. The fallback used to process ONE XM-row batch, so a longer prompt was
+    // TRUNCATED here (npt = XM, announced just above) -- which is why this path returned
+    // context-free-looking tokens and why its prefill cost was flat above XM. Everything in
+    // the layer loop below is ALREADY written in absolute-position form -- RoPE via
+    // ra(..., sp+pi), the KV at (sp+pi)*NKV*HD, the attention length sp+pi+1, and
+    // kv_caches[l][0].n = sp + npt -- so walking the prompt in XM-row blocks accumulates the
+    // KV correctly with no other change. The single absolute-row reference was the embedding
+    // of pt_vec[pi], which becomes pt_vec[sp+pi]; that is a NO-OP while sp == 0, so the
+    // first block behaves exactly as before. h_b stays XM rows, which is what the cap was
+    // protecting. RESULTS-coverage-multifamily 83.
+    const int npt_full = npt;
+    const int sp0 = sp;
+    int last_row = 0;
+    for (int blk0 = 0; blk0 < npt_full; blk0 += XM) {
+    npt = (npt_full - blk0 < XM) ? (npt_full - blk0) : XM;
+    sp = sp0 + blk0;
+    for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[(size_t)pt_vec[sp+pi]*H+i];
     if(npu_dbg()){fprintf(stderr,"EMB0:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",emb_f32[(size_t)pt_vec[0]*H+i]);fprintf(stderr,"\n");}
     xrt::run pending_gu; bool has_pending=false;
     for(int l=0;l<NC;l++){
@@ -3681,6 +5206,12 @@ struct Bf16Ctx {
         else
             FLM_FINISH_ASYNC_ROWS(cq,r_qkv,qo_b.data(),npt,qkv_n,qkv_ascales.data(),qsc[l],l);
         cn(qo_b.data(),npt*qkv_n);
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fi0 = fopen("/tmp/l0_input.bin", "wb");
+            if (fi0) { fwrite(h_b.data(), 4, H, fi0); fclose(fi0); }
+            FILE* fq = fopen("/tmp/l0_qkv.bin", "wb");
+            if (fq) { fwrite(qo_b.data(), 4, qkv_n, fq); fclose(fq); }
+        }
         if(npu_dbg()&&l==0){
             dbg("QKV0q:",qo_b.data(),8);
             dbg("QKV0k:",qo_b.data()+cfg.qkv_k_offset,8);
@@ -3702,7 +5233,7 @@ struct Bf16Ctx {
                               dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
                               dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                               &at_b[(size_t)pi * NH * HD]);
-        } else if (has_moe) {
+        } else if (has_moe || cfg.has_gated_delta_net) {
             for (int pi = 0; pi < npt; pi++) {
                 int pos = sp + pi;
                 std_attn_step(l, &h_b[pi * H], &qo_b[(size_t)pi * qkv_n], kv_caches[l][0], pos,
@@ -3746,6 +5277,18 @@ struct Bf16Ctx {
         for (int pi = 0; pi < npt; pi++) o_ascales[pi] = dynamic_ascale(&at_b[pi * NH * HD], NH * HD);
         FLM_GO_ROWS(co,l,at_b.data(),npt,NH*HD,o_ascales.data(),o_ascales.data(),osc[l],oo_b.data(),H);
         cn(oo_b.data(),npt*H);
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fa = fopen("/tmp/l0_attn.bin", "wb");
+            if (fa) { fwrite(at_b.data(), 4, (size_t)npt * NH * HD, fa); fclose(fa); }
+            FILE* fo = fopen("/tmp/l0_o.bin", "wb");
+            if (fo) { fwrite(oo_b.data(), 4, H, fo); fclose(fo); }
+        }
+        if (l == 3 && getenv("NPU_DUMP_L0")) {
+            FILE* fa = fopen("/tmp/l3_attn.bin", "wb");
+            if (fa) { fwrite(at_b.data(), 4, (size_t)npt * NH * HD, fa); fclose(fa); }
+            FILE* fo = fopen("/tmp/l3_o.bin", "wb");
+            if (fo) { fwrite(oo_b.data(), 4, H, fo); fclose(fo); }
+        }
         fprintf(stderr,"o");fflush(stderr);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+oo_b[pi*H+i];
         if(npu_dbg()&&l==0)dbg("O0:",h_b.data(),8);
@@ -3783,6 +5326,7 @@ struct Bf16Ctx {
         for (int pi = 0; pi < npt; pi++) gu_ascales[pi] = dynamic_ascale(&h_b[pi * H], H);
         auto r_gu=FLM_LAUNCH_ASYNC_ROWS(cg,l,h_b.data(),npt,H,gu_ascales.data());
         FLM_FINISH_ASYNC_ROWS(cg,r_gu,gt_b.data(),npt,mlp_out,gu_ascales.data(),gsc[l],l);cn(gt_b.data(),npt*mlp_out);
+        if(l==0&&getenv("NPU_DUMP_L0")){FILE*fg=fopen("/tmp/int8_l0_gu.bin","wb");if(fg){fwrite(gt_b.data(),4,mlp_out,fg);fclose(fg);}}
         if(npu_dbg()&&l==0)dbg("GU0:",gt_b.data(),8);
         fprintf(stderr,"g");fflush(stderr);
         if(cfg.gu_split){FLM_GO_ROWS_PTR(cu_ptr,l,h_b.data(),npt,H,gu_ascales.data(),gu_ascales.data(),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
@@ -3792,6 +5336,7 @@ struct Bf16Ctx {
         std::vector<float> d_ascales(npt);
         for (int pi = 0; pi < npt; pi++) d_ascales[pi] = dynamic_ascale(&su_b[pi * IM], IM);
         FLM_GO_ROWS(cd,l,su_b.data(),npt,IM,d_ascales.data(),d_ascales.data(),dsc[l],dw_b.data(),H);cn(dw_b.data(),npt*H);
+        if(l==0&&getenv("NPU_DUMP_L0")){FILE*fs=fopen("/tmp/int8_l0_su.bin","wb");if(fs){fwrite(su_b.data(),4,IM,fs);fclose(fs);}FILE*fd=fopen("/tmp/int8_l0_dw.bin","wb");if(fd){fwrite(dw_b.data(),4,H,fd);fclose(fd);}}
         }
         // Residual add: use saved pre-FFN values
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+dw_b[pi*H+i];
@@ -3803,8 +5348,13 @@ struct Bf16Ctx {
             if (df) { fwrite(h_b.data(), 4, (size_t)npt * H, df); fclose(df); }
         }
         fprintf(stderr,"\n");fflush(stderr);
-    }sp+=npt;memcpy(h_data.data(),&h_b[(npt-1)*H],H*4);
+    }
+    last_row = npt - 1;
+    }
+    npt = npt_full; sp = sp0 + npt_full;
+    memcpy(h_data.data(),&h_b[last_row*H],H*4);
     printf("Prefill: %.0fms (%.0f ms/tok)\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count()/npt);
+    }
 
     // ===== v12: M=32 BATCHED DECODE =====
     // NOTE (2026-08-13, perf diagnosis): decode = 112 launches/token × ~4ms.
@@ -3825,12 +5375,39 @@ struct Bf16Ctx {
     // (fix for #1699: the old code re-ran a phantom position-N forward with
     // the previous hidden as input, which predicts the SECOND next token as
     // the first and emits garbage while prefill logits were already correct.)
+    // EOS stop, matching the runlist loop (npu_runlist_bridge.cpp). A model that emits
+    // <|im_end|> (151645) or <|endoftext|> (151643) has finished answering; continuing
+    // past that point turns a correct answer into run-on degeneration, and this loop had
+    // no end-of-sequence handling at all. NPU_STOP_EOS=0 restores old behaviour.
+    auto dense_eos = [](int id) {
+        if (getenv("NPU_STOP_EOS") && atoi(getenv("NPU_STOP_EOS")) == 0) return false;
+        return id == 151643 || id == 151645;
+    };
+    bool stop_eos = false;
     {
         auto ts_boot=std::chrono::steady_clock::now();
         memcpy(sb_data.data(),h_data.data(),H*4);rn_c(sb_data.data(),fin_v.data(),H);
         if(npu_dbg()){fprintf(stderr,"BOOT h_data:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",h_data[i]);fprintf(stderr,"\n");}
         if(npu_dbg()){fprintf(stderr,"BOOT fin_v:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",fin_v[i]);fprintf(stderr,"\n");}
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
+        // Magnitude diagnostic (NPU_DBG=1). NOTE: lm_topk_omp has already overwritten lg with
+        // exp(logit - max) by the time we get here, so lg is the SOFTMAX, not the logits --
+        // |softmax|max is always exactly 1. Section 62 misread that as "the logits are ~1e-9";
+        // corrected in section 63. The useful part is sb_data (post-final-norm hidden) and
+        // lm_emb (the head table): both O(1), which eliminates the final projection by
+        // magnitude as well as by code read.
+        if (npu_dbg()) {
+            double sabs = 0, smax = 0;
+            for (int i = 0; i < H; i++) { double a = fabs((double)sb_data[i]); sabs += a; if (a > smax) smax = a; }
+            double wmax = 0, wsum = 0; long nw = 0;
+            const int stride = lm_nv > 200 ? lm_nv / 200 : 1;
+            for (int v = 0; v < lm_nv; v += stride)
+                for (int i = 0; i < H; i++) { double a = fabs((double)lm_emb[(size_t)v * H + i]); if (a > wmax) wmax = a; wsum += a; nw++; }
+            double lmax = 0, lsum = 0;
+            for (int v = 0; v < lm_nv; v++) { double a = fabs((double)lg_buf[v]); lsum += a; if (a > lmax) lmax = a; }
+            fprintf(stderr, "[MAG] |sb|mean=%.4g |sb|max=%.4g |head|mean=%.4g |head|max=%.4g |softmax|mean=%.4g |softmax|max=%.4g (rows scanned=%ld of %d, H=%d)\n",
+                    sabs / H, smax, nw ? wsum / nw : 0.0, wmax, lsum / (lm_nv ? lm_nv : 1), lmax, nw, lm_nv, H);
+        }
         if(npu_dbg()){fprintf(stderr,"BOOT lg:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",lg_buf[i]);fprintf(stderr,"\n");}
         if (getenv("NPU_DEBUG_BOOT")) {
             fprintf(stderr, "  [boot-debug] top-5 ids:");
@@ -3847,10 +5424,15 @@ struct Bf16Ctx {
             for (int b = 1; b < BS; b++) kv_caches[l][b] = kv_caches[l][0];
         for (int b = 1; b < BS; b++) top_ids[b] = top_ids[0];
         printf("  [0] boot=%d (%.0fms)\n",top_ids[0],t_boot);
+        if (dense_eos(top_ids[0])) stop_eos = true;   // answer already complete
+        if (bf16_only && !i8_ready) {
+            fprintf(stderr, "bf16-only: int8 ctxs unavailable — prefill+boot done, skipping int8 decode\n");
+            return 0;
+        }
     }
 
     int step=1;
-    while(step<ng){
+    while(step<ng && !stop_eos){
         auto ts_batch=std::chrono::steady_clock::now();
         // #1699: sequential decode — one token per step. The old
         // batch_size=min(BS,ng-step) decoded every candidate at the SAME
@@ -3871,9 +5453,20 @@ struct Bf16Ctx {
                 auto tl0 = std::chrono::steady_clock::now();
                 for (int b = 0; b < batch_size; b++) for (int i = 0; i < H; i++) sb_data[b*H+i] = h_b[b*H+i];
                 for (int b = 0; b < batch_size; b++) rn_c(&h_b[b*H], in_n[l].data(), H);
-                FLM_GO(cq, l, h_b.data(), batch_size, H, dynamic_ascale(h_b.data(), batch_size*H),
+                auto tsp0 = std::chrono::steady_clock::now();
+                float asc_qkv = dynamic_ascale(h_b.data(), batch_size*H);
+                auto tsp1 = std::chrono::steady_clock::now();
+                FLM_GO(cq, l, h_b.data(), batch_size, H, asc_qkv,
                        qsc[l], qo_b.data(), qkv_n);
+                auto tsp2 = std::chrono::steady_clock::now();
                 cn(qo_b.data(), batch_size*qkv_n);
+                auto tsp3 = std::chrono::steady_clock::now();
+                if (getenv("NPU_STAGE_SPLIT"))
+                    fprintf(stderr, "[qkv-split l=%d] prep=%.2f ascale=%.2f GO=%.2f cn=%.2f ms\n", l,
+                            std::chrono::duration<double, std::milli>(tsp0 - tl0).count(),
+                            std::chrono::duration<double, std::milli>(tsp1 - tsp0).count(),
+                            std::chrono::duration<double, std::milli>(tsp2 - tsp1).count(),
+                            std::chrono::duration<double, std::milli>(tsp3 - tsp2).count());
                 double dq = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl0).count();
                 t_qkv += dq;
                 auto tl1 = std::chrono::steady_clock::now();
@@ -3929,6 +5522,9 @@ struct Bf16Ctx {
         float cq_ascale=1.0f;
         std::vector<double> rn_ss(batch_size>0?batch_size:1,0.0);
         for(int l=0;l<NC;l++){
+            // task-2 small-M decode: use the _m1 GU/D contexts (M=1) for the
+            // native I8Ctx path (no bf16/flm twin, and gu_split has no _m1 build).
+            const bool sm = have_small_m && !bf16_mode && !flm_xclbin_available && !cfg.gu_split;
             // ── QKV input: for l>0 produced by layer l-1's fused boundary
             //    (h_b = rn'd QKV input, sb_data = pre-QKV residual, cq_ascale set).
             //    Layer 0 initializes from embeddings. ──
@@ -4056,9 +5652,14 @@ struct Bf16Ctx {
                 }
                 if (byte_stats) bs.gu_a.down += (uint64_t)batch_size * (2 * IM) * 4;
             } else {
-            FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
-            FLM_SYNC_A(cg,l);
-            auto r_cg=FLM_LAUNCH(cg,l);
+            if (sm) {
+                cg_m.quantize_async(h_b.data(),batch_size,H,cg_ascale);
+                cg_m.sync_A(l);
+            } else {
+                FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
+                FLM_SYNC_A(cg,l);
+            }
+            auto r_cg = sm ? cg_m.launch(l) : FLM_LAUNCH(cg,l);
             if (byte_stats) bs.gu_a.up += (uint64_t)batch_size * H;
 
             // SiLU gate + U GEMM (gu_split) or combined gate*up
@@ -4072,8 +5673,8 @@ struct Bf16Ctx {
                 cn(su_b.data(),batch_size*IM);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*IM+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[b*IM+i];}}}
             else{
-                FLM_WAIT_KERNEL(cg,r_cg);
-                FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l);
+                if (sm) { cg_m.wait_kernel(r_cg); cg_m.sync_back_and_dequant(gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l); }
+                else { FLM_WAIT_KERNEL(cg,r_cg); FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l); }
                 cn(gt_b.data(),batch_size*mlp_out);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[b*mlp_out+IM+i];}}}
             }
@@ -4081,26 +5682,31 @@ struct Bf16Ctx {
 
             // ── D GEMM ──
             float cd_ascale=dynamic_ascale(su_b.data(),batch_size*IM);
-            FLM_QUANTIZE_ASYNC(cd,su_b.data(),batch_size,IM,cd_ascale);
-            auto r_cd=FLM_SYNC_AND_LAUNCH(cd,l);
+            if (sm) {
+                cd_m.quantize_async(su_b.data(),batch_size,IM,cd_ascale);
+            } else {
+                FLM_QUANTIZE_ASYNC(cd,su_b.data(),batch_size,IM,cd_ascale);
+            }
+            auto r_cd = sm ? cd_m.sync_and_launch(l) : FLM_SYNC_AND_LAUNCH(cd,l);
             if (byte_stats) bs.d_a.up += (uint64_t)batch_size * IM;
 
             // ── Cross-layer boundary (roadmap step 3): fused D-output → l+1 QKV input ──
             if(l+1<NC){
-                FLM_WAIT_KERNEL(cd,r_cd);
-                FLM_READBACK(cd);
+                if (sm) { cd_m.wait_kernel(r_cd); cd_m.readback(); }
+                else { FLM_WAIT_KERNEL(cd,r_cd); FLM_READBACK(cd); }
                 if (byte_stats) bs.d_a.down += (uint64_t)batch_size * H * 4;
                 float cs=cd_ascale*dsc[l];
                 if(flm_xclbin_available){
                     cq_ascale=fused_cross_layer_boundary<int16_t>(hcd->Cm,hcd->ND,cs,
                         sb_data.data(),h_b.data(),in_n[l+1].data(),H,batch_size,rn_ss.data());
                 }else{
-                    cq_ascale=fused_cross_layer_boundary<int32_t>(cd.Cm,cd.ND,cs,
+                    cq_ascale=fused_cross_layer_boundary<int32_t>(sm ? cd_m.Cm : cd.Cm, sm ? cd_m.ND : cd.ND, cs,
                         sb_data.data(),h_b.data(),in_n[l+1].data(),H,batch_size,rn_ss.data());
                 }
             }else{
                 // Last layer: keep the final hidden state in h_b for the LM head
-                FLM_DEQUANTIZE(cd,r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l],l);
+                if (sm) cd_m.dequantize(r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l],l);
+                else FLM_DEQUANTIZE(cd,r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l],l);
                 if (byte_stats) bs.d_a.down += (uint64_t)batch_size * H * 4;
                 cn(dw_b.data(),batch_size*H);
 
@@ -4125,6 +5731,7 @@ struct Bf16Ctx {
         printf("  [%d] batch=%d toks:", step, batch_size);
         for (int tb = 0; tb < batch_size; tb++) printf(" %d", top_ids[tb]);
         printf("  %.0fms (%.0f ms/tok)\n", batch_ms, batch_ms/batch_size);
+        for (int tb = 0; tb < batch_size; tb++) if (dense_eos(top_ids[tb])) stop_eos = true;
         step+=batch_size;
     }
 

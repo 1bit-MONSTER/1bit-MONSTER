@@ -49,9 +49,9 @@ static bool load_q4nx_raw(const char* path,const char* key,std::vector<uint8_t>&
 }
 
 int main(int argc,char**argv){
-  if(argc<8){fprintf(stderr,"usage: mm_oracle_v2 <model.q4nx> <tensor_key> <mm.xclbin> <xclbin.bin> M K <n_tiles_in_block>\n");return 1;}
+  if(argc<9){fprintf(stderr,"usage: mm_oracle_v2 <model.q4nx> <tensor_key> <mm.xclbin> <xclbin.bin> M K N <n_tiles_in_block>\n");return 1;}
   const char* mk=argv[1],*key=argv[2],*xc=argv[3],*insts=argv[4];
-  int M=atoi(argv[5]),K=atoi(argv[6]),tpb=atoi(argv[7]);
+  int M=atoi(argv[5]),K=atoi(argv[6]),N=atoi(argv[7]),tpb=atoi(argv[8]);
   std::vector<uint8_t> tiles;
   if(!load_q4nx_raw(mk,key,tiles)){fprintf(stderr,"load failed\n");return 1;}
   // one weight block = first `tpb` tiles (each 5120 B), after the G=8
@@ -76,22 +76,22 @@ int main(int argc,char**argv){
     xrt::hw_context hc(dev,xb.get_uuid()); xrt::kernel k(hc,"MLIR_AIE");
     int gA=k.group_id(3),gW0=k.group_id(4),gW1=k.group_id(5),gK=k.group_id(7),gI=k.group_id(1);
     xrt::bo boInstr(dev,iv.size(),XCL_BO_FLAGS_CACHEABLE,gI); memcpy(boInstr.map(),iv.data(),iv.size()); boInstr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-    // act = identity [K, N=K] bf16
-    const size_t act_elems = (size_t)K*(size_t)K;
+    // act = identity [K, N] bf16 (activation; out = W @ act = W when identity)
+    const size_t act_elems = (size_t)K*(size_t)N;
     xrt::bo act(dev,act_elems*2,XRT_BO_FLAGS_HOST_ONLY,gA); uint16_t*am=(uint16_t*)act.map();
-    memset(am,0,act_elems*2); for(int i=0;i<K;i++)am[i*(size_t)K+i]=f_to_bf16(1.0f); act.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    memset(am,0,act_elems*2); for(int i=0;i<K&&i<N;i++)am[i*(size_t)N+i]=f_to_bf16(1.0f); act.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     // ws zeros, wt = weight block (first tpb tiles), kv zeros
-    const size_t out_bytes=(size_t)M*K*2;
+    const size_t out_bytes=(size_t)M*N*2;
     xrt::bo ws(dev,out_bytes,XRT_BO_FLAGS_HOST_ONLY,gW0); memset(ws.map(),0,out_bytes); ws.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     xrt::bo wt(dev,block_bytes,XRT_BO_FLAGS_HOST_ONLY,gW1); memcpy(wt.map(),tiles.data(),block_bytes); wt.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     xrt::bo kv(dev,out_bytes,XRT_BO_FLAGS_HOST_ONLY,gK); memset(kv.map(),0,out_bytes); kv.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     auto run=k((uint64_t)3,boInstr,(uint32_t)iv.size(),act,ws,wt,wt,kv); run.wait();
     act.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     const uint16_t* out=(const uint16_t*)act.map();
-    int nz=0,nan=0; for(int i=0;i<M*K;i++){float v=bf16_to_f(out[i]); if(v!=0)nz++; if(!std::isfinite(v))nan++;}
-    fprintf(stderr,"out[%d,%d]: nonzeros=%d NaN=%d\n",M,K,nz,nan);
-    FILE* cf=fopen("/tmp/mm_out_v2.bin","wb"); fwrite(out,2,(size_t)M*K,cf); fclose(cf);
-    fprintf(stderr,"wrote /tmp/mm_out_v2.bin (%zu bf16)\n",(size_t)M*K);
+    int nz=0,nan=0; for(int i=0;i<M*N;i++){float v=bf16_to_f(out[i]); if(v!=0)nz++; if(!std::isfinite(v))nan++;}
+    fprintf(stderr,"out[%d,%d]: nonzeros=%d NaN=%d\n",M,N,nz,nan);
+    FILE* cf=fopen("/tmp/mm_out_v2.bin","wb"); fwrite(out,2,(size_t)M*N,cf); fclose(cf);
+    fprintf(stderr,"wrote /tmp/mm_out_v2.bin (%zu bf16)\n",(size_t)M*N);
   }catch(std::exception&ex){fprintf(stderr,"XRT error: %s\n",ex.what());return 1;}
   return 0;
 }

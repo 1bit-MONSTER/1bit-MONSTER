@@ -23,7 +23,10 @@ name: Auto-enqueue
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    # `edited` includes the base change: when a stacked PR's base merges, GitHub
+    # retargets the PR to main, and that arrives as an edit. Without it a
+    # retargeted PR would sit green and un-enqueued with nothing reporting it.
+    types: [opened, reopened, synchronize, ready_for_review, edited]
 
 permissions:
   contents: read
@@ -40,6 +43,9 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Check this workflow's enqueue contract
+        run: python3 Testing/auto_enqueue_selfcheck.py
       - name: Mint GitHub App installation token
         id: app-token
         env:
@@ -80,6 +86,90 @@ jobs:
           # --auto enables auto-merge, which on a queue-ruled branch means
           # "enqueue this PR once its required checks pass". Idempotent: a
           # re-run on synchronize is a no-op if it is already enabled.
+          #
+          # The method is explicit because gh cannot derive one for a base whose
+          # ruleset does not apply to it, and a workflow cannot answer gh's
+          # prompt: `gh pr merge "$PR" --auto` exits 1 with "--merge, --rebase,
+          # or --squash required when not running interactively" on any PR whose
+          # base is not the default branch. The repo's first stacked PR (#2534)
+          # carried a red `enqueue` check for exactly that reason. The queue's
+          # own method is SQUASH (ruleset 19117606), so naming it changes nothing
+          # about how a main-based PR merges.
+          #
           # Intentionally NOT wrapped in `|| echo` — a silent enqueue failure is
-          # the exact failure mode this workflow exists to prevent.
-          gh pr merge "$PR" --auto --repo "$GITHUB_REPOSITORY"
+          # the exact failure mode this workflow exists to prevent. Hence the
+          # verification below: an exit code is not evidence that the queue will
+          # take the PR.
+          #
+          # The call is also not allowed to ABORT the step. `set -e` would kill the step
+          # before the readback below, which is what decides whether an enqueue actually
+          # happened: an exit code is not evidence either way.
+          #
+          # A base other than the default branch is decided BEFORE the call, not after it.
+          # Two measured runs of this step on the same stacked PR (#2548) disagreed about
+          # whether the call even fails: run 35297583998 exited 1 with "GraphQL: Pull
+          # request Protected branch rules not configured for this branch
+          # (enablePullRequestAutoMerge)", while run 35297895113 exited 0 and left
+          # autoMergeRequest null. A call that sometimes does nothing is not a
+          # precondition to rely on, and if it ever does stick this workflow auto-merges a
+          # stacked PR into its base FEATURE branch - with the warning below never reached
+          # to say so. So the base is checked first and the call is not made for a stacked
+          # PR at all.
+          base=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json baseRefName --jq .baseRefName)
+          if [ "$base" != "${{ github.event.repository.default_branch }}" ]; then
+            echo "::warning::#$PR was not enqueued: its base is '$base', not the default branch. A stacked PR merges with its base branch; this PR will be enqueued by the 'edited' run that its retarget to main triggers."
+            exit 0
+          fi
+
+          # A PR whose head already conflicts with main cannot merge, so do not enqueue
+          # it. An earlier version of this comment justified the skip as saving "the
+          # whole batch a rebuild cycle"; that claim is NOT supported by the queue's own
+          # behaviour, measured 2026-09-18: 39 merge-queue CI runs over 3h, 0 failures,
+          # with conflicting entries present in the queue throughout (one sat UNMERGEABLE
+          # for hours) — and ~0.97 batch builds per merge, i.e. the queue is not batching
+          # anyway, so an ejected entry is not charging a rebuild to anyone else's group.
+          # A conflict appears to be detected before the speculative ref is created, so
+          # nothing is built at all. What the skip actually buys is one fewer pointless
+          # queue entry, which is a smaller thing than it was sold as; it is kept because
+          # it is correct and free when the PR is fine. (issue #2546)
+          #
+          # `mergeable` is UNKNOWN until GitHub computes it, so poll briefly — and treat
+          # a persistent UNKNOWN as "proceed", because refusing to act on a signal we
+          # could not read would disable auto-enqueue for every PR rather than just the
+          # conflicting ones. A later push re-runs this job, so a PR that gets fixed is
+          # never stranded. This exits BEFORE the enqueue verification below, because on
+          # this path "not enqueued" is the intended outcome, not a failure.
+          mergeable=""
+          for _ in 1 2 3 4 5 6; do
+            mergeable=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json mergeable --jq .mergeable)
+            [ "$mergeable" != "UNKNOWN" ] && break
+            sleep 10
+          done
+          if [ "$mergeable" = "CONFLICTING" ]; then
+            echo "::warning::#$PR conflicts with ${{ github.event.repository.default_branch }} — not enqueued: the merge queue cannot merge it, so enqueuing it would only add an entry that gets removed. Push a rebase and this job runs again."
+            exit 0
+          fi
+
+          # Not wrapped in `|| echo`: a silent enqueue failure is the exact failure mode
+          # this workflow exists to prevent. The failure is reported and then judged by the
+          # readback, which still fails hard below when nothing was enqueued.
+          if ! gh pr merge "$PR" --squash --auto --repo "$GITHUB_REPOSITORY" 2>&1; then
+            echo "::notice::gh pr merge --squash --auto exited non-zero for base '$base'; the readback below decides whether that is a real failure."
+          fi
+          # Two signals count as enqueued, and only one of them survives: GitHub
+          # CLEARS the auto-merge request once the PR is in the merge queue, so a
+          # PR that was already green when this job ran has autoMergeRequest null
+          # and is queued anyway. Measured on #2529 after it was enqueued this way:
+          # mergeQueueEntry { state QUEUED, position 31 }, autoMergeRequest null.
+          # Reading only autoMergeRequest would fail exactly the PRs this job just
+          # enqueued.
+          enqueued=$(gh api graphql \
+            -f query='query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){mergeQueueEntry{state} autoMergeRequest{enabledAt}}}}' \
+            -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F n="$PR" \
+            --jq '.data.repository.pullRequest | ((.mergeQueueEntry != null) or (.autoMergeRequest != null))')
+          if [ "$enqueued" != "true" ]; then
+            echo "::error::#$PR was not enqueued: no auto-merge request and no merge queue entry (base $base)"
+            exit 1
+          fi
+          echo "#$PR is enqueued (base $base) - auto-merge request or merge queue entry confirmed"
+          echo "#$PR is enqueued (base $base) - auto-merge request or merge queue entry confirmed"

@@ -15,18 +15,80 @@ fail=0; total=0; skip=0
 # compile line omitted src/hrx_inprocess.cpp, so it could not have linked. Nothing
 # noticed, because nothing ran it. This fails the moment another one appears —
 # either wire it into this script (or a workflow), or say above why it is manual.
+#
+# A comment is not an invocation. The corpus is this script plus the workflows,
+# and this script's own text NAMES the orphans it exists to report ("Two
+# selfchecks sat here invoked by nothing (hrx_backend_selfcheck.cpp, …)") — so
+# grepping the raw text made the tripwire pass on the prose describing the bug.
+# Measured: with both invocations deleted and those comments left alone it still
+# printed "✓ every Testing/*_selfcheck.* is invoked". Comments are stripped
+# below, and the control at the end of this block fails the run if a comment
+# ever counts again.
+strip_comments_stream() {
+    sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#.*$//'
+}
+
+# selfcheck_orphans <corpus> <file...> — the basenames no line of <corpus> names.
+# The corpus arrives as an argument rather than through a pipe so the comparison
+# can be run against a synthesized corpus below; piping it into `grep -q` also
+# made printf die of SIGPIPE once per file ("Broken pipe" on stderr, up to 25
+# times a run) as soon as grep found its match.
+selfcheck_orphans() {
+    local corpus="$1" f b out=""
+    shift
+    for f in "$@"; do
+        b="$(basename "$f")"
+        case "$corpus" in
+            *"$b"*) ;;
+            *) out="$out $b" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 total=$((total+1))
-_orphans=""
-_corpus="$(cat Testing/run_all.sh .github/workflows/*.yml 2>/dev/null)"
-for _f in Testing/*_selfcheck.*; do
-    _b="$(basename "$_f")"
-    printf '%s' "$_corpus" | grep -q -- "$_b" || _orphans="$_orphans $_b"
-done
+_corpus="$( { cat Testing/run_all.sh .github/workflows/*.yml; } 2>/dev/null | strip_comments_stream )"
+_orphans="$(selfcheck_orphans "$_corpus" Testing/*_selfcheck.*)"
 if [ -n "$_orphans" ]; then
     echo "✗ selfcheck wiring: nothing invokes:$_orphans"
     fail=$((fail+1))
 else
     echo "✓ selfcheck wiring (every Testing/*_selfcheck.* is invoked)"
+fi
+# Control: a selfcheck named ONLY inside a comment must still be reported. The
+# first version of this tripwire passed this case, which is how it was blind.
+#
+# The fixture deliberately uses a name that is NOT one of the real selfchecks.
+# This file is part of the corpus above, so naming a real one here put its
+# basename back into the corpus in *code* — this line is not a comment — and that
+# file could then never be reported as an orphan again. Measured, by deleting the
+# `hrx-backend|…` spec entry below (its only wiring): with the old fixture the
+# corpus still named hrx_backend_selfcheck.cpp on these two lines and the tripwire
+# printed "✓ every Testing/*_selfcheck.* is invoked"; lse_backend_selfcheck.cpp,
+# whose spec entry is its only mention, was reported correctly in the same run.
+_ctl_corpus="$(printf '# coming soon: Testing/zz_orphan_control_selfcheck.cpp\n' | strip_comments_stream)"
+_ctl="$(selfcheck_orphans "$_ctl_corpus" Testing/zz_orphan_control_selfcheck.cpp)"
+if [ -z "$_ctl" ]; then
+    echo "✗ selfcheck wiring control: a comment counted as an invocation — the check above is blind"
+    fail=$((fail+1))
+else
+    echo "✓ selfcheck wiring control (a comment is not an invocation)"
+fi
+
+
+# ── runner labels: a job that needs the NPU must pin the runner that has it ──
+# bench.yml said `runs-on: self-hosted`, which matched BOTH self-hosted runners. On the
+# one without XRT the engine build and the benchmark were skipped by their own
+# `if: env.XRT_OK == 'true'` guards and the job reported SUCCESS — 42 of its last 60 runs
+# passed with a median duration of 0.6 min, having measured nothing (#2508). The check
+# carries its own fixtures, because after pinning the label no real workflow violates it.
+if runner_label_out=$("$PYTHON" Testing/runner_label_selfcheck.py 2>&1); then
+    printf '%s\n' "$runner_label_out" | sed 's/^/  /'
+    echo "✓ runner_label"
+else
+    echo "✗ runner_label"
+    printf '%s\n' "$runner_label_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
 fi
 
 run() {  # run <name> <compile-args...> -- <run-args...>
@@ -229,6 +291,21 @@ else
     printf '%s\n' "$manifest_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# The alias autopr must never treat a NAME as a family. Its fuzzy rules filed
+# two draft PRs (`language`, `picolm`) that were closed unjustified (#2443,
+# #2444), because the mapping table is an exact-match dispatch table holding
+# 1-4 char aliases (`h` -> LLAMA) that a prefix rule turned into wildcards. The
+# self-test pins both over-fires, the exact-match path that should still file,
+# and the table-vs-engine agreement — and fails if it can read no table at all,
+# so "could not determine" cannot print as a pass.
+total=$((total+1))
+if autopr_out=$("$PYTHON" Testing/census_autopr.py --self-test 2>&1); then
+    echo "✓ census_autopr"
+else
+    echo "✗ census_autopr"
+    printf '%s\n' "$autopr_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # Published coverage claims must equal the census. seo_sync rewrites them in the
 # daily apply workflows, but that is not a gate — four false-claim shapes
 # survived for months in wordings its patterns did not know (#2389 -> #2397).
@@ -307,6 +384,23 @@ if npu_build_out=$(bash Testing/npu_build_script_selfcheck.sh 2>&1); then
 else
     echo "✗ npu_build_script"
     printf '%s\n' "$npu_build_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
+# The "Lint (clang-format)" required check cannot fail: 184,118 diagnostics in 740 of
+# the 744 files it selects (#2486). Testing/lint-new-diagnostics.sh is the no-NEW-
+# diagnostics predicate that would let it fail without blocking every touch of an
+# unformatted file, and this pins the predicate's behaviour in six cases plus two
+# floors. Runs here, not only in the lint job, because this suite has no clang-format
+# dependency: the predicate takes the binary through CLANG_FORMAT.
+echo "== clang-format no-new-diagnostics predicate =="
+total=$((total+1))
+if newdiag_out=$(bash Testing/lint_new_diagnostics_selfcheck.sh 2>&1); then
+    printf '%s\n' "$newdiag_out" | sed 's/^/  /'
+    echo "✓ lint_new_diagnostics"
+else
+    echo "✗ lint_new_diagnostics"
+    printf '%s\n' "$newdiag_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
 
@@ -561,6 +655,16 @@ elif [ "$shared_rc" -ne 0 ]; then
     fail=$((fail+1))
 fi
 
+echo "== capture gates: documented vs implemented (interposer) =="
+if cap_out=$(python3 Testing/capture_gates_selfcheck.py 2>&1); then
+    printf '%s\n' "$cap_out" | sed 's/^/  /'
+    echo "✓ capture_gates_selfcheck"
+else
+    echo "✗ capture_gates_selfcheck"
+    printf '%s\n' "$cap_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # ── MiMo-V2 gate (mini fixture, vendored remote modeling oracle) ──
 total=$((total+1))
 mimo_dir=/tmp/onebit-mimo
@@ -599,6 +703,16 @@ else
     echo "  - mesh: mesh_peer binary absent, skipped (cmake --build build --target mesh_peer)"; skip=$((skip+1))
 fi
 
+echo "== census alias autopr: branch base (#2498) =="
+if autopr_out=$(python3 Testing/census_autopr_selfcheck.py 2>&1); then
+    printf '%s\n' "$autopr_out" | sed 's/^/  /'
+    echo "✓ census_autopr_selfcheck"
+else
+    echo "✗ census_autopr_selfcheck"
+    printf '%s\n' "$autopr_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # ── JARVIS fleet dispatch (optional — needs build/1bit + build/mesh_peer) ──
 total=$((total+1))
 if [ -x build/1bit ] && [ -x build/mesh_peer ]; then
@@ -612,6 +726,22 @@ fi
 
 run rni-bf16 Testing/aie2p_bf16_rni_selfcheck.cpp --
 
+# Driver re-apply: the script meant to put the custom amdxdna back after a kernel upgrade
+# looked for `amdxdna.ko.zst` while this kernel ships `amdxdna.ko`, so it exited at its own
+# first check on every run; and the tree it would rebuild from is the legacy out-of-tree one
+# upstream deleted in 813e0bf, which is also where the module now running was built from
+# (#2459, #2517). Its provenance helpers are exercised here — a module's tree is readable
+# from its own bytes — so this needs no device, no build and no loaded driver.
+echo "== npu driver re-apply provenance =="
+total=$((total+1))
+if reapply_out=$(bash Testing/npu_driver_reapply_selfcheck.sh 2>&1); then
+    printf '%s\n' "$reapply_out" | sed 's/^/  /'
+    echo "✓ npu_driver_reapply"
+else
+    echo "✗ npu_driver_reapply"
+    printf '%s\n' "$reapply_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # ── HRX + LSE backend lifecycle (optional — need the fetched nlohmann include) ──
 # Both of these selfchecks have existed for a while and NOTHING invoked either of
 # them. That is how the HRX one's own documented compile line went stale unnoticed:

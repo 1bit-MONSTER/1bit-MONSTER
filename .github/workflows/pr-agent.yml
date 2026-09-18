@@ -16,9 +16,30 @@ jobs:
     runs-on: [self-hosted, pr-agent]
     timeout-minutes: 30
     # Only run for same-repo PRs and trusted commenters (not external forks)
+    #
+    # The PR check on the comment branch is not decoration: `issue_comment` fires for
+    # comments on plain ISSUES too, and the CLI step builds its target as
+    # `.../pull/${{ github.event.issue.number }}`. On an issue that is not a PR that URL
+    # cannot resolve, so the run had nothing to review and could only fail — while still
+    # occupying one of the two self-hosted runners, which is the same pool the NPU
+    # benchmark needs (#2552).
+    #
+    # How often, measured — and how to measure it. `head_branch` and `pull_requests` cannot
+    # separate the two cases: both read `main` and `[]` for a comment on a PR as well as for
+    # one on a plain issue, so counting by them overstates this. The discriminator is the job
+    # log's `PR_URL` resolved against `GET /pulls/<n>` (a 404 means the number is an issue).
+    # Over the eight `issue_comment` runs between 04:31:51Z and 04:52:23Z on 2026-09-18, two
+    # targeted plain issues, and each ran a six-step job that ended by printing the CLI's own
+    # usage text (`--pr_url PR_URL  The URL of the PR to review`). After this guard the same
+    # two shapes report `completed/skipped` with `runner_name` empty and 0 steps, while a
+    # comment on a real PR still runs (#2562).
+    #
+    # What this does NOT change: a trusted comment on a real PR still runs, including the
+    # `*)` fallback in the CLI step that turns a non-command comment into a full review.
+    # That is a product choice about how the agent should respond; this is not.
     if: |
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'issue_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

@@ -36,7 +36,8 @@ Honest caveats: young project — NPU support targets Strix Halo-class XDNA2 SKU
 
 Try it:
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER && cd 1bit-MONSTER && cmake -B build && cmake --build build
-./build/1bit zaya -m model.1bp -p "Hello world"
+./build/1bit zaya --model model.1bp            # serves on :8088
+curl -s localhost:8088/completion -d '{"prompt":"Hello world","n_predict":32}'
 
 ---
 

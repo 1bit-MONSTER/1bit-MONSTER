@@ -60,21 +60,59 @@ static int find_tensor_info(const char* js, size_t jl, const char* key, int* out
     return 0;
 }
 
-// Count layers by scanning for model.layers.N.self_attn.q_proj.weight
+// Count layers by scanning for model.layers.N / model.layer.N (both namings)
 static int count_layers(const char* js, size_t jl) {
     int max_layer = -1;
     const char* p = js;
     const char* e = js + jl;
-    const char target[] = "model.layers.";
-    size_t tlen = strlen(target);
-    while (p < e) {
-        auto q = (const char*)memmem(p, e - p, target, tlen);
-        if (!q) break;
-        int layer_num = (int)strtoul(q + tlen, nullptr, 10);
-        if (layer_num > max_layer) max_layer = layer_num;
-        p = q + tlen;
+    const char* targets[] = { "model.layers.", "model.layer." };
+    for (const char* target : targets) {
+        size_t tlen = strlen(target);
+        const char* qp = js;
+        while (qp < e) {
+            auto q = (const char*)memmem(qp, e - qp, target, tlen);
+            if (!q) break;
+            int layer_num = (int)strtoul(q + tlen, nullptr, 10);
+            if (layer_num > max_layer) max_layer = layer_num;
+            qp = q + tlen;
+        }
     }
     return max_layer + 1;
+}
+
+// Find a tensor key in ANY layer (e.g. "self_attn.q_proj.weight" matches
+// model.layers.N... / model.layer.N... for the first N that has it) and
+// return its tile-row count / data offset. Needed for hybrid MoE models
+// whose layer 0 is linear-attention (no q_proj).
+static int find_tensor_any_layer(const char* js, size_t jl, const char* suffix,
+                                 int* out_tile_rows, int* out_offset) {
+    size_t sl = strlen(suffix);
+    const char* p = js;
+    const char* e = js + jl;
+    while (p < e) {
+        auto q = (const char*)memmem(p, e - p, suffix, sl);
+        if (!q) return 0;
+        if (q > js && *(q - 1) == '.') {
+            auto shape_loc = strstr(q, ""shape"");
+            if (shape_loc) {
+                auto bracket = strchr(shape_loc, '[');
+                if (bracket) {
+                    if (out_tile_rows) *out_tile_rows = (int)strtoul(bracket + 1, nullptr, 10);
+                }
+            }
+            auto offs_loc = strstr(q, ""data_offsets"");
+            if (offs_loc) {
+                auto bracket = strchr(offs_loc, '[');
+                if (bracket) {
+                    if (out_offset) *out_offset = (int)strtoul(bracket + 1, nullptr, 10);
+                    return 1;
+                }
+            }
+            return 1;
+        }
+        p = q + sl;
+    }
+    return 0;
 }
 
 // Check if a JSON key pattern exists (for detecting q_norm, lm_head, etc.)
@@ -171,11 +209,19 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     // Step 2: Read I8 tile row counts for each weight
     int q_tr = 0, k_tr = 0, o_tr = 0, g_tr = 0, d_tr = 0;
     int q_off = 0;
-    q_off = find_tensor_info(js, jl, "model.layers.0.self_attn.q_proj.weight", &q_tr);
-    find_tensor_info(js, jl, "model.layers.0.self_attn.k_proj.weight", &k_tr);
-    find_tensor_info(js, jl, "model.layers.0.self_attn.o_proj.weight", &o_tr);
-    find_tensor_info(js, jl, "model.layers.0.mlp.gate_proj.weight", &g_tr);
-    find_tensor_info(js, jl, "model.layers.0.mlp.down_proj.weight", &d_tr);
+    // Hybrid MoE models (qwen3.6) have linear-attention layers without
+    // q_proj at layer 0 — scan ANY layer for the first matching tensor.
+    find_tensor_any_layer(js, jl, "self_attn.q_proj.weight", &q_tr, &q_off);
+    find_tensor_any_layer(js, jl, "self_attn.k_proj.weight", &k_tr, nullptr);
+    find_tensor_any_layer(js, jl, "self_attn.o_proj.weight", &o_tr, nullptr);
+    find_tensor_any_layer(js, jl, "mlp.gate_proj.weight", &g_tr, nullptr);
+    find_tensor_any_layer(js, jl, "mlp.down_proj.weight", &d_tr, nullptr);
+    // MoE fallback: no dense gate/down — use the per-expert up rows for IM
+    if (g_tr == 0) {
+        int up_tr = 0;
+        find_tensor_any_layer(js, jl, "mlp.up_exps_proj.weight", &up_tr, nullptr);
+        if (up_tr > 0) g_tr = up_tr;  // IM derived from the MoE expert rows
+    }
     
     // Step 3: Detect architecture features
     int qn_hd = 0;

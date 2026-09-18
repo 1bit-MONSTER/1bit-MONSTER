@@ -131,3 +131,63 @@ is not claimed as measured).*
 - [Supported Models](models.md) — per-model architecture, backend, and performance data
 - [`benchmarks/README.md`](../../benchmarks/README.md) — how to run benchmarks locally
 - [`site/benchmarks.json`](../../site/benchmarks.json) — machine-readable authoritative source for all numbers on this page
+
+---
+
+## On-Box Parity (re-scope, 2026-09-12)
+
+> The goal bar was re-scoped from FLM's **published** Kraken-Point tables to
+> **on-box FLM** (same hardware/weights/prompt) on 2026-09-12. The published bar
+> remains unmet by the native backend (multi-week fused-kernel work) — the
+> FLM-Orchestration section below keeps the published-table comparison.
+
+Native backend vs FLM on-box, Qwen3-0.6B (byte-identical output, A/B verified):
+
+| Metric | native | FLM on-box | verdict |
+|---|---:|---:|---|
+| Prefill @256 | **655 tok/s** (391 ms) | ~430 tok/s (570–610 ms) | **native +52 %** ✅ |
+| Decode @1k | **79 tok/s** (12.7 ms/tok) | 73.58 tok/s (13.6 ms/tok) | **native +7 %** ✅ |
+| Decode @256 | **91 tok/s** (11.0 ms/tok) | — | — |
+| TTFT @256 | **391 ms** (first chunk) | ~570–610 ms | **native faster** ✅ |
+| TTFT @1k | ~14 s (full per-token prefill) | 0.70 s (first chunk) | metric/chunked-prefill gap ⚠ |
+
+- **Prefill @256**: the native bf16 path (`NPU_RUNLIST=0 NPU_PREFILL_BF16=1`) runs
+  dequant/mm/attn xclbins; it beats FLM's own `qwen3_npu::prefill` on-box.
+- **Decode**: the whole-layer single-launch `xrt::runlist` path plus the
+  build-overlap optimization (`f37fb0489`, double-buffered runlist) moved decode
+  from 62 → 79 tok/s @1k, now ahead of FLM on-box. (This is orchestration of FLM's
+  captured layer ELFs, not native kernels.)
+- **TTFT @1k** is a metric-semantics + chunked-prefill gap (FLM streams the first
+  chunk early; the native whole-layer path runs per-token prefill). Closing it needs
+  chunked prefill, blocked on the >256-token attention ELF.
+
+Source of truth: `site/benchmarks.json` (`flm_parity.on_box`) +
+`benchmarks/RESULTS-on-box-parity-2026-09-12.md`.
+
+---
+
+## FLM-Orchestration Parity (decode / prefill @1k, 2026-09-11)
+
+> ⚠️ **Not the objective.** This records the native engine's FLM-*orchestration* path
+> (`NPU_FLM_PREFILL`/`NPU_FLM_DECODE`), which invokes **FLM's own NPU libraries**
+> (v0.9.46 for MoE + remaining families, v1.0.4 for dense Qwen3) — it is FLM re-run on
+> this box, not 1bit-MONSTER's native int8/bf16 backend, so it cannot "meet-or-beat" FLM
+> by construction. The native backend is 6–21× behind on prefill/TTFT
+> (see `RESULTS-qwen3-dense-parity-2026-09-10.md`). Reference bar = FLM's **published**
+> Kraken-Point tables. Decode trails the published bar for nearly every model (Strix-Halo
+> vs Kraken-Point cross-hardware gap; FLM's own on-box numbers trail identically).
+> Source of truth: `site/benchmarks.json` (`flm_parity`).
+
+| Model | decode (ours/pub) | prefill (ours/pub) | TTFT @1k (ours/pub) |
+|---|---:|---:|---:|
+| Qwen3-0.6B | 74 / 66.5 ✓ | 1370 / 1494 | 0.73 / 0.67 s |
+| Qwen3-1.7B | 38 / 40.2 | 971 / 956 ✓ | 1.03 / 1.05 s |
+| Qwen3-4B | 18 / 19.6 | 510 / 509 ✓ | 1.96 / 1.96 s |
+| Qwen3-8B | 11 / 11.9 | 370 / 357 ✓ | 2.70 / 2.80 s |
+| Qwen3.6-35B-A3B | 13.5 / 17.48 | 125.0 / 102.45 ✓ | 8.00 / 9.76 s |
+| Llama-3.2-1B | 56 / 64.5 | 1515 / 1686 | 0.66 / 0.59 s |
+| Gemma4-E2B | 21 / 22.6 | 633 / 721 | 1.58 / 1.39 s |
+| Gemma4-E4B | 12 / 12.6 | 435 / 441 | 2.30 / 2.27 s |
+| Phi4-mini | 20 / 21.8 | 637 / 643 | 1.57 / 1.56 s |
+| Nanbeige4.1-3B | 21 / 23.5 | 565 / 612 | 1.77 / 1.63 s |
+| LFM2-1.2B | 62 / 62 ✓ | 1587 / 1537 ✓ | 0.63 / 0.65 s |

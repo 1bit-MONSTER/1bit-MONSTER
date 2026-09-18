@@ -296,10 +296,14 @@ def main():
         print(f"  !! UNCOVERED {s}: {len(ids)} model(s), e.g. {ids[0]}")
         print(f"     -> add to include/rocm_cpp/bitnet_model.h + selfcheck, "
               f"then re-run census_coverage.py")
-    # Auto-file draft PRs proposing a one-line alias for plausible
-    # family-variant classes. Significant arrivals are deliberately excluded —
-    # aliasing them would fake support. On genuine-new archs the autopr prints
-    # "manual" and they stay a daily alert for a real engine implementation.
+    # Auto-file draft PRs proposing a one-line alias for an uncovered class
+    # whose name is a KNOWN name spelled differently (`kimik3` vs `kimi_k3`).
+    # A merely name-SIMILAR class is alerted on and never filed: name
+    # similarity is not evidence of a family, and both draft PRs that rule
+    # produced were closed unjustified (#2443, #2444). Significant arrivals are
+    # deliberately excluded — aliasing them would fake support. On genuine-new
+    # archs the autopr prints "manual" and they stay a daily alert for a real
+    # engine implementation.
     if maybe_file_draft_pr is not None and basic_uncovered:
         try:
             maybe_file_draft_pr(list(basic_uncovered), models=basic_uncovered)
