@@ -1,0 +1,18 @@
+{
+  "entry": "prism_gdn_conv1d",
+  "lane": "prism-bonsai-27b (goal mu6ylbom-10buvx)",
+  "task": "P4.2",
+  "kind": "single-run, context-independent",
+  "kernel": "prism_gdn_conv1d_packed",
+  "source": "engine/npu/kernels/prism_gdn_aie.cc",
+  "design": "engine/npu/generators/prism_gdn_npu.py",
+  "build": "engine/npu/kernels/build_prism_gdn_npu.sh",
+  "host_gate": "engine/npu/kernels/prism_gdn_refcheck.cc",
+  "geometry": {"CD": 256, "blocks": "GDN conv1d(k=4) + silu + rolling 3-tap state (packed input)"},
+  "abi": "one run per submission; RuntimeLayerEngine (npu-infer/include/runtime_layer.h) submits one runlist per token, so this entry is a single node in that runlist",
+  "artifacts_when_built": ["prism_gdn_conv1d_aie.o", "design.mlir", "out.xclbin", "insts.txt", "main_core_0_2.elf", "runlist_entry.json"],
+  "correctness": {
+    "host_math_gate": "conv1d+silu rel-RMSE 3.839e-06, state update 0.0, delta step 0.0 (contract < 1e-3)",
+    "on_device": "NOT PERFORMED - /dev/accel/accel0 was busy with a peer campaign when the design was ready; the host gate verifies the kernel body's maths, not the NPU run"
+  }
+}
