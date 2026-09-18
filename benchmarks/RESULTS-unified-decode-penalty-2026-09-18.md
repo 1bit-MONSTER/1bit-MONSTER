@@ -64,6 +64,51 @@ The cheapest discriminator is (1): dump the first 4 KB of the KV BO after each p
 compare the two byte streams for the same prompt and position — a `NPU_ATTN_DUMP`-style
 comparison the `AttnCtx` work already has hooks for.
 
+
+## Code reading refutes the "extra keys" hypothesis (2026-09-18, same session)
+
+The first guess from the 12.5 -> 15.8 ms arithmetic was "the unified decode attends over
+more keys": 15.8 ms is about the pure-runlist rate at ~2048 keys (15.1 ms), so a doubled
+key count would fit. Reading both paths shows that is **not** what happens — the key count
+is identical:
+
+```cpp
+// unified (npu_engine_universal.cpp, bf16 prefill -> runlist decode)
+sp += npt;                       // sp = prefill length
+int ctx = sp;                    // = 1024
+... npu_runlist_forward(++ctx, lg, NV);      // first forward at ctx = 1025
+
+// pure runlist (npu_runlist_bridge.cpp, npu_runlist_decode)
+for (int t : ids) { rt.embed(t); rt.forward(++ctx); }   // ctx = 1024 after prefill
+int c1 = ctx + 1;                // = 1025
+```
+
+Both arms issue their first decode forward with `ctx == 1025`, and the per-ctx ELF attends
+the same 1025 keys. So the 3.3 ms/token is **not** more attention work. It is also not a
+second prefill: the bf16 arm's reported prefill is 548 ms (0.535 ms/token), and the decode
+block calls `npu_runlist_lmhead` then `npu_runlist_forward` directly — it never re-enters
+`npu_runlist_decode`.
+
+That leaves the two remaining candidates, now ordered by cost to test:
+
+1. **KV BO contents/layout in the handoff.** The bf16 arm writes KV from the host through
+   `npu_runlist_write_kv(l, sp, npt, bKv.data(), kv_region)`, which re-packs when the source
+   region stride differs from the session's (`src_region_stride_u16 != g_sess_kv_region_u16`,
+   e.g. 4 MB nh16 source into the session's 8 MB region). If the host write lands at an offset
+   or interleave the device prefill does not use, the decode's KV reads span a different
+   footprint for the same key count. Cheap test: the `RT_KV_DUMP_DIR` / `RT_DUMP_POST` hooks in
+   `runtime_layer.cpp` already dump `kv_bos_[0]` (32 MB) — dump it after each prefill and diff
+   the two byte streams for the same prompt and position.
+2. **Device-memory / BO residency.** The unified process keeps the whole bf16 GEMM context
+   alive (per-layer weight BOs, `bA`/`bC`, the attention ELFs) alongside the runlist session's
+   per-layer 32 MB KV BOs. A different BO address map can change bank/channel distribution and
+   hence kernel exec time on this part. Cheap test: free the bf16 BOs before entering the
+   unified decode and re-measure the same 16-token window.
+
+Neither is run here; both are named with their instrument. This correction matters because
+candidate (1) as originally written in this document ("KV layout/quantisation") and the
+length-based reading are different diagnoses with different fixes.
+
 ## Status
 
 Criterion (c) remains unmet. What changed here is that its remaining decode shortfall is now
