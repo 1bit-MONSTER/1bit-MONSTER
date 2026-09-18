@@ -27,7 +27,7 @@ Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-ge
 ## The 500+ agnostic engine
 
 **One binary, no per-model config files.** The arch registry (`rcpp_arch_from_string`)
-maps **2,044 HF `architectures` strings → 569 engine tokens** — every checkpoint
+maps **2,036 HF `architectures` strings → 569 engine tokens** — every checkpoint
 whose arch string is in the table loads through the same discovery → arch-map →
 router → decode path. The tokens group onto the validated families (see the
 manifest tiers); the VLM/SSM tokens (qwen2vl, mamba, kimi, whisper, ...) route
