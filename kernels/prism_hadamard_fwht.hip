@@ -73,17 +73,41 @@ __global__ void prism_fwht_kernel(const T* __restrict__ x_in,
     __syncthreads();
 
     // In-place butterfly: stage `len`, pairs (i, i+len); high element gets a - b.
-    for (int len = 1; len < block; len <<= 1) {
-        for (int idx = tid; idx < (block >> 1); idx += nthr) {
-            const int g = idx / len;               // group index
-            const int j = idx - g * len;           // offset inside the low half
-            const int i = (g << 1) * len + j;      // low element
+    // Fast path when the block is exactly one warp per 32 elements of it (block == nthr):
+    // the first five stages are warp-local and go through shuffles, so they cost NO barrier.
+    // The kernel was barrier-bound (3.87-4.04 us/call independent of width, i.e. latency, not
+    // bandwidth), and this removes five of the ten barriers.
+    if (nthr == block && (block & 31) == 0) {
+#pragma unroll
+        for (int len = 1; len < 32; len <<= 1) {
+            const float o = __shfl_xor_sync(0xffffffffffffffffull, s[tid], len);
+
+            s[tid] = (tid & len) ? (o - s[tid]) : (s[tid] + o);
+        }
+        __syncthreads();
+        for (int len = 32; len < block; len <<= 1) {
+            const int g = tid / len;
+            const int j = tid - g * len;
+            const int i = (g << 1) * len + j;
             const float a = s[i];
             const float b = s[i + len];
             s[i]       = a + b;
             s[i + len] = a - b;
+            __syncthreads();
         }
-        __syncthreads();
+    } else {
+        for (int len = 1; len < block; len <<= 1) {
+            for (int idx = tid; idx < (block >> 1); idx += nthr) {
+                const int g = idx / len;               // group index
+                const int j = idx - g * len;           // offset inside the low half
+                const int i = (g << 1) * len + j;      // low element
+                const float a = s[i];
+                const float b = s[i + len];
+                s[i]       = a + b;
+                s[i + len] = a - b;
+            }
+            __syncthreads();
+        }
     }
 
     // Normalize, apply inverse-mode signs, store.
@@ -110,7 +134,10 @@ int prism_fwht_launch(const void* x_in, const int8_t* signs, void* y_out,
     if (!prism_fwht_args_ok(width, block, mode)) return 1 /* RCPP_INVALID_ARG */;
     if ((!x_in && !y_out)) return 1;
     const int grid    = width / block;
-    const int threads = block < 256 ? block : 256;
+    // One thread per block element gives the shuffle fast path (block == threads) for the
+    // kernel's own B <= 1024; larger B keeps the barrier-only path because the device caps
+    // a block at 1024 threads (the P3.1 gate exercises B up to 4096).
+    const int threads = block <= 1024 ? block : 1024;
     const size_t shmem = (size_t)block * sizeof(float);
     hipLaunchKernelGGL((prism_fwht_kernel<T>), dim3(grid), dim3(threads), shmem,
                        (hipStream_t)stream,
