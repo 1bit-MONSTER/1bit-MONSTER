@@ -71,7 +71,28 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | triad, @agent-1141bd multi-GEMV window 15:07 (before -> after) | 210.8-213.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad, @agent-1141bd PTQ1_0-dot window 15:13, 256 MB before -> after | 203.5-215.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad sweep, same window, lower sizes AFTER the run - the box drifted mid-run | 180.9-192.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
+| triad, same box minutes after the leaked-harness kill | 202.5-217.1 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
+| contaminant profile: Prism attribution harness, two processes | 98% CPU each, 43 minutes of CPU, zero device I/O, held the NPU device | `[Prism-lane\|leaked probe\|/tmp/attrib\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
+
+## 4b. Measurement-hygiene incident (2026-09-18) - caused by this lane, recorded with its impact
+
+Two leaked processes (`/tmp/attrib`, a Prism kernel-attribution harness: it carries this lane's kernel symbols and
+ran with this worktree as its working directory) held the NPU device and shared LPDDR while spinning - tens of
+minutes of CPU against **zero device I/O**, so it was neither producing results nor releasing anything. A peer
+measured large inflation of NPU prefill alongside it and discarded those runs (the peer's own report carries the factor); it is also the most probable
+cause of the drift in this lane's own four-gate window at 15:13, whose rows were **already tagged busy**, so no
+recorded number was invalidated.
+
+Both processes were terminated once the provenance was established - verified afterwards: the only remaining
+holder of that device is the FLM server. The box triad recovered to at or above the quiet threshold immediately,
+which confirms the mechanism and re-licenses quiet windows (see the recovery row in section 4).
+
+Two independent detectors caught this, which is the part worth keeping: the peer's run guard discarded the
+contaminated measurements, and this lane's own rule refused the quiet tag on the drifted window. Neither was
+looking for a leak; both were looking for evidence that the instrument was sound. Rules added: **no long-lived
+device probe runs without the device lock**, and a probe that spins for tens of minutes with no device I/O is a
+bug to kill, not a measurement in flight.
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 
