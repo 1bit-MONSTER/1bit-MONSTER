@@ -19,7 +19,10 @@
 // Build: part of librocm_cpp (CMakeLists.txt).
 
 #include <hip/hip_runtime.h>
+#include <hip/hip_fp16.h>
 #include "hip_check.h"
+
+__device__ __forceinline__ float tile_h2f(const uint8_t* p) { return __half2float(*reinterpret_cast<const __half*>(p)); }
 
 namespace {
 
@@ -50,10 +53,10 @@ __global__ void prism_gemv_tile_q1_kernel(const uint8_t* __restrict__ W, const f
         const size_t bo = (size_t)b * NB;
         const float4 xv = *reinterpret_cast<const float4*>(&x[((size_t)b << 7) + 4 * lane]);
         const uint8_t y0 = R0[bo + b0], y1 = R1[bo + b0], y2 = R2[bo + b0], y3 = R3[bo + b0];
-        const float d0 = tile_d16((uint16_t)(R0[bo] | (R0[bo + 1] << 8)));
-        const float d1 = tile_d16((uint16_t)(R1[bo] | (R1[bo + 1] << 8)));
-        const float d2 = tile_d16((uint16_t)(R2[bo] | (R2[bo + 1] << 8)));
-        const float d3 = tile_d16((uint16_t)(R3[bo] | (R3[bo + 1] << 8)));
+        const float d0 = tile_h2f(R0 + bo);
+        const float d1 = tile_h2f(R1 + bo);
+        const float d2 = tile_h2f(R2 + bo);
+        const float d3 = tile_h2f(R3 + bo);
 #pragma unroll
         for (int k = 0; k < 4; k++) {
             const float xk = (k == 0) ? xv.x : (k == 1) ? xv.y : (k == 2) ? xv.z : xv.w;
@@ -90,10 +93,10 @@ __global__ void prism_gemv_tile_pq_kernel(const uint8_t* __restrict__ W, const f
         const size_t bo = (size_t)b * NB;
         const float4 xv = *reinterpret_cast<const float4*>(&x[((size_t)b << 7) + 4 * lane]);
         const uint8_t y0 = R0[bo + b0], y1 = R1[bo + b0], y2 = R2[bo + b0], y3 = R3[bo + b0];
-        const float d0 = tile_d16((uint16_t)(R0[bo] | (R0[bo + 1] << 8)));
-        const float d1 = tile_d16((uint16_t)(R1[bo] | (R1[bo + 1] << 8)));
-        const float d2 = tile_d16((uint16_t)(R2[bo] | (R2[bo + 1] << 8)));
-        const float d3 = tile_d16((uint16_t)(R3[bo] | (R3[bo + 1] << 8)));
+        const float d0 = tile_h2f(R0 + bo);
+        const float d1 = tile_h2f(R1 + bo);
+        const float d2 = tile_h2f(R2 + bo);
+        const float d3 = tile_h2f(R3 + bo);
 #pragma unroll
         for (int k = 0; k < 4; k++) {
             const float xk = (k == 0) ? xv.x : (k == 1) ? xv.y : (k == 2) ? xv.z : xv.w;
@@ -147,10 +150,10 @@ __global__ void prism_gemv_tile_ptq_kernel(const uint8_t* __restrict__ W, const 
     for (int b = 0; b < bpr; b++) {
         const size_t bo = (size_t)b * NB;
         const float4 xv = *reinterpret_cast<const float4*>(&x[((size_t)b << 7) + 4 * lane]);
-        const float d0 = tile_d16((uint16_t)(R0[bo + 26] | (R0[bo + 27] << 8)));
-        const float d1 = tile_d16((uint16_t)(R1[bo + 26] | (R1[bo + 27] << 8)));
-        const float d2 = tile_d16((uint16_t)(R2[bo + 26] | (R2[bo + 27] << 8)));
-        const float d3 = tile_d16((uint16_t)(R3[bo + 26] | (R3[bo + 27] << 8)));
+        const float d0 = tile_h2f(R0 + bo + 26);
+        const float d1 = tile_h2f(R1 + bo + 26);
+        const float d2 = tile_h2f(R2 + bo + 26);
+        const float d3 = tile_h2f(R3 + bo + 26);
 #pragma unroll
         for (int k = 0; k < 4; k++) {
             const float xk = (k == 0) ? xv.x : (k == 1) ? xv.y : (k == 2) ? xv.z : xv.w;
