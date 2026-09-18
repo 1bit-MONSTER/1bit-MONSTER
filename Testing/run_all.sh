@@ -90,6 +90,22 @@ run npu_keys  Testing/npu_key_contract_selfcheck.cpp src/q4nx_reader.cpp --
 # not be used (a stale NPU_XCLBIN_DIR in the shell silently broke every NPU run).
 run npu_paths Testing/npu_paths_selfcheck.cpp --
 
+# NPU fused-weight packing: transpose_pack's `in_f` is the ROW STRIDE of its source, so an
+# offset that names a row block has to be scaled by it. The GDN K and V blocks passed a row
+# count unscaled, so every row past 0 was read from a sliding window inside q's first rows —
+# invisible to every other check, because the packing runs inside a 4000-line function and a
+# wrong block still has the right shape (#2451). Source-level, no device needed.
+echo "== npu pack stride =="
+total=$((total+1))
+if pack_stride_out=$("$PYTHON" Testing/npu_pack_stride_selfcheck.py 2>&1); then
+    printf '%s\n' "$pack_stride_out" | sed 's/^/  /'
+    echo "✓ npu_pack_stride"
+else
+    echo "✗ npu_pack_stride"
+    printf '%s\n' "$pack_stride_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # CLI dispatch coverage: tools/onebit.cpp's whole command set (chat, pull, list,
 # status, …) is compiled into the single ELF, but tools/onebin.cpp declared
 # onebit_main and never called it — so the documented `./run.sh chat` printed the
