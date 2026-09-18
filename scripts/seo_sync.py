@@ -78,17 +78,22 @@ def count_tokens():
 
 
 def count_arch_strings():
-    """Mapped arch strings in rcpp_arch_from_string (excl. UNKNOWN fallback).
+    """Distinct arch strings rcpp_arch_from_string maps (excl. UNKNOWN fallback).
 
-    Every non-UNKNOWN `return RCPP_ARCH_*` line in bitnet_model.h lives inside
-    rcpp_arch_from_string (verified), so a file-wide count is exact.
+    Counted as a set of the strings, not as a number of lines. The line count was
+    exact only while no alias was defined twice, and eight of them were: seven
+    same-token duplicates plus `qwen3_5moe`, which the Qwen3.5 block already
+    matched before the Qwen3 block re-defined it. That inflated every published
+    "2,044 HF arch strings" by eight (#2501). Lines and distinct strings agree
+    again now, and they cannot diverge again without this number noticing.
     """
-    n = 0
+    strings = set()
     with open(HEADER, encoding="utf-8") as f:
         for line in f:
-            if "return RCPP_ARCH_" in line and "RCPP_ARCH_UNKNOWN" not in line:
-                n += 1
-    return n
+            m = re.search(r'strcmp\(s,\s*"([^"]+)"\)\s*==\s*0\)\s*return\s+(RCPP_ARCH_[A-Z0-9_]+)', line)
+            if m and m.group(2) != "RCPP_ARCH_UNKNOWN":
+                strings.add(m.group(1))
+    return len(strings)
 
 
 def census_total():
