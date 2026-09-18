@@ -130,3 +130,11 @@ cell (0.6B TTFT at 8k) is now faster in all three accepted pairs. (c) is met wit
 claim: every number above is a paired, guard-accepted measurement, and every one of them is taken
 on a build whose hidden states are byte-identical to the build the oracle scoreboard (a)/(b) was
 measured on.
+
+## Scope note on the decode table
+
+The six-model decode table in `RESULTS-8k-decode-top-of-window-2026-09-18.md` was measured on the
+`-mavx2` build. The decode path is numerically identical in both builds (the bit-exactness table
+above is a full hidden-state comparison, and the runlist decode is the same code path), but the
+timings are from that build; only 0.6B was re-measured here (1.064–1.067x, up from 1.047x). The
+prefill and TTFT tables in this doc are all from the committed build.
