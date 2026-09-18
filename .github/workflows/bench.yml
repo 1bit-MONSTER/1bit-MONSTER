@@ -11,6 +11,13 @@ on:
         description: 'Decode tokens to generate'
         required: false
         default: '32'
+      allow_default_tdr:
+        # The benchmark's environment precondition (#2556): the driver's TDR timeout
+        # must be the raised value the published numbers were taken at. Set this to
+        # measure the 2 s default on purpose — the run then says so in a warning.
+        description: 'Run even when amdxdna timeout_in_sec is the 2 s default'
+        type: boolean
+        default: false
   push:
     paths:
       - '.github/workflows/bench.yml'
@@ -62,6 +69,46 @@ jobs:
             echo "NPU device present"
             echo "DRIVER_OK=true" >> $GITHUB_ENV
           fi
+
+      - name: Check the measurement precondition (amdxdna TDR)
+        # Every 35B/dense number published since 2026-09-16 is annotated
+        # `timeout_in_sec=15`; the driver's 2 s default is the condition
+        # benchmarks/RESULTS-ert-rootcause-and-repair-2026-09-16.md attributes the
+        # 83-dump ERT_CMD_STATE_TIMEOUT teardown to. That value lives in an untracked
+        # /etc/modprobe.d file, so a runner without it measures a different environment
+        # than the numbers were taken in, and says nothing about it (#2556). Asserted
+        # rather than assumed: a benchmark whose environment is unknown is not evidence.
+        #
+        # TDR_PARAM is overridable so the failure path can be exercised without
+        # touching the host's module parameter.
+        env:
+          ALLOW_DEFAULT_TDR: ${{ inputs.allow_default_tdr == true && '1' || '' }}
+        run: |
+          tdr_param="${TDR_PARAM:-/sys/module/amdxdna/parameters/timeout_in_sec}"
+          tdr=$(cat "$tdr_param" 2>/dev/null || echo '?')
+          echo "amdxdna timeout_in_sec = $tdr (from $tdr_param)"
+          # Printed so the override's own state is in the log: an override that is on
+          # without anyone noticing is how this precondition would become advisory.
+          echo "allow_default_tdr override: '${ALLOW_DEFAULT_TDR:-<unset>}'"
+          {
+            echo "### NPU benchmark environment"
+            echo ""
+            echo "| parameter | value |"
+            echo "| --- | --- |"
+            echo "| kernel | \`$(uname -r)\` |"
+            echo "| amdxdna timeout_in_sec | \`$tdr\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$tdr" in
+            2|'?')
+              if [ -n "$ALLOW_DEFAULT_TDR" ]; then
+                echo "::warning::timeout_in_sec=$tdr (the 2 s default, or unreadable) and allow_default_tdr was set: running anyway, so any number from this run is not like-for-like against the results annotated timeout_in_sec=15 (#2556)."
+              else
+                echo "::error::timeout_in_sec=$tdr — the measurement precondition is not met, so this run cannot produce a number comparable to the published set (#2556). On the runner: ensure a /etc/modprobe.d entry sets 'options amdxdna timeout_in_sec=15' and reload the module. To measure the default deliberately, re-dispatch with allow_default_tdr=true."
+                exit 1
+              fi
+              ;;
+          esac
+          echo "measurement precondition met (timeout_in_sec=$tdr)"
 
       - name: Check XRT
         run: |
