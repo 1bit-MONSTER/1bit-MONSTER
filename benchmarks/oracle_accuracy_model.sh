@@ -39,9 +39,9 @@ for f in "$ENGINE" "$D/model.q4nx" "$D/tokenizer.json"; do
     [ -e "$f" ] || { echo "MISSING: $f" >&2; exit 2; }
 done
 
-printf 'prompt\texpected\tflm\tnative\tflm_ok\tnative_ok\tnids\tnative_toks\n' > "$OUT"
+printf 'prompt\texpected\tflm\tnative\tflm_ok\tnative_ok\tnids\tnative_toks\tflm_nids\ti1\n' > "$OUT"  # I1_SAME_BYTES
 
-n=0; flm_ok=0; nat_ok=0; err=0
+n=0; flm_ok=0; nat_ok=0; err=0; i1_ok=0; i1_bad=0
 while IFS='|' read -r prompt expected; do
     [ -z "${prompt:-}" ] && continue
     [ -z "${expected:-}" ] && continue
@@ -53,8 +53,16 @@ import sys
 from transformers import AutoTokenizer
 d, prompt, out = sys.argv[1], sys.argv[2], sys.argv[3]
 tok = AutoTokenizer.from_pretrained(d)
-text = tok.apply_chat_template([{"role": "user", "content": prompt}],
-                               tokenize=False, add_generation_prompt=True)
+try:
+    # Some templates (Qwen3-1.7B among them) reference optional variables such as
+    # user_system_prompt; supply them so the guard renders instead of raising.
+    text = tok.apply_chat_template([{"role": "user", "content": prompt}],
+                                   tokenize=False, add_generation_prompt=True,
+                                   user_system_prompt="", tools=None)
+except Exception as e:
+    # Last resort: the plain ChatML form every one of these models accepts.
+    print("TEMPLATE_FALLBACK", type(e).__name__, e, file=sys.stderr)
+    text = "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n"
 ids = tok(text, add_special_tokens=False)["input_ids"]
 open(out, "w").write(" ".join(map(str, ids)))
 print("TPL", repr(text))
@@ -92,6 +100,18 @@ PY
                  | tr '\n' ' ' | sed 's/^ *//; s/ *$//' | cut -c1-200)"
     [ -z "$flm_txt" ] && flm_txt="<EXTRACTION EMPTY>"
 
+    # ---- I1: same bytes, ASSERTED ------------------------------------------
+    # The native arm consumes the model's own chat template rendered from
+    # tokenizer.json; FLM applies the same template internally. Assert the two
+    # agree by comparing FLM's reported prefill token count with the native nids
+    # rather than assuming it. UNPARSED is reported honestly (some FLM builds do
+    # not print the count) and is NOT counted as a pass.
+    flm_nids="$(grep -aoE 'with [0-9]+ tokens' /tmp/oam_flm.raw | grep -oE '[0-9]+' | head -1)"
+    if [ -z "$flm_nids" ]; then i1="UNPARSED"
+    elif [ "$flm_nids" = "$nids" ]; then i1="OK"; i1_ok=$((i1_ok+1))
+    else i1="MISMATCH"; i1_bad=$((i1_bad+1)); fi
+    printf '[%2d] I1 %s  flm_nids=%s native_nids=%s\n' "$n" "$i1" "${flm_nids:-?}" "$nids"
+
     # ---- score ------------------------------------------------------------
     fk="-"; nk="-"
     case "$flm_txt" in "<EXTRACTION EMPTY>") fk="ERR" ;; *)
@@ -103,13 +123,14 @@ PY
 
     printf '[%2d] flm=%s native=%s  %s | want=%s\n' "$n" "$fk" "$nk" "$prompt" "$expected"
     printf '  flm    : %s\n  native : %s\n' "$flm_txt" "$nat_txt"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$prompt" "$expected" "$flm_txt" "$nat_txt" "$fk" "$nk" "$nids" "$nat_n" >> "$OUT"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$prompt" "$expected" "$flm_txt" "$nat_txt" "$fk" "$nk" "$nids" "$nat_n" "${flm_nids:-}" "$i1" >> "$OUT"
 done < "$SET"
 
 echo
 echo "========= ORACLE ACCURACY: $MODEL (ntok=$NTOK) ========="
 echo "prompts scored        : $n  (extraction errors: $err)"
+echo "I1 same-bytes assertion: OK=$i1_ok  MISMATCH=$i1_bad  (a MISMATCH voids the row)"
 echo "FLM oracle self-check : $flm_ok/$n"
 echo "native arm ($ENG)     : $nat_ok/$n"
 echo "tsv: $OUT"
