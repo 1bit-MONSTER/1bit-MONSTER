@@ -80,6 +80,58 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | contaminant profile: Prism attribution harness, two processes | 98% CPU each, 43 minutes of CPU, zero device I/O, held the NPU device | `[Prism-lane\|leaked probe\|/tmp/attrib\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 
+## 4a. RETRACTION - the GDN split carried a latent wrongness, and our strongest correctness gate did not catch it
+
+**Status of two commits changed: `5baa93ff3` and `0c56243d6` are recorded as "regression introduced; caught by the
+suite; fixed in `b2fc4bdf5`", NOT as wins.** The kernel owner made this retraction themselves, and it is the most
+consequential correction of the day.
+
+**The evidence that exposed it, same binary, consecutive runs of the GDN kernel parity gate:**
+
+| run | core error | verdict | tag |
+|---|---|---|---|
+| 1 | 2.88e-07 | PASS | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP GDN parity gate, repeated \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+| 2 | 5.55e-02 | FAIL | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP GDN parity gate, repeated \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+| 3 | 4.22e-01 | FAIL | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP GDN parity gate, repeated \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+| state error across all three | 3.57e-08 | steady | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP GDN parity gate \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+
+**A large, intermittent core error with a steady state error is a race, not a tolerance.** Root cause: with more
+than one (hv, kc) thread group per head, **every** group ran the gated-RMSNorm tree for the same hv, so the
+partials were summed once per group (twice in the 2-way split, four times in the 4-way) and the groups raced
+writing the same reduction slot. The runs that passed did not show a correct kernel - the race landed on a
+consistent-but-lucky value. Fix: `kc == 0` owns the norm reduction and the output; all threads still reach every
+barrier.
+
+**Independently verified here, by repeat rather than by a single green run:** with the device lock held and
+released, the parity gate was built from this tree and run 8 consecutive times - **8 pass / 0 fail**, every run
+reporting the identical core error 2.88e-07. That is the regime that exposed the bug, applied to the fix.
+
+**Corrected performance, and the win that survives:** the 4-way split is still faster than the 2-way (the post-fix
+figures are in the tagged row below). What does not survive is calling the intermediate commits wins.
+
+### The gate hole this exposes, which is the part that outlives the bug
+
+**The strongest correctness gate in this lane did not catch it.** The 15:45:05 window - recorded as canonical -
+was measured with the buggy kernel, whose norm output was wrong by up to 0.42, and the **fork oracle still matched
+5/5 with the CPU-vs-device greedy comparison 11/11**. So end-to-end token agreement is **not sufficient** as a
+correctness gate for a kernel: a wrong kernel can leave the argmax untouched on a short prompt, which is precisely
+the "plausible garbage" class this lane has been guarding against all day. The gate that *did* catch it is the
+kernel-level parity gate - and it caught it **intermittently**, so the single green run that was reported for
+those commits proved nothing.
+
+**Rules adopted, both structural:**
+
+1. **A kernel-level change is not verified by one green run of its parity gate.** Race-prone gates are run
+   repeatedly (this lane uses eight consecutive runs) before a kernel change is recorded as correct, and the
+   repeat count is recorded with the result.
+2. **A throughput window taken with a kernel later found wrong is recorded as throughput-only, with its
+   correctness verification retracted**, until it is re-bracketed with the fixed kernel. The 15:45:05 rows below
+   carry that annotation; their tok/s remain valid as throughput and are not valid as correctness-verified
+   throughput.
+
+This is the sibling of the earlier lesson about skipped gates: there, a green summary hid an unrun gate; here, a
+single green run hid a racy one. Both come from treating one observation as evidence of a property.
+
 ## 4b. Measurement-hygiene incident (2026-09-18) - caused by this lane, recorded with its impact
 
 Two leaked processes (`/tmp/attrib`, a Prism kernel-attribution harness by symbol set and working directory - specific build
@@ -193,7 +245,7 @@ that keeps every other row in this file admissible.
 
 | measurement | value | tag |
 |---|---|---|
-| GDN recurrence, isolated A/B, both kernels built from the tree | 2-way 28.534 -> 4-way 20.666 us/layer = 1.370 -> 0.992 ms/token (1.38x) | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP gdn_recurrence isolated A/B \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+| GDN recurrence, isolated A/B, both kernels built from the tree | **RETRACTED as a win (section 4a)**: the 2-way and 4-way commits carried a race, so their figures were taken on a wrong kernel; corrected post-fix figure is 22.222 us/layer = 1.067 ms/token | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP gdn_recurrence isolated A/B, post-fix \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
 | why further splitting is legitimate rather than thrashing | 48 heads x 2 thread groups = 12288 threads on a 32-CU part, so the kernel was still latency-bound, not work-bound | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP gdn_recurrence geometry \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
 | correctness of the 4-way split | per-thread traversal order unchanged, so per-element fp32 is bit-identical; fork oracle 5/5, compare_gen 11/11, GDN kernel and layer-0 parity gates PASS | `[3-packs \| verbatim \| HIP GDN 4-way vs 2-way \| strixhalo-quiet \| 11 \| capital-of-France \| 2026-09-18]` |
 | cumulative non-GEMV movement, all isolated and correctness-gated | gdn 2.215 -> 0.992 ms/token; rmsnorm 1.280 -> 0.655; FWHT 1.022 -> 0.801 | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP isolated A/B per kernel \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
@@ -444,7 +496,12 @@ So the Q1_0 GEMV chase and the PTQ1_0 dot chase are the same chase - the many-ro
 that merges the two targets into one. It also refines the two-chase frame above: the GEMV half is not "get the
 dot uniformly faster", it is "fix the shallow-reduction shape", which is where the next gain most plausibly lives.
 
-### gdn_recurrence isolated A/B (5baa93ff3) - the neutral call is REVERSED, and an in-situ tax appears on both kernels
+### gdn_recurrence isolated A/B (5baa93ff3) - the neutral call is REVERSED
+
+> **RETRACTED AS A WIN - see section 4a.** The commits in this section carried a latent race; their green
+> parity runs were luck. Corrected status: regression introduced, caught by the suite, fixed in
+> `b2fc4bdf5`. Throughput figures here are throughput-only; correctness verification is withdrawn until
+> re-bracketed., and an in-situ tax appears on both kernels
 
 | measurement | value | tag |
 |---|---|---|
@@ -473,6 +530,11 @@ The decisive next number is the **post-split in-situ** measurement of gdn_recurr
 isolated gain survives inside the loop, which is exactly where the tax lives.
 
 ### Three-kernel window (15:45:05) - the wall did not move, and Q1_0 is now GEMV-limited
+
+> **RETRACTED AS A WIN - see section 4a.** The commits in this section carried a latent race; their green
+> parity runs were luck. Corrected status: regression introduced, caught by the suite, fixed in
+> `b2fc4bdf5`. Throughput figures here are throughput-only; correctness verification is withdrawn until
+> re-bracketed.
 
 | measurement | value | tag |
 |---|---|---|
