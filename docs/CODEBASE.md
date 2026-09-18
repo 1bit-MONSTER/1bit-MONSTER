@@ -26,7 +26,7 @@ and [`docs/README.md`](README.md) (documentation index).
 | Total code (all langs) | ~204k lines |
 | Source files | 131 in `src/` + 45 headers in `include/` |
 | Symbol index | 24,011 symbols, 44,265 edges, 759 communities, 216 execution flows (`.gitnexus/`) |
-| Architecture coverage | 569 engine arch tokens ← 2,044 HF `architectures` strings |
+| Architecture coverage | 569 engine arch tokens ← 2,036 HF `architectures` strings |
 | Primary platform | AMD Strix Halo (Ryzen AI MAX+, XDNA 2 NPU + Radeon GPU) |
 | Domain | `1bit.monster` — static site served from `site/` (Cloudflare Pages) |
 

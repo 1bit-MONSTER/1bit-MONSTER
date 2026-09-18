@@ -1098,16 +1098,17 @@
  },
  "declared_dangling": {},
  "generated": {
-  "at": "2026-09-17T01:49:17Z",
+  "at": "2026-09-18T02:49:12Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
   "host": "strixhalo",
-  "ref": "bc1d37cfd"
+  "ref": "6f9960c29"
  },
  "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest --toolchain \"<compiler arm + versions>\" --script-revision \"<git rev of the generating script>\" and land it in the same commit as the artifact change. Those two flags are the point of this file: the artifacts carry no compiler marker to derive them from, so a rebuild that omits --toolchain records build.toolchain as null again (issue #2262).",
  "notes": [
-  "population.dangling_symlinks and population.alias_symlinks_in_tree are HOST-DEPENDENT: they were observed on generated.host. Installing fastflowlm at /opt/fastflowlm makes the four third-party links resolve, which says nothing about the repo. The check asserts symlink TARGETS (the symlinks and declared_dangling maps), never this split.",
-  "declared_dangling lists the third-party targets that did not resolve on generated.host. It is a target map, not a resolution requirement."
+  "population.dangling_symlinks and population.alias_symlinks_in_tree are HOST-DEPENDENT: they were observed on generated.host. Installing fastflowlm at /opt/fastflowlm makes third-party links resolve, which says nothing about the repo. They are the only two keys compare() excludes - every other recorded field is compared against the tree, so a counter that drifts turns the gate red instead of sitting in this file unread (issue #2513). Symlink TARGETS are asserted (the symlinks and declared_dangling maps), never this split.",
+  "declared_dangling lists the third-party targets that did not resolve on generated.host. It is a target map, not a resolution requirement.",
+  "streams records every tracked top-level *.txt: sha256 and bytes, or the target when the entry is an alias. These are what the engine uploads to the NPU, and the one payload a rebuild reproduces byte for byte (issue #2262). They were counted in population.tracked_top_level_entries and hashed nowhere: on 2026-09-18 appending TAMPER to insts_i8_G_qwen3_4b.txt left this gate at exit 0. census.payload_bytes still counts the xclbin bytes alone."
  ],
  "observed": {
   "note": "host/path-variant facts, reported not asserted",
@@ -1256,12 +1257,614 @@
   "distinct_builds_by_uuid": 122,
   "regular_artifacts": 142,
   "top_level_xclbin": 154,
-  "tracked_paths_under_dir": 582,
-  "tracked_top_level_entries": 321,
+  "tracked_paths_under_dir": 584,
+  "tracked_top_level_entries": 323,
   "txt_symlinks": 12,
   "xclbin_symlinks": 12
  },
  "schema": 1,
+ "streams": {
+  "attn_insts.txt": {
+   "bytes": 45936,
+   "sha256": "f3d0a132bde24a6044cf5ac5f2f29a6d10485b41479b0d06ec8cdd9c70f8e1ba"
+  },
+  "final_i8_G_qwen3_4b.txt": {
+   "bytes": 1009600,
+   "sha256": "110f5e8346a588c7614f3b96ac79a9a46033e8e25728ef30fe73937b782b1c12"
+  },
+  "insts_cascade_fused.txt": {
+   "bytes": 210100,
+   "sha256": "ba91ef26b6b3d23faef890079d3ec82ef4fa25f2979cacb71529c217de311343"
+  },
+  "insts_cascade_fused_qwen3_0_6b.txt": {
+   "bytes": 189108,
+   "sha256": "ab1abe4bb7acba31bc38620907c1a0c1c1791264f419b93be389197d760f16d1"
+  },
+  "insts_i8_D_K10240_N2560.txt": {
+   "bytes": 4211536,
+   "sha256": "4305d855e031c5b04d9de434bb70c0b20df81902c4f708ee00f80b6d9d773695"
+  },
+  "insts_i8_D_K12288_N2560.txt": {
+   "bytes": 1262816,
+   "sha256": "99cbfd7db6ca07a496c86dc870541a74adb0ce86d9ea8628f407b08f5a3015fd"
+  },
+  "insts_i8_D_K14336_N4096.txt": {
+   "bytes": 9425424,
+   "sha256": "df27661e8c07031f7ff369ea383b0af359390dd31904f4bd59712b8325d3c2a7"
+  },
+  "insts_i8_D_K512_N2048.txt": {
+   "bytes": 44624,
+   "sha256": "119ee7fa9f758ecd8a226cab94866b2ff287595ca6783ff9d5035369af64b477"
+  },
+  "insts_i8_D_K6912_N1152.txt": {
+   "bytes": 1281184,
+   "sha256": "6c3f0f6a619081af63c5b31dfc72a840cb157825b7c570ba82f7c86880ac1d4a"
+  },
+  "insts_i8_D_K8192_N2560.txt": {
+   "bytes": 842976,
+   "sha256": "ef6cd4f97bfde7a7ee5ba5b3631c6ecf7b7e725fc0f6a44c1b608d72247a6a68"
+  },
+  "insts_i8_D_K8192_N3072.txt": {
+   "bytes": 1011568,
+   "sha256": "e4fe84c65e7755c8df4dbb8eff033e2cd491c5cc241baf4b7bbbb0a8c4e99c68"
+  },
+  "insts_i8_D_K9216_N2560.txt": {
+   "bytes": 3791696,
+   "sha256": "d8ec3231f08880f936f6e26604717d442c4e30f0abf5b41503bdc34d3a0cbd18"
+  },
+  "insts_i8_D_K9728_N2560.txt": {
+   "bytes": 1000416,
+   "sha256": "6a25756152e6ec3702b5ac96eda9e19bfac65a77ed32dc63473673bbf78e886c"
+  },
+  "insts_i8_D_gemma4_e2b.txt": {
+   "bytes": 952528,
+   "sha256": "55e03b3281ef3e85b4a5a660c49c2516e909a18ebce399893ef3cbf00d8931ec"
+  },
+  "insts_i8_D_gemma4_e4b.txt": {
+   "bytes": 1262816,
+   "sha256": "99cbfd7db6ca07a496c86dc870541a74adb0ce86d9ea8628f407b08f5a3015fd"
+  },
+  "insts_i8_D_llama_3_1_8b.txt": {
+   "bytes": 1768592,
+   "sha256": "4c39e234670391ff7cfb7e56dd8c35102dc38a7dacabd3b8304b3d85ed18c6f5"
+  },
+  "insts_i8_D_nanbeige4_1_3b.txt": {
+   "bytes": 4421456,
+   "sha256": "24c5dd4ad39f688da5b491ab1929f5016762e592393a82c07de463e8419dc2a5"
+  },
+  "insts_i8_D_phi4_mini_4b.txt": {
+   "bytes": 1011568,
+   "sha256": "e4fe84c65e7755c8df4dbb8eff033e2cd491c5cc241baf4b7bbbb0a8c4e99c68"
+  },
+  "insts_i8_D_qwen3.6-moe_35b.txt": {
+   "bytes": 44624,
+   "sha256": "119ee7fa9f758ecd8a226cab94866b2ff287595ca6783ff9d5035369af64b477"
+  },
+  "insts_i8_D_qwen3_0_6b.txt": {
+   "bytes": 95792,
+   "sha256": "f940370de753bb6c19864a11ba732890a5c61eb1897eed6a302969b24ecb7a05"
+  },
+  "insts_i8_D_qwen3_0_6b_m1.txt": {
+   "bytes": 72176,
+   "sha256": "890eccafeffcff06cc7b20729e59e7df4e6ff80d31a770db507ecf62c3e8ba79"
+  },
+  "insts_i8_D_qwen3_0_6b_m32.txt": {
+   "bytes": 95792,
+   "sha256": "60c49d0d802be59b1e36ba6b3150519cebb8d8df39e9a6b7eeb0728009c81c94"
+  },
+  "insts_i8_D_qwen3_0_6b_m8.txt": {
+   "bytes": 72176,
+   "sha256": "f091ed680d0cb8b84692804ce1722a0f240c92f3eb74694a7c621b4814a9ee6e"
+  },
+  "insts_i8_D_qwen3_4b.txt": {
+   "bytes": 1000416,
+   "sha256": "6a25756152e6ec3702b5ac96eda9e19bfac65a77ed32dc63473673bbf78e886c"
+  },
+  "insts_i8_D_qwen3_5_4b.txt": {
+   "bytes": 947936,
+   "sha256": "ee5caa4ddd0966d89926dd5db76ab89ca036a3548c6f7f2a9fb8c248ed03a4db"
+  },
+  "insts_i8_D_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_D_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_D_qwen3_8b.txt": {
+   "bytes": 1516688,
+   "sha256": "4d3554c45495f0ec52bb8f4e6ab0afc4d5c72c460ebdba4a17b0ddc6e3d87bff"
+  },
+  "insts_i8_D_qwen3_vl_4b.txt": {
+   "bytes": 1000416,
+   "sha256": "6a25756152e6ec3702b5ac96eda9e19bfac65a77ed32dc63473673bbf78e886c"
+  },
+  "insts_i8_D_v.txt": {
+   "bytes": 288656,
+   "sha256": "5ecfc50b3baa64632e0bb0bf675a4e2a05de184ea3edc04e7d3bdfd5d139a03f"
+  },
+  "insts_i8_GUSILU_i4_qwen3_0_6b.txt": {
+   "bytes": 157456,
+   "sha256": "74758d75ea1f6207109be3284784d65ea660bbe836d9585e166032f36b2ad4a7"
+  },
+  "insts_i8_GUSILU_i4_qwen3_0_6b_bf16pair.txt": {
+   "bytes": 165328,
+   "sha256": "5fc571a54d5685e75cfb9ea6ce45d36daf71769f642081e25b919f38f5adadca"
+  },
+  "insts_i8_GU_K1152_N13824.txt": {
+   "bytes": 2621392,
+   "sha256": "eb266bde1ba78c448a9bf3c877ebb931158ea3d0ae8f4073e756655bc24982ae"
+  },
+  "insts_i8_GU_K2560_N18432.txt": {
+   "bytes": 7651600,
+   "sha256": "7af4b553939780f53ff58261ccb539f031094200ca53cf115ca310ebd8e28838"
+  },
+  "insts_i8_GU_gemma4_e2b.txt": {
+   "bytes": 582544,
+   "sha256": "b7bb43d825f2ac4e49fbb879cec1989933a014ec90ee4cce3ea242d4491abf09"
+  },
+  "insts_i8_GU_qwen3.6-moe_35b.txt": {
+   "bytes": 341136,
+   "sha256": "845756cbe80c182c43e869b5d58752516a652c4e8da2d3a60b174c3e0b2d0874"
+  },
+  "insts_i8_GU_qwen3_0_6b.txt": {
+   "bytes": 196816,
+   "sha256": "ccbcdcb91778d3a5c3c2d35c98dd81beb5a04a65b8f92a0459ac27a28cf144c2"
+  },
+  "insts_i8_GU_qwen3_0_6b_m1.txt": {
+   "bytes": 149584,
+   "sha256": "37f0eb3add030a750a601235bfbd5410fbf5e1cf72d76e8f3c1013ab733aa017"
+  },
+  "insts_i8_GU_qwen3_0_6b_m32.txt": {
+   "bytes": 196816,
+   "sha256": "e88649792fba85a7e4c671bd7a8f98103cfe04c8e57755209314a9f1846eb555"
+  },
+  "insts_i8_GU_qwen3_0_6b_m8.txt": {
+   "bytes": 149584,
+   "sha256": "4651595cdbd1b196833f806586b081d766c15c2369201e94fed42d8cd134739c"
+  },
+  "insts_i8_GU_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_GU_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_GU_v.txt": {
+   "bytes": 598288,
+   "sha256": "811021178f40aefe57cb5726cce4c430ad74bbfe33ddbf4747130b4b5dd2eed3"
+  },
+  "insts_i8_G_K1152_N6912.txt": {
+   "bytes": 1310704,
+   "sha256": "4ff27b2ead370dfeb52d073fb8fcad3470d334382e31485874394418ae7ac40f"
+  },
+  "insts_i8_G_K2048_N512.txt": {
+   "bytes": 42656,
+   "sha256": "1e56290f83e481b52c7fbedd18194667bd67b52567c6a98799944afbe103f412"
+  },
+  "insts_i8_G_K2560_N10240.txt": {
+   "bytes": 4250896,
+   "sha256": "5421b7c5f80ae0d71a18c867240bb73edb1355469f97e534e254e035ae0805ea"
+  },
+  "insts_i8_G_K2560_N12288.txt": {
+   "bytes": 960400,
+   "sha256": "70669d7f4e7261803a87e252d2f21c59848779512354e5855402e33a15221780"
+  },
+  "insts_i8_G_K2560_N8192.txt": {
+   "bytes": 640272,
+   "sha256": "b62bceeba6032ee32e8db067ed6aea28b8f92d54d31373dffc22d70d6100a415"
+  },
+  "insts_i8_G_K2560_N9216.txt": {
+   "bytes": 720304,
+   "sha256": "43cfa2970fb885b4133607e8317da1b9202dc82d3337145b5e4bb3e07c2775fd"
+  },
+  "insts_i8_G_K2560_N9728.txt": {
+   "bytes": 1009600,
+   "sha256": "110f5e8346a588c7614f3b96ac79a9a46033e8e25728ef30fe73937b782b1c12"
+  },
+  "insts_i8_G_K3072_N8192.txt": {
+   "bytes": 766224,
+   "sha256": "5688de2851d4308e1ca65ca1c7302c1ed7e21434b2e3c61c625afdf9f3112df2"
+  },
+  "insts_i8_G_K4096_N14336.txt": {
+   "bytes": 9477904,
+   "sha256": "eb259c46753fa4e1954b2a6a6e635f0af7f260d8ff832451d79d2b221ae321d1"
+  },
+  "insts_i8_G_gemma4_e4b.txt": {
+   "bytes": 960400,
+   "sha256": "70669d7f4e7261803a87e252d2f21c59848779512354e5855402e33a15221780"
+  },
+  "insts_i8_G_llama_3_1_8b.txt": {
+   "bytes": 1781712,
+   "sha256": "f25e06ecbf1fb28e99696cbdbeeb2adb570ce4470db9b277d6c0d36ef407afad"
+  },
+  "insts_i8_G_nanbeige4_1_3b.txt": {
+   "bytes": 4463440,
+   "sha256": "72cd99e18aa2eb13376afc1d57145709270f5055af9c400b2fb4a7eff9d78fda"
+  },
+  "insts_i8_G_phi4_mini_4b.txt": {
+   "bytes": 766224,
+   "sha256": "5688de2851d4308e1ca65ca1c7302c1ed7e21434b2e3c61c625afdf9f3112df2"
+  },
+  "insts_i8_G_qwen3.6-moe_35b.txt": {
+   "bytes": 42656,
+   "sha256": "1e56290f83e481b52c7fbedd18194667bd67b52567c6a98799944afbe103f412"
+  },
+  "insts_i8_G_qwen3_4b.txt": {
+   "bytes": 1009600,
+   "sha256": "110f5e8346a588c7614f3b96ac79a9a46033e8e25728ef30fe73937b782b1c12"
+  },
+  "insts_i8_G_qwen3_5_4b.txt": {
+   "bytes": 720304,
+   "sha256": "43cfa2970fb885b4133607e8317da1b9202dc82d3337145b5e4bb3e07c2775fd"
+  },
+  "insts_i8_G_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_G_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_G_qwen3_8b.txt": {
+   "bytes": 1527184,
+   "sha256": "acb46d8eb7c3a75c9ea98a829644636879410bc70f66142bb88aa813b14fb59f"
+  },
+  "insts_i8_G_qwen3_vl_4b.txt": {
+   "bytes": 1009600,
+   "sha256": "110f5e8346a588c7614f3b96ac79a9a46033e8e25728ef30fe73937b782b1c12"
+  },
+  "insts_i8_KV_qwen3_0_6b.txt": {
+   "bytes": 9584,
+   "sha256": "4963f3bbc28eec5dc42a26da4657d9d592c5ff93f6752b5cfb484e0b961b83bb"
+  },
+  "insts_i8_KV_v.txt": {
+   "bytes": 9584,
+   "sha256": "4963f3bbc28eec5dc42a26da4657d9d592c5ff93f6752b5cfb484e0b961b83bb"
+  },
+  "insts_i8_MOE_DSD_qwen3.6-moe_35b.txt": {
+   "bytes": 572048,
+   "sha256": "1704b861d1b5820da1b7b90e71d6e79c2a17f73583f300a3fc7ede92492ec564"
+  },
+  "insts_i8_MOE_DSD_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_MOE_DSD_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_MOE_DSD_qwen3_6_35b_a3b_m1.txt": {
+   "bytes": 430352,
+   "sha256": "1a6d62ebb2e5d8b6771f3d914c800de7179d1ee6b5b3107700124c9215a619fc"
+  },
+  "insts_i8_MOE_D_qwen3.6-moe_35b.txt": {
+   "bytes": 506448,
+   "sha256": "a8f92a2ce186782143c8319bd4abd4c066d1eefb6730d9d9d8ecd39546c810a6"
+  },
+  "insts_i8_MOE_D_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_MOE_D_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_MOE_D_zaya.txt": {
+   "bytes": 170576,
+   "sha256": "abbaac81f111d7c0b57d7568877de495041944a4b9309b6c7fcd79e9818b4649"
+  },
+  "insts_i8_MOE_D_zaya_m16.txt": {
+   "bytes": 97104,
+   "sha256": "c491a03629203dd9e99b00ee0a4b46a5970ef19c4c596d8ad0714ca1915c9f0d"
+  },
+  "insts_i8_MOE_D_zaya_m8.txt": {
+   "bytes": 97104,
+   "sha256": "29f280047ef43d2522059fb3b1db86d4974f51d0f617b1ce07b85762c10d3f4a"
+  },
+  "insts_i8_MOE_D_zaya_m8h2.txt": {
+   "bytes": 97104,
+   "sha256": "8d1bff3654431dd3dad961859aacf3303e23e46dc3f0e6699db95cd64afb2e0c"
+  },
+  "insts_i8_MOE_FUSED_zaya.txt": {
+   "bytes": 52496,
+   "sha256": "ce2aff8cdbabbc1d799df074f09a2bc47754d121310ed19624e2593f17f5fb05"
+  },
+  "insts_i8_MOE_GUSGU_qwen3.6-moe_35b.txt": {
+   "bytes": 578608,
+   "sha256": "4ae9ed2a873b54cd05e62f423c0fd03463d55b5333df193b286d5ab9e8e2e2dd"
+  },
+  "insts_i8_MOE_GUSGU_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_MOE_GUSGU_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_MOE_GUSGU_qwen3_6_35b_a3b_m1.txt": {
+   "bytes": 436912,
+   "sha256": "4d0e61a03f34300aac9ae9c4db929a4c336119ca84c0d616426bd193250b08aa"
+  },
+  "insts_i8_MOE_GUSILU_i4_zaya.txt": {
+   "bytes": 204688,
+   "sha256": "9ce6c2267c30844b8e0a3fc5908a4ad1136f34213e305cd070ded2cb217d8033"
+  },
+  "insts_i8_MOE_GUSILU_zaya.txt": {
+   "bytes": 296528,
+   "sha256": "60000ade2e59ea095cd6b10e3883f287276fabb7e400d0b67beb4e93cab5cccf"
+  },
+  "insts_i8_MOE_GU_qwen3.6-moe_35b.txt": {
+   "bytes": 514320,
+   "sha256": "2f4013e452ebe7c254a7981e899fa3ddd3200c6244e3eeb16c0e3ca9fd58c779"
+  },
+  "insts_i8_MOE_GU_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_MOE_GU_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_MOE_GU_zaya.txt": {
+   "bytes": 257168,
+   "sha256": "76097d4cc16316dc52bb7d6ec9aa5f6e06dc5499a3b181183b6239f9454d7334"
+  },
+  "insts_i8_MOE_GU_zaya_m16.txt": {
+   "bytes": 194192,
+   "sha256": "f09dcc00d3b270d0cdc327e50a5c2ecc850fac65a2c40d18ff07ec48735f1805"
+  },
+  "insts_i8_MOE_GU_zaya_m8.txt": {
+   "bytes": 194192,
+   "sha256": "02366d1a050cadeb1b4c99ecd3f0635595f6bceb6c7f3174dcd336083f6d1e20"
+  },
+  "insts_i8_MOE_SD_qwen3.6-moe_35b.txt": {
+   "bytes": 34128,
+   "sha256": "6893d3ef621cd69a53eef0b368b795d5a2711c59e0a7ec1485b7097902beee71"
+  },
+  "insts_i8_MOE_SD_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_MOE_SD_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_MOE_SGU_qwen3.6-moe_35b.txt": {
+   "bytes": 85296,
+   "sha256": "7ef9de5638cc0b2d90496ee8697637d2c7db458c47a5a2875b0d335198fbcd14"
+  },
+  "insts_i8_MOE_SGU_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_MOE_SGU_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_O_K1024_N1152.txt": {
+   "bytes": 194848,
+   "sha256": "10ef4069272463797695c21ac4570d673bb783426b4166b6752423dd652b1b1c"
+  },
+  "insts_i8_O_K2048_N2560.txt": {
+   "bytes": 852816,
+   "sha256": "4e4d27d5a5b2ceacf7edfaabd3925b79cce8dc4f3c007307167c1241ef220c50"
+  },
+  "insts_i8_O_K2560_N2560.txt": {
+   "bytes": 265696,
+   "sha256": "0ee4e8717fbafe17740afdb8fff9b4f3d3cca428e18cee5e72d8b95616836206"
+  },
+  "insts_i8_O_K3072_N3072.txt": {
+   "bytes": 381808,
+   "sha256": "a107a6b5e28c96120c7eef6bf59da03f49f8605b182e51501f85e1b22c6abab1"
+  },
+  "insts_i8_O_K4096_N2048.txt": {
+   "bytes": 254544,
+   "sha256": "83cc504dd383398c0d1a3a674319237975638789ea1685ba452e537707569566"
+  },
+  "insts_i8_O_K4096_N2560.txt": {
+   "bytes": 1692496,
+   "sha256": "f702d735325b2f1eb3ed3b36b8cc1c9c66df74db8600c460387d226404d6ac1a"
+  },
+  "insts_i8_O_K4096_N4096.txt": {
+   "bytes": 2707984,
+   "sha256": "a582e9f85ea2774cb3ba62746dac8f8ccab25522af14e43ae852b3990c12d1bd"
+  },
+  "insts_i8_O_gemma4_e2b.txt": {
+   "bytes": 127936,
+   "sha256": "0dec0a46701e4ad8d99d5ce2916f827f88a6629b4df0a97593c7a5bc0a69cc2b"
+  },
+  "insts_i8_O_gemma4_e4b.txt": {
+   "bytes": 423136,
+   "sha256": "9f6f0465ebf4cdd153473b255198f8409d5190fb38b8d1136e25c32ce47e29ac"
+  },
+  "insts_i8_O_llama_3_1_8b.txt": {
+   "bytes": 509072,
+   "sha256": "66f2ae08998d76800d6dd23463108d5fb6b799843ec9c1d8fdead9a62e05c52e"
+  },
+  "insts_i8_O_nanbeige4_1_3b.txt": {
+   "bytes": 1062736,
+   "sha256": "ce9f5bdf7b9fbb2733fb3444cbe22785a1c0bada8f0ad4b8c1070b27445ffcbe"
+  },
+  "insts_i8_O_phi4_mini_4b.txt": {
+   "bytes": 381808,
+   "sha256": "a107a6b5e28c96120c7eef6bf59da03f49f8605b182e51501f85e1b22c6abab1"
+  },
+  "insts_i8_O_qwen3.6-moe_35b.txt": {
+   "bytes": 254544,
+   "sha256": "83cc504dd383398c0d1a3a674319237975638789ea1685ba452e537707569566"
+  },
+  "insts_i8_O_qwen3_0_6b.txt": {
+   "bytes": 64304,
+   "sha256": "321fcbc92cf01feaa7f3bfa886e6a499ae2620accc4a6364644b7f8689b2cb04"
+  },
+  "insts_i8_O_qwen3_5_4b.txt": {
+   "bytes": 423136,
+   "sha256": "9f6f0465ebf4cdd153473b255198f8409d5190fb38b8d1136e25c32ce47e29ac"
+  },
+  "insts_i8_O_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_O_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_O_qwen3_6_35b_a3b_m1.txt": {
+   "bytes": 191568,
+   "sha256": "6bfaf06bd59b09877ed9da539773247bd993c3c1a2b1ca4aabcca6c44dc72c87"
+  },
+  "insts_i8_O_qwen3_6_35b_a3b_m1lin.txt": {
+   "bytes": 191568,
+   "sha256": "188c5dced7904fdf8e4558d731c3df33fd112c1dc11adcb3f45ce0aa9b45bc6b"
+  },
+  "insts_i8_O_qwen3_8b.txt": {
+   "bytes": 509072,
+   "sha256": "66f2ae08998d76800d6dd23463108d5fb6b799843ec9c1d8fdead9a62e05c52e"
+  },
+  "insts_i8_O_qwen3_vl_4b.txt": {
+   "bytes": 423136,
+   "sha256": "9f6f0465ebf4cdd153473b255198f8409d5190fb38b8d1136e25c32ce47e29ac"
+  },
+  "insts_i8_O_v.txt": {
+   "bytes": 194192,
+   "sha256": "7ade387ee2157af826ef3eff186ef0ae75d98bc69f790cc13b46d709db2fe5ac"
+  },
+  "insts_i8_QKV_K1152_N1536.txt": {
+   "bytes": 291280,
+   "sha256": "9429ef3bd127af19dc48a59414df7cf255d7af2401891a212de96443e50be0ba"
+  },
+  "insts_i8_QKV_K2048_N8192.txt": {
+   "bytes": 514320,
+   "sha256": "2f4013e452ebe7c254a7981e899fa3ddd3200c6244e3eeb16c0e3ca9fd58c779"
+  },
+  "insts_i8_QKV_K2560_N3840.txt": {
+   "bytes": 332936,
+   "sha256": "c43f9044f99ffe3311b5db21923826400a084062dce8880091a9835e00133fa0"
+  },
+  "insts_i8_QKV_K2560_N4096.txt": {
+   "bytes": 1700368,
+   "sha256": "6fcc0dd77ee0019ed1e8a28ff632d74abecac88e5967d27e2ad13141a4c4806b"
+  },
+  "insts_i8_QKV_K2560_N6144.txt": {
+   "bytes": 2550544,
+   "sha256": "ed9cdeacf10ff06023e99d07458f214352e64c18447a545b9d610198298218f5"
+  },
+  "insts_i8_QKV_K2560_N8192.txt": {
+   "bytes": 3400720,
+   "sha256": "73257de55225ecd297e3954a741b28ed0200c7bb03e2844203fa9f7a0818d89a"
+  },
+  "insts_i8_QKV_K3072_N5120.txt": {
+   "bytes": 478896,
+   "sha256": "a72a387de49600d5cf0d9b8fb158cc795a9e9f9f1727eaeba18159404ca30a5c"
+  },
+  "insts_i8_QKV_K4096_N6144.txt": {
+   "bytes": 4061968,
+   "sha256": "7c4b4ef7e2070051e2e60597281405c4072fd8e952a707fcfb054c27de9c57a1"
+  },
+  "insts_i8_QKV_gemma4_e2b.txt": {
+   "bytes": 160736,
+   "sha256": "b87dbc9580ce747d8a4a32405b97d110f75c1b1b08c516a767fdbbbbd0d0ed02"
+  },
+  "insts_i8_QKV_gemma4_e4b.txt": {
+   "bytes": 480208,
+   "sha256": "9aec70c608d226b729384cccf1897c031e408b720d85c46c4841668c9dececb3"
+  },
+  "insts_i8_QKV_llama_3_1_8b.txt": {
+   "bytes": 763600,
+   "sha256": "afe1035371b6049863a0cc53d1398c9d3b1d28437fa856f8e192a68c3c4902c1"
+  },
+  "insts_i8_QKV_nanbeige4_1_3b.txt": {
+   "bytes": 1487824,
+   "sha256": "2eb62497a90e08a9575c0d2c57db324697a3cdcdede8d658df703001fc6a9c31"
+  },
+  "insts_i8_QKV_phi4_mini_4b.txt": {
+   "bytes": 478896,
+   "sha256": "a72a387de49600d5cf0d9b8fb158cc795a9e9f9f1727eaeba18159404ca30a5c"
+  },
+  "insts_i8_QKV_qwen3.6-moe_35b.txt": {
+   "bytes": 514320,
+   "sha256": "2f4013e452ebe7c254a7981e899fa3ddd3200c6244e3eeb16c0e3ca9fd58c779"
+  },
+  "insts_i8_QKV_qwen3_0_6b.txt": {
+   "bytes": 131216,
+   "sha256": "9c1f0290e0211511b1e4cc0285b7bec7cb0daa3588a8b17dae64e9de1094d3c6"
+  },
+  "insts_i8_QKV_qwen3_5_4b.txt": {
+   "bytes": 480208,
+   "sha256": "9aec70c608d226b729384cccf1897c031e408b720d85c46c4841668c9dececb3"
+  },
+  "insts_i8_QKV_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_QKV_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_QKV_qwen3_6_35b_a3b_m1.txt": {
+   "bytes": 388368,
+   "sha256": "2896c0f224ffb71560d9b5c709cf0d8aa1d1851cde190d996e968f25a743eaa8"
+  },
+  "insts_i8_QKV_qwen3_6_35b_a3b_m1lin.txt": {
+   "bytes": 388368,
+   "sha256": "194c84cc61e8919d5c53e10b12546006bfcf3a7ccc846b2f0c0cb099d67cbd6b"
+  },
+  "insts_i8_QKV_qwen3_8b.txt": {
+   "bytes": 763600,
+   "sha256": "afe1035371b6049863a0cc53d1398c9d3b1d28437fa856f8e192a68c3c4902c1"
+  },
+  "insts_i8_QKV_qwen3_vl_4b.txt": {
+   "bytes": 480208,
+   "sha256": "9aec70c608d226b729384cccf1897c031e408b720d85c46c4841668c9dececb3"
+  },
+  "insts_i8_QKV_v.txt": {
+   "bytes": 398864,
+   "sha256": "83bcac19e3c4c76cf6806db9aa48dfa4e74930d9e1d6f6c71917af555c5b9df1"
+  },
+  "insts_i8_U_K1152_N6912.txt": {
+   "bytes": 1310704,
+   "sha256": "4ff27b2ead370dfeb52d073fb8fcad3470d334382e31485874394418ae7ac40f"
+  },
+  "insts_i8_U_K2048_N512.txt": {
+   "bytes": 42656,
+   "sha256": "1e56290f83e481b52c7fbedd18194667bd67b52567c6a98799944afbe103f412"
+  },
+  "insts_i8_U_K2560_N10240.txt": {
+   "bytes": 4250896,
+   "sha256": "5421b7c5f80ae0d71a18c867240bb73edb1355469f97e534e254e035ae0805ea"
+  },
+  "insts_i8_U_K2560_N12288.txt": {
+   "bytes": 960400,
+   "sha256": "70669d7f4e7261803a87e252d2f21c59848779512354e5855402e33a15221780"
+  },
+  "insts_i8_U_K2560_N8192.txt": {
+   "bytes": 640272,
+   "sha256": "b62bceeba6032ee32e8db067ed6aea28b8f92d54d31373dffc22d70d6100a415"
+  },
+  "insts_i8_U_K2560_N9216.txt": {
+   "bytes": 720304,
+   "sha256": "43cfa2970fb885b4133607e8317da1b9202dc82d3337145b5e4bb3e07c2775fd"
+  },
+  "insts_i8_U_K2560_N9728.txt": {
+   "bytes": 1009600,
+   "sha256": "110f5e8346a588c7614f3b96ac79a9a46033e8e25728ef30fe73937b782b1c12"
+  },
+  "insts_i8_U_K3072_N8192.txt": {
+   "bytes": 766224,
+   "sha256": "5688de2851d4308e1ca65ca1c7302c1ed7e21434b2e3c61c625afdf9f3112df2"
+  },
+  "insts_i8_U_K4096_N14336.txt": {
+   "bytes": 9477904,
+   "sha256": "eb259c46753fa4e1954b2a6a6e635f0af7f260d8ff832451d79d2b221ae321d1"
+  },
+  "insts_i8_U_gemma4_e4b.txt": {
+   "bytes": 960400,
+   "sha256": "70669d7f4e7261803a87e252d2f21c59848779512354e5855402e33a15221780"
+  },
+  "insts_i8_U_llama_3_1_8b.txt": {
+   "bytes": 1781712,
+   "sha256": "f25e06ecbf1fb28e99696cbdbeeb2adb570ce4470db9b277d6c0d36ef407afad"
+  },
+  "insts_i8_U_nanbeige4_1_3b.txt": {
+   "bytes": 4463440,
+   "sha256": "72cd99e18aa2eb13376afc1d57145709270f5055af9c400b2fb4a7eff9d78fda"
+  },
+  "insts_i8_U_phi4_mini_4b.txt": {
+   "bytes": 766224,
+   "sha256": "5688de2851d4308e1ca65ca1c7302c1ed7e21434b2e3c61c625afdf9f3112df2"
+  },
+  "insts_i8_U_qwen3.6-moe_35b.txt": {
+   "bytes": 42656,
+   "sha256": "1e56290f83e481b52c7fbedd18194667bd67b52567c6a98799944afbe103f412"
+  },
+  "insts_i8_U_qwen3_4b.txt": {
+   "bytes": 1009600,
+   "sha256": "110f5e8346a588c7614f3b96ac79a9a46033e8e25728ef30fe73937b782b1c12"
+  },
+  "insts_i8_U_qwen3_5_4b.txt": {
+   "bytes": 720304,
+   "sha256": "43cfa2970fb885b4133607e8317da1b9202dc82d3337145b5e4bb3e07c2775fd"
+  },
+  "insts_i8_U_qwen3_6_35b_a3b.txt": {
+   "symlink": "insts_i8_U_qwen3.6-moe_35b.txt"
+  },
+  "insts_i8_U_qwen3_8b.txt": {
+   "bytes": 1527184,
+   "sha256": "acb46d8eb7c3a75c9ea98a829644636879410bc70f66142bb88aa813b14fb59f"
+  },
+  "insts_i8_U_qwen3_vl_4b.txt": {
+   "bytes": 1009600,
+   "sha256": "110f5e8346a588c7614f3b96ac79a9a46033e8e25728ef30fe73937b782b1c12"
+  },
+  "insts_rms_qwen3_6_35b_a3b_m1.txt": {
+   "bytes": 508,
+   "sha256": "fdbcaf9c2b54c500f21021a8f2f99964a3859adefc24437e1d3cf0501a49dfcc"
+  },
+  "insts_ternary_D_qwen3_0_6b.txt": {
+   "bytes": 2408,
+   "sha256": "1b2072688af54f426f2ea24d47d9876648dd0180407c25ec77ee0229978e899e"
+  },
+  "insts_ternary_GU_qwen3_0_6b.txt": {
+   "bytes": 14368,
+   "sha256": "5d87aebe1ea5e7268610e1e2b9170c5d86161eff4a188137a83d6b60bd9530cd"
+  },
+  "insts_ternary_O_qwen3_0_6b.txt": {
+   "bytes": 2408,
+   "sha256": "fe37a2d025a895dd9ccd7a81174f2d2e3843b2c0555e8971e5b51f9c6daa777c"
+  },
+  "insts_ternary_QKV_qwen3_0_6b.txt": {
+   "bytes": 9584,
+   "sha256": "fdfe42c04a77c5e513578a875e7d5e49cf663b81d7b442883a4d9539403ea1b9"
+  }
+ },
  "symlinks": {
   "engine/npu/xclbins/final_i8_D_qwen3_6_35b_a3b.xclbin": "final_i8_D_qwen3.6-moe_35b.xclbin",
   "engine/npu/xclbins/final_i8_GU_qwen3_6_35b_a3b.xclbin": "final_i8_GU_qwen3.6-moe_35b.xclbin",
