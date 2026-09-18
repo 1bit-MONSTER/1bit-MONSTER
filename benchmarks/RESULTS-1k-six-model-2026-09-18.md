@@ -14,8 +14,8 @@ count.
 | Qwen3-1.7B | **1316–1346** | **0.761–0.778 s** | **39.8–40.0** | 980.09 | 1.002 s | 39.56 | 1.34–1.37x | faster | 1.01x |
 | Qwen3-4B | **646–649** | **1.577–1.586 s** | **19.1–19.2** | 509.70 | 1.926 s | 18.80 | 1.27x | faster | 1.02x |
 | Qwen3-VL-4B | **648–650** | **1.576–1.580 s** | **19.0–19.1** | 530.72 | 1.840 s | 18.80 | 1.22x | faster | 1.01–1.02x |
-| Qwen3-8B | **456–459** | **2.228–2.248 s** | **10.95** | 362.63 | 2.706 s | 10.71 | 1.26–1.27x | faster | 1.02x |
-| Llama-3.1-8B | **453–455** | **2.200–2.213 s** | **11.4** | 316.02 | 3.178 s | 10.84 | 1.43x | faster | 1.05x |
+| Qwen3-8B | **456–460** | **2.228–2.248 s** | **10.95** | 362.63 | 2.706 s | 10.71 | 1.26–1.27x | faster | 1.02x |
+| Llama-3.1-8B | **463–466** | **2.200–2.213 s** | **11.4** | 316.02 | 3.178 s | 10.84 | 1.46–1.47x | faster | 1.05x |
 
 Native runs are 2 per model (Llama 3), FLM 1 per model, all in this window. **Every native cell is at or above
 FLM**, so the criterion-(c) clause set is met at 1k for all six supported models — the first
@@ -37,6 +37,28 @@ behind device exec. Same-window A/B, `NPU_UNIFIED_SERIAL=1` versus the default:
 
 † serial rows from an earlier window (see caveat 1). Token streams are identical between the two schedules on every model where both were run
 (checked for 0.6B, 1.7B, 8B, Llama) — the scheduling change does not alter the output.
+
+## Audit: every row re-derived from its source log
+
+This table was re-checked against the raw run logs (they persist in `/tmp` on strixhalo) by
+extracting the `Prefill:` and `ms/tok` lines programme-wide and comparing the rate column to
+`1000 / (ms per prompt token)`:
+
+| model | source logs (native) | re-derived prefill | doc says |
+|---|---|---|---|
+| Qwen3-0.6B | `/tmp/ov1.log`, `/tmp/ov2.log` | 0.528 / 0.547 ms/tok → 1894 / 1828 t/s | 1828–1894 ✓ |
+| Qwen3-1.7B | `/tmp/o17_1.log`, `/tmp/o17_2.log` | 0.760 / 0.743 → 1316 / 1346 | 1316–1346 ✓ |
+| Qwen3-4B | `/tmp/ov_npu_engine_qwen3_4b_{1,2}.log` | 1.549 / 1.540 → 646 / 649 | 646–649 ✓ |
+| Qwen3-VL-4B | `/tmp/ov_npu_engine_qwen3_vl_4b_{1,2}.log` | 1.543 / 1.539 → 648 / 650 | 648–650 ✓ |
+| Qwen3-8B | `/tmp/o8_1.log`, `/tmp/o8_2.log` | 2.176 / 2.195 → 460 / 456 | 456–460 ✓ |
+| Llama-3.1-8B | `/tmp/ol_3.log`, `/tmp/sl.log` | 2.161 / 2.148 → **463 / 466** | **corrected from 453–455** |
+
+**One error was found and fixed by this audit**: the Llama row's prefill rate had been computed
+from the TTFT *in seconds* as if it were ms/token (`1000 / 2.2 = 454.5`), a unit slip that the
+other rows do not have. The correct rate is 463–466 t/s, so the FLM ratio is **1.46–1.47x**, not
+1.43x. Everything downstream of that row (the "1.08–1.43x prefill" summary in the commit
+message) moves with it; the verdict does not (all six still at or above FLM on all three
+clauses at 1k). The 8k table was checked the same way and is correct as published.
 
 ## Caveats, in order of importance
 
