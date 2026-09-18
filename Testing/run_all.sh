@@ -57,8 +57,17 @@ else
 fi
 # Control: a selfcheck named ONLY inside a comment must still be reported. The
 # first version of this tripwire passed this case, which is how it was blind.
-_ctl_corpus="$(printf '# coming soon: Testing/hrx_backend_selfcheck.cpp\n' | strip_comments_stream)"
-_ctl="$(selfcheck_orphans "$_ctl_corpus" Testing/hrx_backend_selfcheck.cpp)"
+#
+# The fixture deliberately uses a name that is NOT one of the real selfchecks.
+# This file is part of the corpus above, so naming a real one here put its
+# basename back into the corpus in *code* — this line is not a comment — and that
+# file could then never be reported as an orphan again. Measured, by deleting the
+# `hrx-backend|…` spec entry below (its only wiring): with the old fixture the
+# corpus still named hrx_backend_selfcheck.cpp on these two lines and the tripwire
+# printed "✓ every Testing/*_selfcheck.* is invoked"; lse_backend_selfcheck.cpp,
+# whose spec entry is its only mention, was reported correctly in the same run.
+_ctl_corpus="$(printf '# coming soon: Testing/zz_orphan_control_selfcheck.cpp\n' | strip_comments_stream)"
+_ctl="$(selfcheck_orphans "$_ctl_corpus" Testing/zz_orphan_control_selfcheck.cpp)"
 if [ -z "$_ctl" ]; then
     echo "✗ selfcheck wiring control: a comment counted as an invocation — the check above is blind"
     fail=$((fail+1))
