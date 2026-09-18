@@ -113,20 +113,62 @@ static std::string sess_model_dir_from_path(const char* model_path) {
     return (pslash == std::string::npos) ? parent : parent.substr(pslash + 1);
 }
 
+
+// ── layer.xclbin resolution ───────────────────────────────────────────────────
+// The runlist arm's xclbin MUST be the file its per-context ELFs were generated
+// against. The default here used to be the FOREIGN build directory
+// /home/bcloud/amd-oss/fastflowlm/src/xclbins/<model>/layer.xclbin, a tree other
+// lanes actively rebuild, and the only check was stat() existence -- not identity.
+// On 2026-09-18 08:19 the Qwen3-0.6B file there was replaced (401980 B, md5
+// fa9f8df2f2b5618a560fd5470104aade) while the ELFs are built for the in-repo
+// pinned copy (339980 B, md5 57431faab8593fadbffb5b9d5a9a0735). The runlist then
+// emitted GARBAGE with no error: native 0/20 on the oracle set with FLM still
+// 18/20 and I1 OK=20, versus a coherent boot stream under the pin. Three engine
+// builds from different days reproduced it, so it is the resolved file, not any
+// build. Prefer the in-repo pinned copy; warn loudly when falling back.
+static std::string pinned_layer_xclbin_path(const std::string& model_dir) {
+    if (model_dir.empty()) return std::string();
+    std::vector<std::string> roots;
+    if (const char* xd = getenv("NPU_XCLBIN_DIR")) if (xd[0]) roots.push_back(xd);
+    roots.push_back("engine/npu/xclbins");
+    for (const std::string& r : roots) {
+        const std::string p = r + "/flm_models/" + model_dir + "/layer.xclbin";
+        struct stat st;
+        if (stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) return p;
+    }
+    return std::string();
+}
+
+// Set LAYER_XCLBIN unless the caller already did. Returns the path chosen.
+static std::string resolve_layer_xclbin(const std::string& model_dir, const char* h_fallback_dir) {
+    if (const char* e = getenv("LAYER_XCLBIN")) return std::string(e);
+    const std::string pin = pinned_layer_xclbin_path(model_dir);
+    if (!pin.empty()) {
+        fprintf(stderr, "[runlist] LAYER_XCLBIN pinned to the in-repo copy: %s\n", pin.c_str());
+        setenv("LAYER_XCLBIN", pin.c_str(), 1);
+        return pin;
+    }
+    const std::string base = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/";
+    std::string md = model_dir;
+    struct stat st;
+    if (md.empty() || stat((base + md + "/layer.xclbin").c_str(), &st) != 0)
+        md = h_fallback_dir ? h_fallback_dir : "";
+    const std::string xb = base + md + "/layer.xclbin";
+    fprintf(stderr,
+            "[runlist] WARNING: no in-repo pinned layer.xclbin for '%s'; falling back to the\n"
+            "          foreign build directory: %s\n"
+            "          If it was rebuilt since the per-ctx ELFs were generated, the runlist\n"
+            "          output is garbage with no error. Set LAYER_XCLBIN to pin it.\n",
+            model_dir.empty() ? "?" : model_dir.c_str(), xb.c_str());
+    setenv("LAYER_XCLBIN", xb.c_str(), 1);
+    return xb;
+}
+
 extern "C" int npu_runlist_session_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV) {
     ensure_elf_gen_env(model_path, H);
     load_eos_ids(model_path);
     sess_build_cfg(H, NC, NH, NKV, IM, NV);
-    if (!getenv("LAYER_XCLBIN")) {
-        const std::string base = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/";
-        std::string md = sess_model_dir_from_path(model_path);
-        struct stat st;
-        // Only take the model's own directory when the xclbin is actually there, so a
-        // model with no xclbin of its own keeps the previous behaviour exactly.
-        if (md.empty() || stat((base + md + "/layer.xclbin").c_str(), &st) != 0)
-            md = sess_model_dir(H);
-        setenv("LAYER_XCLBIN", (base + md + "/layer.xclbin").c_str(), 0);
-    }
+    resolve_layer_xclbin(sess_model_dir_from_path(model_path), sess_model_dir(H));
     const char* env_elf = getenv("NPU_LAYER_ELF_DIR");
     g_sess_elf_dir = (env_elf && env_elf[0]) ? env_elf : sess_elf_default(H);
     std::string lmhead_elf = g_sess_elf_dir + "/elf_0002_lmhead.bin";
@@ -474,10 +516,7 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
                             : H == 2560 ? "npu-infer/captures/txn-elfs-4b"
                             : H == 4096 ? "npu-infer/captures/txn-elfs-8b"
                                         : "npu-infer/captures/txn-elfs";
-    if (!getenv("LAYER_XCLBIN")) {
-        std::string xb = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + mdir + "/layer.xclbin";
-        setenv("LAYER_XCLBIN", xb.c_str(), 0);
-    }
+    resolve_layer_xclbin(mdir, mdir);
     const char* env_elf = getenv("NPU_LAYER_ELF_DIR");
     std::string elf_dir = env_elf && env_elf[0] ? env_elf : elf_default;
     std::string lmhead_elf = elf_dir + "/elf_0002_lmhead.bin";
