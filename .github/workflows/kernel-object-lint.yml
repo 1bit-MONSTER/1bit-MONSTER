@@ -7,8 +7,21 @@ name: Kernel object lint
 # zero-initialised static reads back as garbage on the NPU).
 #
 # It runs on the self-hosted runner because it needs the aie2p (Peano) toolchain. It does NOT
-# need the aiecc/mlir stage, which is why it can run while that stage is blocked by a
-# toolchain version mismatch.
+# need the aiecc/mlir stage, and that is what lets it run here while that stage is being
+# worked on.
+#
+# CORRECTION 2026-09-18. This said the aiecc/mlir stage "is blocked by a toolchain version
+# mismatch". The mismatch was in an invocation, not in the toolchain, and it is fixed: #2464
+# (f25cd17e2, 2026-09-17) repaired engine/npu/generators/run_build.sh, which took its aiecc
+# from build_tmp while its generator bindings came from install_tmp — the mismatched pair its
+# own header now documents in full ("the bindings that GENERATE and the aiecc that PARSES must
+# come from the same tree"). Both engine/npu/generators/run_build.sh and
+# engine/npu/build_xclbins.sh now use install_tmp for bindings and aiecc together, and #2551
+# built the column-sliced fused xclbins with that pair.
+#
+# So read this as "the aiecc/mlir stage is not this job's business", not as "the xclbin build
+# is impossible". Whether CI should gate an xclbin build is a cost decision (it needs this
+# runner's toolchain and minutes of it), and a different one from this comment.
 
 on:
   pull_request:
