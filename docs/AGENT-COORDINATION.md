@@ -591,6 +591,42 @@ Production path stays p1/p2 two-launch (h2 via DDR). Next options: (b) an iron
 FIFO primitive that pipelines merged/segmented elements (toolchain-level), or a
 way to reuse one channel without the shared-B writeback regression.
 
+## Capture gates are branch-only — `main`'s interposer ignores the variables the 09-15 note names (2026-09-18)
+
+Checked before the next capture, because that entry calls `CAP_NO_SYNC=1` a *measured* trap and a
+reader on `main` has no way to see that the gate is not in the build they are holding.
+
+`npu-infer/tools/capture/cap_interposer.cpp` on `main` reads exactly two variables — `CAP_DIR` and
+`CAP_POSTRUN_ACT` — and dumps on **every** BO sync with no gate on either path:
+
+```
+ 63   const char* dn = (dir == XCL_BO_SYNC_BO_TO_DEVICE) ? "to" : "from";
+ 64   snprintf(fname, sizeof(fname), "%s/bo_%s_%04ld_%zu.bin", CAP_DIR, dn, g_seq, bosz);
+ 97   ...same dump on the other sync path...
+265   snprintf(fname, sizeof(fname), "%s/post_%03ld_%02d_%zx_%zu.bin", ...);
+```
+
+`CAP_NO_SYNC`, `CAP_SKIP_BIG` and `CAP_DUMP_BIG` (the one the entry says is *not* a substitute) have
+**zero** hits anywhere on `main`; all three are read only on `goal/runlist-decode-wire`:
+
+```
+$ git grep -l CAP_NO_SYNC   origin/main -- npu-infer engine tools   # (nothing)
+$ git grep -l CAP_NO_SYNC   origin/goal/runlist-decode-wire -- npu-infer
+origin/goal/runlist-decode-wire:npu-infer/tools/capture/cap_interposer.cpp
+```
+
+So the 181 GB / disk 80→91% run the 09-15 entry records is reachable on `main` **while
+`CAP_NO_SYNC=1` appears to be set** — the operator sees the protection they asked for and gets none
+of it. The entry's own pointer ("rebuild it from the branch") is about the *crash*; the same build
+is what carries the gates, which is worth saying out loud.
+
+Until the gates are ported (left to the capture lane, tracked as issue #2528):
+
+* build the `.so` from `goal/runlist-decode-wire` for any long capture, not from `main`;
+* check which build you hold before the first runlist: `strings cap_interposer.so | grep -c CAP_NO_SYNC`
+  — **0 means the ungated `main` build**, whatever the environment says;
+* point `CAP_DIR` somewhere with room and watch it during the first runlist rather than after.
+
 ## Sync protocol (both agents)
 
 1. **Before starting work:** `git fetch origin` (and the fork), merge/rebase `main`
