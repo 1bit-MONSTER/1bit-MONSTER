@@ -463,10 +463,19 @@ def main(argv: list[str] | None = None) -> int:
                          "is no recorded value to preserve; without it the write is REFUSED (issue #2262)")
     ap.add_argument("--allow-missing-manifest", action="store_true",
                     help="do not fail when the manifest is absent (bootstrap only)")
+    ap.add_argument("--allow-removals", action="store_true",
+                    help="with --write-manifest, permit artifacts recorded in the existing manifest "
+                         "to disappear from the set; each is recorded in the manifest's `removed` "
+                         "section (issue #2598). Without it a disappearance REFUSES the write")
+    ap.add_argument("--removal-reason", default=None, metavar="STR",
+                    help="with --allow-removals, the reason recorded against each removed artifact")
     args = ap.parse_args(argv)
 
     if not args.write_manifest and (args.toolchain is not None or args.script_revision is not None):
         print("note: --toolchain/--script-revision only apply with --write-manifest; ignoring them",
+              file=sys.stderr)
+    if args.removal_reason is not None and not args.allow_removals:
+        print("note: --removal-reason only applies with --allow-removals; ignoring it",
               file=sys.stderr)
 
     root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parents[3]
@@ -526,6 +535,7 @@ def main(argv: list[str] | None = None) -> int:
         # following the documented flow destroyed the field. That is the "missing half of
         # the provenance" issue #2262 is open for. Precedence is now: explicit flag, then
         # the existing manifest, then null with the note below.
+        previous: dict = {}
         previous_build: dict = {}
         previous_artifacts: set[str] = set()
         if manifest_path.exists():
@@ -534,7 +544,31 @@ def main(argv: list[str] | None = None) -> int:
                 previous_build = previous.get("build") or {}
                 previous_artifacts = set((previous.get("artifacts") or {}).keys())
             except (OSError, json.JSONDecodeError):
-                previous_build, previous_artifacts = {}, set()
+                previous, previous_build, previous_artifacts = {}, {}, set()
+        previous_removed = previous.get("removed") or {}
+
+        # Issue #2598. compare() enforces CONSISTENCY, not continuity: an artifact that is
+        # deleted and dropped from the manifest in the same commit leaves no trace, and this
+        # gate stays green - which is how a81662ab8 removed 54 tracked bf16 artifacts inside a
+        # commit whose message was a re-measurement. Continuity is not derivable from the tree,
+        # so a write that would drop a recorded artifact now has to declare it, and the
+        # declaration is recorded in `removed` instead of vanishing.
+        gone = sorted(previous_artifacts - set(obs["artifacts"]))
+        if gone and not args.allow_removals:
+            print(
+                f"REFUSING to write: {len(gone)} artifact(s) recorded in the existing manifest are\n"
+                "  absent from this tree, so a regenerated manifest would drop them in silence.\n"
+                "  That is how a81662ab8 removed 54 tracked bf16 artifacts with this gate green\n"
+                "  (issue #2598). Either restore them, or declare the removal:\n"
+                "    --allow-removals --removal-reason \"<why>\"\n"
+                "  which records each one in the manifest's `removed` section, so the deletion is\n"
+                "  a reviewable line in this commit instead of 54 `Bin -> 0 bytes` lines.\n"
+                "  Absent from this tree:",
+                file=sys.stderr)
+            for uuid in gone:
+                prev_art = (previous.get("artifacts") or {}).get(uuid) or {}
+                print(f"    {uuid}  {prev_art.get('paths')}", file=sys.stderr)
+            return 1
         toolchain = args.toolchain if args.toolchain is not None else previous_build.get("toolchain")
         script_revision = (args.script_revision if args.script_revision is not None
                            else previous_build.get("generating_script_revision"))
@@ -547,7 +581,9 @@ def main(argv: list[str] | None = None) -> int:
                 "--script-revision \"<git rev of the generating script>\" and land it in the same "
                 "commit as the artifact change. Those two flags are the point of this file: the "
                 "artifacts carry no compiler marker to derive them from, so a rebuild that omits "
-                "--toolchain records build.toolchain as null again (issue #2262)."
+                "--toolchain records build.toolchain as null again (issue #2262). A write that "
+                "would DROP a recorded artifact refuses unless --allow-removals is passed, which "
+                "records it in `removed` (issue #2598)."
             ),
             "generated": {
                 "by": "pi/coding-agent",
@@ -575,6 +611,11 @@ def main(argv: list[str] | None = None) -> int:
                 "They were counted in population.tracked_top_level_entries and hashed "
                 "nowhere: on 2026-09-18 appending TAMPER to insts_i8_G_qwen3_4b.txt left this "
                 "gate at exit 0. census.payload_bytes still counts the xclbin bytes alone.",
+                "removed records artifacts that were in an earlier manifest and are no longer in "
+                "the tree, with the hash they had and the reason given. It exists because compare() "
+                "is a consistency check, so without it a deletion is absorbed by the very "
+                "regeneration this file instructs you to perform - how 54 tracked artifacts left "
+                "main in a81662ab8 with the gate green (issue #2598).",
             ],
             "build": {
                 "toolchain": toolchain,
@@ -602,6 +643,24 @@ def main(argv: list[str] | None = None) -> int:
             "artifacts": obs["artifacts"],
             "streams": obs["streams"],
         }
+        # The removals carry THIS write's timestamp and ref, so they are attached after the
+        # literal rather than inside it. Entries for artifacts that came back are dropped: the
+        # section describes the current delta, not a permanent graveyard.
+        removed_section = {
+            uuid: entry for uuid, entry in previous_removed.items()
+            if uuid not in obs["artifacts"]
+        }
+        for uuid in gone:
+            prev_art = (previous.get("artifacts") or {}).get(uuid) or {}
+            removed_section[uuid] = {
+                "paths": prev_art.get("paths") or [],
+                "sha256": prev_art.get("sha256"),
+                "timestamp_utc": prev_art.get("timestamp_utc"),
+                "reason": args.removal_reason,
+                "at": payload["generated"]["at"],
+                "ref": payload["generated"]["ref"],
+            }
+        payload["removed"] = dict(sorted(removed_section.items()))
         # A section observe() produces but this literal forgets is dropped in silence, and
         # the manifest then reads as if the section did not exist. That is how the payload
         # stayed unpinned: nothing observed the streams, and nothing would have persisted
@@ -614,7 +673,15 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
-        print(f"\nwrote {manifest_path.relative_to(root)} "
+        # --manifest may be given as a relative path or point outside the root, and
+        # relative_to() raises on both - AFTER the write has already happened, so a
+        # successful write reported itself as a traceback instead of its result. Fall back
+        # to the path as given rather than making a completed write look like a failure.
+        try:
+            shown_path = manifest_path.relative_to(root)
+        except ValueError:
+            shown_path = manifest_path
+        print(f"\nwrote {shown_path} "
               f"({manifest_path.stat().st_size} B, {len(obs['artifacts'])} artifacts)")
         # Say out loud what happened to the two unobservable fields - a silent null is
         # how a recorded toolchain disappeared before, and a silent carry-over would be
@@ -634,6 +701,13 @@ def main(argv: list[str] | None = None) -> int:
               + (" (from --script-revision)" if args.script_revision is not None else
                  " preserved from the existing manifest" if script_revision is not None else
                  " - not recorded"))
+        if payload["removed"]:
+            print(f"  removed: {len(payload['removed'])} artifact(s) recorded in `removed` - "
+                  "each was in an earlier manifest and is not in this tree (issue #2598)")
+            for uuid in gone:
+                print(f"    {uuid}  "
+                      f"{(payload['removed'].get(uuid) or {}).get('paths')}"
+                      + (f"  reason: {args.removal_reason}" if args.removal_reason else ""))
         return 0
 
     if not manifest_path.exists():
@@ -659,6 +733,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     problems = compare(obs, manifest)
+
+    # Issue #2598: report recorded removals. They are not a violation - compare() has already
+    # agreed the tree matches the manifest - but a deletion that nobody can see is the defect
+    # this section exists to prevent, so the check says out loud that the set shrank.
+    removed = manifest.get("removed") or {}
+    if removed:
+        print(f"\n  recorded removals: {len(removed)} artifact(s) were in an earlier manifest and "
+              f"are no longer in the tree (issue #2598)")
+        for uuid in sorted(removed)[:5]:
+            entry = removed[uuid] or {}
+            print(f"    {uuid}  {entry.get('paths')}"
+                  + (f"  reason: {entry.get('reason')}" if entry.get("reason") else ""))
+        if len(removed) > 5:
+            print(f"    ... and {len(removed) - 5} more")
 
     # Host state, reported and never asserted: whether the recorded third-party links
     # resolve depends on the machine (FastFlowLM installed at /opt/fastflowlm makes them

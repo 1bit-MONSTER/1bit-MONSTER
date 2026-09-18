@@ -174,4 +174,52 @@ expect "host-dependent dangling_symlinks is NOT compared"   pass
 perturb 'm["population"]["alias_symlinks_in_tree"] += 1'
 expect "host-dependent alias_symlinks_in_tree is NOT cmp"   pass
 
+# --- continuity: a deletion has to be DECLARED, not absorbed by a regeneration (#2598) -----
+# compare() is a consistency check, so a manifest regenerated in the same commit as a deletion
+# silently DROPPED the artifact - a81662ab8 (a docs re-measurement) removed 54 tracked bf16
+# artifacts that way and origin/main still reported OK, because the replacement manifest simply
+# stopped listing them. The writer now refuses a write that would drop a recorded artifact, and
+# the escape records it in `removed` instead of nowhere.
+make_fixture final_i8_D_K1_N1.xclbin
+regenerate
+# vanish an alias-free artifact the way collateral staging does: out of the index, out of the
+# worktree, with the manifest still listing it
+if git -C "$FIX" rm -q --cached engine/npu/xclbins/final_i8_G_K1_N1.xclbin 2>/dev/null; then
+    mv "$D/final_i8_G_K1_N1.xclbin" "$T/removed-elsewhere.xclbin"
+fi
+
+refuse_out="$(python3 "$TOOL" --root "$FIX" --write-manifest --toolchain "selfcheck fixture" 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$refuse_out" | grep -qF "REFUSING to write: 1 artifact(s)"; then
+    printf '  ok   %-54s rc=%s\n' "undeclared removal REFUSES the write" "$rc"
+else
+    printf '  FAIL %-54s rc=%s\n' "undeclared removal REFUSES the write" "$rc"
+    printf '%s\n' "$refuse_out" | head -3 | sed 's/^/         /'
+    fail=1
+fi
+if printf '%s' "$refuse_out" | grep -qF "final_i8_G_K1_N1.xclbin"; then
+    printf '  ok   %-54s %s\n' "the refusal names the artifact" "final_i8_G_K1_N1.xclbin"
+else
+    printf '  FAIL %-54s\n' "the refusal names the artifact"
+    fail=1
+fi
+
+declare_out="$(python3 "$TOOL" --root "$FIX" --write-manifest --toolchain "selfcheck fixture" \
+    --allow-removals --removal-reason "selfcheck: collateral deletion" 2>&1)"; rc=$?
+removed="$(python3 -c 'import json,sys;r=json.load(open(sys.argv[1])).get("removed") or {};e=(list(r.values()) or [{}])[0];print(len(r), e.get("reason"), e.get("paths"))' \
+    "$FIX/engine/npu/xclbins/PROVENANCE.json" 2>/dev/null || echo "0 None None")"
+if [ "$rc" -eq 0 ] && [ "${removed%% *}" = "1" ] && printf '%s' "$removed" | grep -qF "collateral deletion"; then
+    printf '  ok   %-54s rc=%s %s\n' "--allow-removals records it in removed" "$rc" "$removed"
+else
+    printf '  FAIL %-54s rc=%s %s\n' "--allow-removals records it in removed" "$rc" "$removed"
+    printf '%s\n' "$declare_out" | head -3 | sed 's/^/         /'
+    fail=1
+fi
+expect "the rewritten manifest still gates the tree"        pass
+if gate | grep -qF "recorded removals: 1"; then
+    printf '  ok   %-54s %s\n' "the check reports the recorded removal" "1"
+else
+    printf '  FAIL %-54s\n' "the check reports the recorded removal"
+    fail=1
+fi
+
 exit "$fail"
