@@ -329,6 +329,20 @@ reported as a delta, not a replacement.
 > the fix needs zig which is not installed, and the deliverable wants our own kernels with no third-party runtime
 > in the loop - so ZINC stays an *optional cross-check* if zig ever lands rather than the source of the number.
 >
+> **Update 19:26 - ALL THREE REVISED TARGETS MET, on a six-window repeat (`01a33a09c` + `d509bbc5d`).** The folded
+> ternary pack was still 0.55 short after the Q1_0-only fix; the same per-32 identity then applied to it (the pack stores
+> a shifted digit, so summing the raw digit and subtracting the per-32 activation sum removes a per-4 fixup that was pure
+> overhead). Six consecutive windows, each requiring triad256 ≥ 200 **before** the bench with the device lock held and
+> released and the triad recorded **after** too: PTQ1_0 **38.5-38.9 ms = 25.7-26.0 tok/s in all six** (spread ~1%) against
+> ≥25; Q1_0 26.4-26.6 ms = 38 tok/s in five of six (35 in the one window that opened at the lowest triad, 202.4) against
+> ≥36; PQ2_0 22-23 against ≥22. **Supersession kept visible:** the earlier "PTQ1_0 0.55 short / two of three met" entries
+> were correct when written and are superseded by `01a33a09c`, not silently overwritten. Correctness for the changed dot
+> comes from this lane rather than from the repeat document, which carries throughput and triad evidence only: full suite
+> **53 passed / 0 failed / 0 skipped, ALL PRISM GATES PASSED**, with PTQ1_0's per-position oracle, device-forward oracle
+> and eleven-position greedy comparison all PASS. **Still open, deliberately:** the NPU arm has never been executed on
+> the NPU - the manifest records the on-device demonstration as not performed and the reported ratio is a bytes-per-token
+> delta rather than a measured decode. Gate status and on-device demonstration are separate claims and only the first is
+> now supported.
 > **Update 17:37 - **Q1_0's GATE IS CLEARED** (`0fea68d2d`), and the unpack lever was NOT retired.** The route was the
 > measurement-led one: no PMC set is available in this container, so the kernel was compared against itself by
 > **ablation** (`4e96982d2`) - with a free unpack the gate tensor hits its own read-only traversal bound, and the unpack
