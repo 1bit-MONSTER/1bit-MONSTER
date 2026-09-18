@@ -23,7 +23,10 @@ name: Auto-enqueue
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    # `edited` includes the base change: when a stacked PR's base merges, GitHub
+    # retargets the PR to main, and that arrives as an edit. Without it a
+    # retargeted PR would sit green and un-enqueued with nothing reporting it.
+    types: [opened, reopened, synchronize, ready_for_review, edited]
 
 permissions:
   contents: read
@@ -40,6 +43,9 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Check this workflow's enqueue contract
+        run: python3 Testing/auto_enqueue_selfcheck.py
       - name: Mint GitHub App installation token
         id: app-token
         env:
@@ -80,6 +86,34 @@ jobs:
           # --auto enables auto-merge, which on a queue-ruled branch means
           # "enqueue this PR once its required checks pass". Idempotent: a
           # re-run on synchronize is a no-op if it is already enabled.
+          #
+          # The method is explicit because gh cannot derive one for a base whose
+          # ruleset does not apply to it, and a workflow cannot answer gh's
+          # prompt: `gh pr merge "$PR" --auto` exits 1 with "--merge, --rebase,
+          # or --squash required when not running interactively" on any PR whose
+          # base is not the default branch. The repo's first stacked PR (#2534)
+          # carried a red `enqueue` check for exactly that reason. The queue's
+          # own method is SQUASH (ruleset 19117606), so naming it changes nothing
+          # about how a main-based PR merges.
+          #
           # Intentionally NOT wrapped in `|| echo` — a silent enqueue failure is
-          # the exact failure mode this workflow exists to prevent.
-          gh pr merge "$PR" --auto --repo "$GITHUB_REPOSITORY"
+          # the exact failure mode this workflow exists to prevent. Hence the
+          # verification below: an exit code is not evidence that the queue will
+          # take the PR.
+          base=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json baseRefName --jq .baseRefName)
+          gh pr merge "$PR" --squash --auto --repo "$GITHUB_REPOSITORY"
+          if [ "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json autoMergeRequest --jq '.autoMergeRequest != null')" != "true" ]; then
+            # Auto-merge into a base other than the default branch is not
+            # documented as supported, and the one stacked PR this workflow has
+            # seen was merged by hand. Report that case as such instead of
+            # asserting a behaviour nobody has measured - but keep the hard
+            # failure for the default branch, where a null means the enqueue
+            # really did not happen.
+            if [ "$base" != "${{ github.event.repository.default_branch }}" ]; then
+              echo "::warning::auto-merge was not enabled on #$PR: its base is '$base', not the default branch. A stacked PR merges with its base branch; this PR will be enqueued by the 'edited' run that its retarget to main triggers."
+              exit 0
+            fi
+            echo "::error::auto-merge was not enabled on #$PR (base $base) - the merge queue will not pick it up"
+            exit 1
+          fi
+          echo "auto-merge enabled on #$PR (base $base) - the queue will take it once its checks pass"
