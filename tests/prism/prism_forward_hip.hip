@@ -39,6 +39,7 @@
 extern "C" int prism_hadamard_fwht_f32(const void*, const int8_t*, void*, int, int, int, void*);
 extern "C" int prism_gemv_f32(const void*, const float*, float*, int, int, int, void*);
 extern "C" int prism_gemv_row4_f32(const void*, const float*, float*, int, int, int, void*);
+extern "C" int prism_gemv_tile_f32(const void*, const float*, float*, int, int, int, void*);
 extern "C" int prism_gemv_dense_f32(const float*, const float*, float*, int, int, void*);
 extern "C" int prism_conv1d_silu_f32(const float*, const float*, float*, float*, int, int, void*);
 extern "C" int prism_l2norm_heads_f32(float*, int, int, void*);
@@ -122,7 +123,12 @@ struct M {
     void matvec(const std::string& n, const float* x, float* y) {
         up(n);
         const GpuTensor& G = g[n];
-        if (G.nb) { if (prism_gemv_row4_f32(G.p, x, y, G.rows, G.cols, G.nb, nullptr)) { std::fprintf(stderr, "gemv fail %s\n", n.c_str()); std::exit(2); } }
+        if (G.nb) {
+            const bool tile = (G.nb == 18 || G.nb == 34);   // Q1_0 / PQ2_0 positional layouts
+            const int rc = tile ? prism_gemv_tile_f32(G.p, x, y, G.rows, G.cols, G.nb, nullptr)
+                                : prism_gemv_row4_f32(G.p, x, y, G.rows, G.cols, G.nb, nullptr);
+            if (rc) { std::fprintf(stderr, "gemv fail %s\n", n.c_str()); std::exit(2); }
+        }
         else      { if (prism_gemv_dense_f32((const float*)G.p, x, y, G.rows, G.cols, nullptr)) { std::fprintf(stderr, "dense fail %s\n", n.c_str()); std::exit(2); } }
     }
     bool load(const char* path) {
