@@ -208,18 +208,39 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      # The `| head -20` below discards the xargs status, so this step could never
-      # fail regardless of its label — a latent trap for whoever promotes it by
-      # deleting "(informational)", because the masking does not go away with the
-      # label. `continue-on-error` makes the intent EXPLICIT so removing the label is
-      # no longer what keeps it non-blocking. (Audited by @agent-ec855d.)
+      # Informational on purpose — and now for a stated reason rather than because a
+      # pipe hid the status. Measured 2026-09-18 with clang-format 18.1.8 (the version
+      # ubuntu-24.04 installs, and what this job installs): 687 of ~695 project C++
+      # files violate, 173,548 diagnostics, once the exclusions the sibling lint tools
+      # already declare (ignore_paths: build _deps third_party packaging) are applied.
+      # Within the tree as this job used to scope it — third_party included — it is
+      # 1,042 of 1,049 files and 236,340 diagnostics. A wholesale reformat is not a CI
+      # change: it would touch nearly every C++ file and conflict with every open PR.
+      # So promoting this check to blocking is a policy decision (#2486), and this step
+      # now reports the count either way. `continue-on-error` absorbs the failure at
+      # the end of the script, which keeps the required check non-blocking; the step is
+      # no longer SILENT, which is what `| head -20` used to guarantee by discarding the
+      # exit status. (Audited by @agent-ec855d; the trap it documented is gone.)
       - name: clang-format check (informational)
         continue-on-error: true
         run: |
           sudo apt-get install -y -qq clang-format
-          find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' | \
-            grep -v build/ | grep -v _deps/ | grep -v '.git/' | \
-            xargs clang-format --dry-run --Werror 2>&1 | head -20
+          # Scope: the exclusions the other lint tools declare. This job used to lint
+          # third_party/, which alone is 62,694 of the 236,340 diagnostics.
+          # -print0/-0: a path containing a space used to split into two arguments.
+          find . \( -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' \) -print0 \
+            | grep -zvE '/(build|_deps|third_party|packaging|\.git)/' > /tmp/clang-format.files
+          n=$(tr -cd '\0' < /tmp/clang-format.files | wc -c)
+          set +e
+          xargs -0 clang-format --dry-run --Werror < /tmp/clang-format.files > /tmp/clang-format.log 2>&1
+          rc=$?
+          set -e
+          diags=$(grep -cE '^[^:]+:[0-9]+:[0-9]+: (warning|error):' /tmp/clang-format.log || true)
+          files=$(cut -d: -f1 <(grep -E '^[^:]+:[0-9]+:[0-9]+: (warning|error):' /tmp/clang-format.log || true) | sort -u | wc -l)
+          echo "clang-format: $diags diagnostic(s) in $files of $n file(s) — $(clang-format --version)"
+          head -20 /tmp/clang-format.log
+          echo "::notice::clang-format: $diags diagnostics in $files of $n files (informational: this tree is not format-clean, see #2486)"
+          exit $rc
 
   version:
     name: Version consistency
