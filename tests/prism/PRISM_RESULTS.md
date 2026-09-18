@@ -65,6 +65,24 @@ window, so the box is tagged `strixhalo-unknown`, **not** `strixhalo-quiet`.
 | Ternary-Bonsai-2-27B-PTQ1_0 5.95 GB | 11 tok/s | >=27 tok/s | `[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | HIP bench_hip_1bp | strixhalo-unknown | 32 | capital-of-France | 2026-09-18]` |
 | Ternary-Bonsai-27B-PQ2_0 7.17 GB | 12 tok/s | >=22 tok/s | `[Ternary-Bonsai-27B-PQ2_0 | PQ2_0 | HIP bench_hip_1bp | strixhalo-unknown | 32 | capital-of-France | 2026-09-18]` |
 
+**Gate reachability arithmetic (host-side, derived from the tagged rows above).** These gates are
+bandwidth targets, not measurement targets: each needs the pack's weights streamed at
+`Q1_0 159.6 GB/s `[Bonsai-27B-Q1_0\|Q1_0\|arithmetic\|strixhalo-unknown\|-\|-\|2026-09-18]`,
+`PTQ1_0 160.7 GB/s `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|arithmetic\|strixhalo-unknown\|-\|-\|2026-09-18]`,
+`PQ2_0 157.7 GB/s `[Ternary-Bonsai-27B-PQ2_0\|PQ2_0\|arithmetic\|strixhalo-unknown\|-\|-\|2026-09-18]`
+i.e. 78-80% of the 201-219 GB/s triad `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|-\|-\|2026-09-18]`.
+Today's effective rate (tok/s x pack size) is `60.8 / 65.5 / 86.0 GB/s `[3-packs\|verbatim\|derived from the rows above\|strixhalo-unknown\|32\|capital-of-France\|2026-09-18]`
+= 30/33/43% of triad `[3-packs\|verbatim\|derived\|strixhalo-unknown\|32\|capital-of-France\|2026-09-18]`, so the gap is
+`2.62x / 2.45x / 1.83x `[3-packs\|verbatim\|derived\|strixhalo-unknown\|32\|capital-of-France\|2026-09-18]`. PQ2_0 is closest because its
+effective rate already matches the tile GEMV's own `93 GB/s `[3-packs\|verbatim\|HIP prism_gemv_tile.hip\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]` — the model is GEMV-bound,
+so the remaining headroom is exactly the distance from 40-46% to ~80% of triad.
+
+**Operator decision this exposes.** The gate as written asks for near-peak streaming through a 64-layer
+hybrid that also carries GDN state and attention, so it sits at the edge of what this box can do *even
+with a perfect weight path*. If the targets are a lane-relative ambition rather than a hard contract,
+saying so lets me re-tag them as `spec-ambition` instead of failing them; if they are hard, then the
+number to plan against is ~80% of triad, not 42/27/22 tok/s in the abstract.
+
 **Result: MISSED, and it is a kernel limit, not a measurement artifact.** The tile GEMV's own best is the
 section-3 row tagged `[3-packs | verbatim | HIP prism_gemv_tile.hip | strixhalo-unknown | - | synthetic x | 2026-09-18]`;
 at that bandwidth the Q1_0 model projects to 21 tok/s `[Bonsai-27B-Q1_0 | Q1_0 | HIP projected from GEMV BW | strixhalo-unknown | - | capital-of-France | 2026-09-18]`,
