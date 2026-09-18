@@ -139,6 +139,22 @@ The failing gate's name is unknown because I deleted that log before examining i
 the same class of mistake as destroying an instrument's output - so it is recorded as an unexplained flake to
 watch rather than as a resolved item. The counts line is what surfaced it, which is the argument for the change.
 
+## 4d. P5 fallback (Vulkan/ZINC) - third column NOT PRODUCED, runtime blocked by a third-party defect
+
+| measurement | value | tag |
+|---|---|---|
+| ZINC binary the bench script defaults to | `$HOME/zinc/zig-out/bin/zinc` does not exist, nor does `$HOME/zinc/`; zig is not installed, so it cannot be rebuilt as written | `[n/a\|probe\|tools/bench_zinc_vulkan.sh\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
+| the other build on the box | `$HOME/zinc-merged/bin/zinc`, 18464888 B, dated 2026-09-09 - loads the Prism Q1_0 GGUF correctly (851 tensors, 64 layers, 24 heads / 4 KV) and then segfaults during upload | `[Bonsai-27B-Q1_0 \| Q1_0 GGUF \| ZINC merged build\| strixhalo-quiet \| 0 \| - \| 2026-09-18]` |
+| the fault, from the backtrace | `memcpy` <- `vulkan.buffer.Buffer.initDeviceLocalAndUpload` <- `model.loader.load` <- `main`: a 13926400-byte copy to a STACK address | `[Bonsai-27B-Q1_0 \| Q1_0 GGUF \| ZINC merged build \| strixhalo-quiet \| 0 \| - \| 2026-09-18]` |
+| earlier untracked log | `tests/prism/Q1_0-vulkan.log` is untracked (`.gitignore:56 = *.log`; 0 tracked logs under tests/prism), carries no triad tag, and its build is not on the box | `[Bonsai-27B-Q1_0 \| Q1_0 GGUF \| ZINC (older build) \| strixhalo-unknown \| - \| - \| 2026-09-18]` |
+
+**Status: shader compile-verified, runtime run blocked.** The ZINC build on this box understands the Prism layout
+and cannot run it, so no third tok/s column can come from ZINC here, and none is claimed. Our own Vulkan DMMV
+shader handles the same file, so the column is to be produced from our own path with a harness - our code, no
+third-party runtime in the loop - and ZINC becomes an optional cross-check if zig is ever installed. The earlier
+untracked log is excluded on three independent grounds (untracked, untagged, build absent), which is the same rule
+that keeps every other row in this file admissible.
+
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 
 The box was clean-rebooted to clear the peer lanes, and the backend decoded 32 tokens per pack in the

@@ -310,6 +310,28 @@ reported as a delta, not a replacement.
 > **Do not scope around >8 columns.**
 
 ### P5 — Vulkan/ZINC (fallback + honest cross-backend number) (3–5 days)
+> **Status 2026-09-18 (verified here): third column NOT PRODUCED - ZINC runtime blocked by a third-party
+> defect.** Evidence, all reproduced: the binary `tools/bench_zinc_vulkan.sh` defaults to
+> (`$HOME/zinc/zig-out/bin/zinc`) **does not exist** and neither does `$HOME/zinc/`; a *different* build exists at
+> `$HOME/zinc-merged/bin/zinc` (18,464,888 B, 2026-09-09) and **zig is not installed**, so the script's binary
+> cannot be rebuilt as written. With `RADV_PERFTEST=coop_matrix` that build **loads** the Prism Q1_0 GGUF
+> correctly (64 layers, 24 heads / 4 KV, dim 5120, vocab 248320, SSM d_conv=4 d_inner=6144 d_state=128 dt_rank=48
+> n_group=16, 851 tensors) and then **segfaults (exit 139) during upload**: backtrace
+> `compiler_rt.memcpy.copyForwards` <- `vulkan.buffer.Buffer.initDeviceLocalAndUpload` (`zinc/src/vulkan/buffer.zig:207`)
+> <- `model.loader.load` (`zinc/src/model/loader.zig:666`) <- `main` (`main.zig:3226`), copying **13,926,400 bytes to
+> a STACK address** (`dest=0x7ffe02776000`). A ~13.9 MB copy into a stack buffer is the defect; no Prism pack with a
+> tensor that size can run on this build. **That is a fault in the fallback runtime, not in our pack** - our own
+> loader, the fork oracle and our own Vulkan DMMV shader all handle the same file.
+>
+> **Record decision (records owner):** (a) P5 is recorded as **"shader compile-verified, runtime run blocked"** -
+> never as a measured column, because there is no run to measure. (b) The third honest column is to come from
+> **our own** path (`kernels/vulkan/dmmv_prism.comp` + a real harness), not from ZINC: ZINC cannot run on this box,
+> the fix needs zig which is not installed, and the deliverable wants our own kernels with no third-party runtime
+> in the loop - so ZINC stays an *optional cross-check* if zig ever lands rather than the source of the number.
+> (c) The earlier `tests/prism/Q1_0-vulkan.log` reading of 33.5 tok/s is **not** a column and is **not** in the
+> record: it is untracked (`.gitignore:56 = *.log`, 0 tracked logs under tests/prism), it carries no triad tag, and
+> the build that produced it is not on the box. Even recovered, a quiet claim would need a same-window triad.
+
 
 > **Progress (2026-09-18):** `kernels/vulkan/dmmv_prism.comp` implements the three flat-128-block layouts (Q1_0 nb=18 / PQ2_0 nb=34 / PTQ1_0 nb=28, selected by specialization constants) as a wave64, 2-rows-per-workgroup DMMV matching `dmmv_{q1,tq2}_bonsai.comp`; `glslc --target-env=vulkan1.2` compiles it clean (15.3 KB SPIR-V) and it is added to `VK_SHADER_SOURCES`. The folded basis stays on the activation side (P3.1), so weight packing is basis-agnostic. **Open:** a ZINC/Vulkan run for the third honest tok/s column.
 
