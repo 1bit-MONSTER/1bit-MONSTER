@@ -62,17 +62,55 @@ jobs:
       - name: Build engine (continuous batch)
         if: env.XRT_OK == 'true'
         run: |
-          # npu_engine_v12.cpp is a struct-only header — the actual engine
-          # with main() is npu_engine_all.cpp
+          set -euo pipefail
+          # The universal engine references symbols from three bridge TUs that
+          # must be compiled SEPARATELY (they pull FLM's lm_config/npu_utils
+          # headers, which clash with the engine's vendored stubs) and linked in
+          # against FLM's libs. This mirrors engine/npu/build_npu.sh, but builds
+          # only the single generic binary the Benchmark step runs.
+          FLM_ROOT="${FLM_ROOT:-/home/bcloud/.local/flm-v0946}"
+          FLM_INC="$FLM_ROOT/include"
+          FLM_LIB="$FLM_ROOT/lib/xrt"
+          XRT_RUNLIST_LIB="${XRT_RUNLIST_LIB:-/usr/local/xrt-runlist/lib}"
+
+          # runlist whole-layer stack (model.c is C; runtime_layer + bridge are C++)
+          gcc  -c -O3 -std=c11     -Inpu-infer/include -o engine/npu/build/npu_model.o            npu-infer/src/model.c
+          g++  -c -std=c++17 -O3   -Inpu-infer/include -I/usr/include \
+                -o engine/npu/build/npu_runlist_runtime.o npu-infer/src/runtime_layer.cpp
+          g++  -c -std=c++17 -O3   -Inpu-infer/include -I/usr/include \
+                -o engine/npu/build/npu_runlist_bridge.o engine/npu/src/npu_runlist_bridge.cpp
+          # FLM bf16 GEMM bridge (dequant.xclbin + mm.xclbin via libgemm/libdequant)
+          g++  -c -std=c++17 -O2   -Iengine/npu/src -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I/usr/include \
+                -o engine/npu/build/npu_engine_bf16_mm_bridge.o engine/npu/src/npu_engine_bf16_mm_bridge.cpp
+          # FLM prefill bridge (libqwen3_npu::prefill for the prefill/TTFT path)
+          g++  -c -std=c++17 -O2 -mavx2 -include climits -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I/usr/include \
+                -o engine/npu/build/flm_prefill_bridge.o engine/npu/src/flm_prefill_bridge.cpp
+
+          # Prefer the runlist-capable XRT 2.26.0 (exports xrt::runlist); the
+          # system XRT 2.21.75 declares but does not export it (link fails).
+          if [ -f "$XRT_RUNLIST_LIB/libxrt_coreutil.so.2" ]; then
+            XRT_LIBS="-L$XRT_RUNLIST_LIB -l:libxrt_coreutil.so.2 -l:libxrt_core.so.2 -Wl,-rpath,$XRT_RUNLIST_LIB"
+          else
+            XRT_LIBS="-lxrt_coreutil -lxrt_core"
+          fi
+
           g++ -std=c++23 -O3 -march=native -fopenmp -ffast-math \
             -o engine/npu/build/npu_engine_v12 \
-            engine/npu/src/npu_engine_universal.cpp engine/npu/build/dequant_q4nx.o \
+            engine/npu/src/npu_engine_universal.cpp \
+            engine/npu/build/dequant_q4nx.o \
             engine/npu/src/zaya_decode.cpp \
             engine/npu/src/gemm_npu_instructions.cpp \
-            npu-infer/src/flm_bridge.cpp \
-            -Iengine/npu/include -Iengine/npu/generators -Inpu-infer/include -Iinclude \
-            -I/opt/xrt/include -Iengine/npu -I. \
-            -L/opt/xrt/lib -lxrt_coreutil -luuid -lm -ldl -lpthread -laiebu
+            engine/npu/build/npu_model.o \
+            engine/npu/build/npu_runlist_runtime.o \
+            engine/npu/build/npu_runlist_bridge.o \
+            engine/npu/build/npu_engine_bf16_mm_bridge.o \
+            engine/npu/build/flm_prefill_bridge.o \
+            -Iengine/npu/src -Iengine/npu/include -Iengine/npu/generators -Inpu-infer/include -Iinclude \
+            -I/usr/include -Iengine/npu -I. \
+            $XRT_LIBS -laiebu -luuid -lm -ldl -lpthread \
+            -L"$FLM_LIB" -lgemm -ldequant -lqwen3_npu -lqwen3_6_moe_npu -lqwen3_5vl_npu \
+            -lq4_npu_eXpress -lmha -llm_head -lllama_npu -lgemma4e_npu -lphi4_npu \
+            -lnanbeige_npu -llfm2_npu -Wl,-rpath,"$FLM_LIB"
 
       - name: Benchmark
         if: env.DRIVER_OK == 'true'
