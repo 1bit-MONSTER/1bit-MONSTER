@@ -378,6 +378,23 @@ else
     fail=$((fail+1))
 fi
 
+# The "Lint (clang-format)" required check cannot fail: 184,118 diagnostics in 740 of
+# the 744 files it selects (#2486). Testing/lint-new-diagnostics.sh is the no-NEW-
+# diagnostics predicate that would let it fail without blocking every touch of an
+# unformatted file, and this pins the predicate's behaviour in six cases plus two
+# floors. Runs here, not only in the lint job, because this suite has no clang-format
+# dependency: the predicate takes the binary through CLANG_FORMAT.
+echo "== clang-format no-new-diagnostics predicate =="
+total=$((total+1))
+if newdiag_out=$(bash Testing/lint_new_diagnostics_selfcheck.sh 2>&1); then
+    printf '%s\n' "$newdiag_out" | sed 's/^/  /'
+    echo "✓ lint_new_diagnostics"
+else
+    echo "✗ lint_new_diagnostics"
+    printf '%s\n' "$newdiag_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # NPU artifact lookup: the engine resolves an xclbin (xp) and an instruction
 # file (ip) per tensor slot. When ip() had no dimension-keyed fallback while
 # xp() did, slots whose instructions are committed under their shape rather than
