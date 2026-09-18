@@ -45,6 +45,7 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | full device forward, 16-token decode | 10.15 tok/s | `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|HIP\|strixhalo-busy\|16\|capital-of-France\|2026-09-18]` |
 | full device forward, 16-token decode | 12.20 tok/s | `[Ternary-Bonsai-27B-PQ2_0\|PQ2_0\|HIP\|strixhalo-busy\|16\|capital-of-France\|2026-09-18]` |
 | GEMV bandwidth, `blk.0.ffn_gate` 17408x5120 | 23 -> 80 GB/s (Q1_0), 35 -> 93 (PQ2_0), 25 -> 93 (PTQ1_0) | `[3-packs\|verbatim\|HIP prism_gemv_tile.hip\|strixhalo-unknown\|- \| synthetic x \| 2026-09-18]` |
+| GEMV bandwidth, `blk.0.ffn_gate` via int8 dp4a (extracted algorithm, nothing linked) | 223.4 GB/s, corr 0.999996 vs f64 CPU dot | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP prism_gemv_dp4a.hip \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
 
 ## 4. Bandwidth evidence (the quietness proof)
 
@@ -54,7 +55,7 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | triad, @agent-1141bd window 13:19:20 (load 4.52->4.13, no process >300% CPU) | 204.2-217.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 
-## 5. P3 gate — MEASURED, **NOT MET** (2026-09-18)
+## 5. P3 gate - MEASURED: PQ2_0 met (provisional), others still short (2026-09-18)
 
 The box was clean-rebooted to clear the peer lanes, and the backend decoded 32 tokens per pack in the
 post-reboot window (no `npu_engine_*` / `pf` / `python3` lane). No triad reading was taken in that
@@ -110,6 +111,38 @@ with a perfect weight path*. If the targets are a lane-relative ambition rather 
 saying so lets me re-tag them as `spec-ambition` instead of failing them; if they are hard, then the
 number to plan against is the fraction of triad the gate implies (tagged above), not the
 tok/s figures in the abstract.
+
+### dp4a round (2026-09-18, commit ca8f8bb13) - PQ2_0 meets its gate, provisionally
+
+The GEMV now quantizes activations to int8 once and uses the RDNA3 `__builtin_amdgcn_sudot4` (dp4a) dot — an
+algorithm **read from** Prism's own llama.cpp HIP path (`ggml/src/ggml-cuda/vecdotq.cuh`,
+`q1_0_unpack4_hip` / `q2_0_symbols4_hip`) and reimplemented in `kernels/prism_gemv_dp4a.hip`. **Nothing is
+linked from the fork, which stays oracle/baseline only** — the operator's instruction of 2026-09-18 ("go
+upstream to prism llama.cpp, extract and integrate") added reading, not a runtime dependency, so the lane's
+deliverable constraint is unchanged.
+
+| pack | decoded (32 tokens) | gate | status | tag |
+|---|---|---|---|---|
+| Bonsai-27B-Q1_0 3.80 GB | 34 tok/s | >=42 tok/s | 81% of gate | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a forward \| strixhalo-busy \| 32 \| capital-of-France \| 2026-09-18]` |
+| Ternary-Bonsai-2-27B-PTQ1_0 5.95 GB | 19 tok/s | >=27 tok/s | 70% of gate | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| HIP dp4a forward \| strixhalo-busy \| 32 \| capital-of-France \| 2026-09-18]` |
+| Ternary-Bonsai-27B-PQ2_0 7.17 GB | 23 tok/s | >=22 tok/s | **MEETS (105%)** | `[Ternary-Bonsai-27B-PQ2_0 \| PQ2_0 \| HIP dp4a forward \| strixhalo-busy \| 32 \| capital-of-France \| 2026-09-18]` |
+| Q1_0 GEMV, dp4a path | 223.4 GB/s, corr 0.999996 vs f64 CPU dot | - | approximate: int8 activations | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP prism_gemv_dp4a.hip \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| Q1_0 non-GEMV share of decode | effective 129 GB/s vs its own GEMV 223.4 GB/s = 42% of decode | - | the remaining gap | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a forward vs GEMV bench \| strixhalo-busy \| 32 \| capital-of-France \| 2026-09-18]` |
+
+**PQ2_0 meets its gate, provisionally.** The margin is one token per second and this window, though light, had
+no triad taken, so every row above is `strixhalo-busy` and **relative**: the absolute claim needs the peer's
+triad-tagged window, and the heading stays provisional until then.
+
+**The numerics changed, and the gate that carries correctness changed with it.** The dp4a dot is approximate
+where the float tile kernel was exact (see the corr row above), because activations are int8-quantized in the
+fork's q8_1 scheme. Kernel-level exactness is therefore no longer the correctness gate; end-to-end correctness
+now rests on the fork-oracle argmax and the CPU-vs-device greedy-sequence comparison. Both are reported green
+by the peer, and I am **not** recording them as verified until they run in the same window as the rows above -
+a green claim measured in another window is exactly the class of thing this file exists to prevent.
+
+**What is left is not the weight path.** The remaining distance is non-GEMV (the share row above): GDN,
+attention, FWHT and launches. PTQ1_0 is furthest out because it still runs the float tile kernel - its trit
+order does not map onto dp4a cleanly, so an int8 trit dot of its own is the next step.
 
 **Result: MISSED, and it is a kernel limit, not a measurement artifact.** The tile GEMV's own best is the
 section-3 row tagged `[3-packs | verbatim | HIP prism_gemv_tile.hip | strixhalo-unknown | - | synthetic x | 2026-09-18]`;
