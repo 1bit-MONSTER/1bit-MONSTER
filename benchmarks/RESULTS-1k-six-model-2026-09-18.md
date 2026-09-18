@@ -58,7 +58,12 @@ from the TTFT *in seconds* as if it were ms/token (`1000 / 2.2 = 454.5`), a unit
 other rows do not have. The correct rate is 463–466 t/s, so the FLM ratio is **1.46–1.47x**, not
 1.43x. Everything downstream of that row (the "1.08–1.43x prefill" summary in the commit
 message) moves with it; the verdict does not (all six still at or above FLM on all three
-clauses at 1k). The 8k table was checked the same way and is correct as published.
+clauses at 1k). The other load-bearing tables were checked the same way and are correct as published:
+`RESULTS-8k-prefill-2026-09-18.md` (all seven native runs, each `=== Prefill 8192 [bf16] ===`),
+`RESULTS-unified-decode-overlap-2026-09-18.md` (every serial-vs-overlapped pair re-derived from
+its log: 0.6B 12.7/12.6 vs 13.9/13.8; 1.7B 25.1/25.0 vs 27.6; 8B 91.3/91.3 vs 93.7; Llama
+87.9/88.0 vs 90.6; 4B 52.2/52.3 and VL-4B 52.3/52.6 vs the older 54.1), and
+`RESULTS-8k-guarded-campaign-2026-09-18.md` (accepted runs 0.493/0.584/0.643 ms/tok).
 
 ## Caveats, in order of importance
 
