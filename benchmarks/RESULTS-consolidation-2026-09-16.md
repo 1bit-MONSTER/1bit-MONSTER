@@ -92,3 +92,48 @@ Stated plainly, with the source that bounds it:
 
 The un-routed families' ≤1024 path remains correct-but-slow (CPU attention), which
 is the honest verdict `RESULTS-family-attention-shape-2026-09-14.md` records.
+
+---
+
+## Addendum 2026-09-18 — criterion (c)'s current state, and the boundary refresh
+
+This addendum supersedes the (c) rows above; the boundary table below it is still right but
+now has one more member.
+
+**1k: the clause set is met for all six supported models.** One window, 32 decode tokens,
+same-window FLM pairs at the same prompt/token counts, native = the default unified path with
+the decode-overlap fix (`efb35df4c`):
+
+| model | native prefill / TTFT / decode | FLM |
+|---|---|---|
+| Qwen3-0.6B | 1828–1894 t/s / 0.541–0.560 s / 78–80 tok/s | 1323.11 / 0.743 s / 72.33 |
+| Qwen3-1.7B | 1316–1346 / 0.761–0.778 s / 39.8–40.0 | 980.09 / 1.002 s / 39.56 |
+| Qwen3-4B | 646–649 / 1.577–1.586 s / 19.1–19.2 | 509.70 / 1.926 s / 18.80 |
+| Qwen3-VL-4B | 648–650 / 1.576–1.580 s / 19.0–19.1 | 530.72 / 1.840 s / 18.80 |
+| Qwen3-8B | 456–459 / 2.228–2.248 s / 10.95 | 362.63 / 2.706 s / 10.71 |
+| Llama-3.1-8B | 453–455 / 2.200–2.213 s / 11.4 | 316.02 / 3.178 s / 10.84 |
+
+Authority: `RESULTS-1k-six-model-2026-09-18.md` (and `RESULTS-unified-decode-overlap-2026-09-18.md`
+for the scheduling change that made the decode column). Llama's row requires a **warm**
+per-context ELF cache and `NPU_LAYER_ELF_DIR`; its cold-cache prefill is ~2.7x slower.
+
+**8k: parity on prefill/TTFT, and decode still outside the set.** Interleaved repeated runs
+put 0.6B at 2009–2028 t/s vs FLM 1988–2010 and 1.7B at 1145–1473 vs 1193–1374 — **parity**, not
+the 0.62–0.71x inversion the 2026-09-16 yardstick recorded, and not the 1.01–1.24x win a
+single-run table briefly claimed. Authority: `RESULTS-8k-campaign-variance-2026-09-18.md`,
+with the CORRECTION banner on `RESULTS-8k-prefill-2026-09-18.md`. The 8k **decode** row cannot
+be taken at all: the second decode forward needs `ctx=8194`, and the per-ctx ELFs are baked at
+`MAX_L=8192`.
+
+**Criterion (c) is therefore NOT met as written.** It asks for prefill/TTFT/decode >= FLM at
+1k..8191; the 1k end is met for all six, the 8k prefill/TTFT end is at parity (neither ahead
+nor the recorded deficit), and the decode end above ~8193 contexts does not exist yet.
+
+**The boundary table gains one row, and one existing row gets a sharper reason:**
+
+| outside the set | why / source |
+|---|---|
+| (existing) contexts beyond 8192 | layer ELFs bake `MAX_L=8192` — now demonstrated *at the decode step*, not just as a capability note: the 8k decode's second forward (`ctx=8194`) fails to build, and the split-path fallback then dies on the missing i8 `G_K2560_N9728` tile (`RESULTS-8k-prefill-2026-09-18.md`) |
+| (new) **any number taken while a foreign process holds `accel0`** | the engine takes `/tmp/1bit-npu-device.lock`; other tools do not. Two long-lived `/tmp/attrib` processes inflated identical 8k prefills 3.3–4.4x on 2026-09-18. Instrument: `benchmarks/c8k_guarded.sh`; register entry: `LEVERS` §6.7 |
+
+The un-routed families' verdicts and the ≤1024-key family boundary above are unchanged.
