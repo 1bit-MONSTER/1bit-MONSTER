@@ -19,7 +19,19 @@ fail=0
 # file : sed-expression that rewrites the version line in place
 sync_file() {
   local file="$1" expr="$2"
-  [ -f "$file" ] || return 0
+  if [ ! -f "$file" ]; then
+    # In --check mode a missing manifest is a FAILURE, not a skip. This used to be
+    # `[ -f "$file" ] || return 0`, so any manifest that moved out of the tree took
+    # its version check with it, silently — measured before this fix: moving
+    # packaging/aur/PKGBUILD away left `sync-version.sh --check` at exit 0 while a
+    # stale-but-present one correctly failed. A required check that loses a target
+    # without a signal is the #2476 failure mode.
+    if [ "$MODE" = "--check" ]; then
+      echo "MISSING: $file (the tree should carry it, at version $VERSION)"
+      fail=1
+    fi
+    return 0
+  fi
   if [ "$MODE" = "--check" ]; then
     if ! grep -Eq "$3" "$file"; then
       echo "OUT OF SYNC: $file (expected version $VERSION)"
@@ -53,15 +65,21 @@ sync_file packaging/aur/PKGBUILD \
   "s/^(pkgver=).*/\1${VERSION}/" \
   "^pkgver=${VERSION}$"
 
-# Homebrew formula  ->  version "<VERSION>"
-sync_file packaging/homebrew/1bit-monster.rb \
-  "s/^(  version \")[^\"]*(\")/\1${VERSION}\2/" \
-  "^  version \"${VERSION}\"$"
-
-# Homebrew url tag  ->  tags/v<VERSION>.tar.gz
-sync_file packaging/homebrew/1bit-monster.rb \
-  "s|(tags/v)[0-9]{4}\.[0-9]{2}\.[0-9]{2}[A-Za-z0-9.-]*|\1${VERSION}|" \
-  "tags/v${VERSION}"
+# Homebrew formula — the two entries that lived here are REMOVED. They checked
+# `packaging/homebrew/1bit-monster.rb`, which has never existed in this repository:
+# there is no .rb anywhere in the tree, nothing is tracked under packaging/homebrew/,
+# and `git log --diff-filter=A --all` finds no add (the path arrived with a vendored
+# packaging script, not with the formula). So both entries resolved to nothing and
+# the check skipped them in silence. Now that a missing manifest is a failure they
+# would fail instead — restore these two entries and the formula together, not one
+# without the other:
+#
+#   sync_file packaging/homebrew/1bit-monster.rb \
+#     "s/^(  version \")[^\"]*(\")/\1${VERSION}\2/" \
+#     "^  version \"${VERSION}\"$"
+#   sync_file packaging/homebrew/1bit-monster.rb \
+#     "s|(tags/v)[0-9]{4}\.[0-9]{2}\.[0-9]{2}[A-Za-z0-9.-]*|\1${VERSION}|" \
+#     "tags/v${VERSION}"
 
 # deb postinst banner  ->  v<VERSION>
 sync_file packaging/deb/DEBIAN/postinst \

@@ -307,7 +307,7 @@ The xclbins in `engine/npu/xclbins/` ARE verified correct:
 | `final_i8_*_qwen3_0_6b.xclbin` | ✅ Full set for Qwen3-0.6B |
 | `final_i8_*_qwen3_8b.xclbin` | ✅ Full set for Qwen3-8B |
 | `final_i8_*_qwen3_vl_4b.xclbin` | ✅ Full set for Qwen3-VL-4B |
-| `final_i8_*_llama.xclbin` | ✅ Full set for Llama-3.1-8B |
+| `final_i8_*_llama_3_1_8b.xclbin` | ✅ Full set for Llama-3.1-8B |
 | `final_i8_*_gemma4_e2b.xclbin` | ✅ Full set for Gemma4-E2B |
 | `final_i8_*_phi4.xclbin` | ✅ Cloned from template, verified at init |
 

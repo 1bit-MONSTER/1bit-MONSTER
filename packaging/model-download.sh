@@ -75,7 +75,11 @@ download_model() {
 
   # Keep the upstream file name (e.g. Qwen3-0.6B.1bp) — the engine keys off
   # the real extension, and a hardcoded .q4nx suffix would be misleading.
-  local OUTFILE="${MODEL_DIR}/$(basename "${URL}")"
+  # Declared, then assigned: `local X="$(cmd)"` makes the assignment's status the
+  # `local` builtin's, which is always 0, so a failure inside $(...) is masked
+  # (SC2155).
+  local OUTFILE
+  OUTFILE="${MODEL_DIR}/$(basename "${URL}")"
   if [ -f "$OUTFILE" ]; then
     warn "Model already exists at ${OUTFILE}"
     return 0

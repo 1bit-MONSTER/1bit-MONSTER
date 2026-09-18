@@ -706,7 +706,7 @@ The PATCH_README claimed `npu_patched.sbin` had an "updated SHA256 header hash" 
 The 40-column unlock effort is **formally closed**. The NPU has 8 physical columns and there is no software mechanism to increase this count. The PSP's RSA-2048 signature validation prevents any firmware modification without AMD's private signing key, and even if that were available, there would be no additional columns to unlock.
 
 The focus should shift to maximizing 8-column throughput via multi-context parallelism, temporal sharing, and driver-side optimization.
-=======
+
 ---
 
 ## Appendix: 40-Column Effort Closed — Strix Halo Hardware Verified (2026-08-04)
