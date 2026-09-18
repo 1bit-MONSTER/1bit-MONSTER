@@ -548,7 +548,11 @@ struct Pipeline {
     vk::DescriptorSetLayout dsl;
     uint32_t pcSize = 0;
 
-    void create(VkCtx& ctx, const char* spvPath, int numBindings, uint32_t pcSizeIn) {
+    // spec_u32: optional specialization constants, spec_u32[i] -> constant_id i (uint32).
+    // Without them a shader with layout(constant_id=...) keeps its declared default, which
+    // silently selects the wrong branch (dmmv_prism.comp defaults SPEC_Q=11 = Q1_0).
+    void create(VkCtx& ctx, const char* spvPath, int numBindings, uint32_t pcSizeIn,
+                const uint32_t* spec_u32 = nullptr, int spec_count = 0) {
         pcSize = pcSizeIn;
         try {
             vk::Device vd(ctx.dev);
@@ -578,10 +582,26 @@ struct Pipeline {
             pl.pPushConstantRanges = pcSize > 0 ? &pcr : nullptr;
             layout = vd.createPipelineLayout(pl);
 
+            std::vector<vk::SpecializationMapEntry> sme;
+            std::vector<uint32_t> sdata;
+            vk::SpecializationInfo sinfo;
+            if (spec_u32 && spec_count > 0) {
+                sme.reserve((size_t)spec_count);
+                sdata.reserve((size_t)spec_count);
+                for (int i = 0; i < spec_count; i++) {
+                    sme.emplace_back((uint32_t)i, (uint32_t)(i * (int)sizeof(uint32_t)), sizeof(uint32_t));
+                    sdata.push_back(spec_u32[i]);
+                }
+                sinfo.mapEntryCount = (uint32_t)sme.size();
+                sinfo.pMapEntries = sme.data();
+                sinfo.dataSize = sdata.size() * sizeof(uint32_t);
+                sinfo.pData = sdata.data();
+            }
             vk::PipelineShaderStageCreateInfo stage;
             stage.stage = vk::ShaderStageFlagBits::eCompute;
             stage.module = shader;
             stage.pName = "main";
+            if (spec_u32 && spec_count > 0) stage.pSpecializationInfo = &sinfo;
             vk::ComputePipelineCreateInfo cp;
             cp.stage = stage;
             cp.layout = layout;
