@@ -1492,8 +1492,17 @@ struct Bf16Ctx {
         int t = std_nh[l] * std_hd[l] * 2;
         std::vector<float> w((size_t)H * t, 0.0f);
         for (int h = 0; h < std_nh[l]; h++) {
-            transpose_pack(qkv_w + h * 2 * std_hd[l], std_hd[l], H, w.data(), t, h * std_hd[l]);                                          // q
-            transpose_pack(qkv_w + h * 2 * std_hd[l] + std_hd[l], std_hd[l], H, w.data(), t, std_nh[l] * std_hd[l] + h * std_hd[l]);  // gate
+            // #2451: `qkv_w` is a ROW-MAJOR [rows][H] matrix and transpose_pack reads
+            // src[o*in_f + i] with in_f == H, so the row offset has to be scaled by H.
+            // Both calls below advanced by h*2*hd+hd FLOATS instead of that many ROWS:
+            // head 0's q was right by accident (offset 0) and every other q/gate head read
+            // a sliding window inside the first two rows of q_proj. The GDN branch above
+            // has the `* H` and was always correct, which is why every GDN layer was clean
+            // while every full-attention layer injected garbage. Measured at L3 position 0
+            // against the engine's own dumped input (commit 8c4c47a90): corr(engine_q,
+            // ref_q) +0.0820 -> +0.999876, corr(engine_gate, ref_gate) +0.0275 -> +0.999871.
+            transpose_pack(qkv_w + (size_t)(h * 2 * std_hd[l]) * H, std_hd[l], H, w.data(), t, h * std_hd[l]);                                          // q
+            transpose_pack(qkv_w + (size_t)(h * 2 * std_hd[l] + std_hd[l]) * H, std_hd[l], H, w.data(), t, std_nh[l] * std_hd[l] + h * std_hd[l]);  // gate
         }
         FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
         } // plain vs fused qkv layout
