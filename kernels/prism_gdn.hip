@@ -106,16 +106,22 @@ __global__ void prism_gdn_recurrence_kernel(const float* __restrict__ q,   // [N
     c = (red[hv] + red[hv + HV]) + (red[hv + 2 * HV] + red[hv + 3 * HV]);
     c /= sqrtf((float)HK);
 
+    // Only the kc == 0 thread group owns the gated RMSNorm and the output. With 4 thread groups
+    // per head every hv has FOUR threads, so letting them all run the tree added the partials
+    // four times (and raced on red[hv]); that is what made this intermittently wrong. All
+    // threads still reach every barrier below, so the guard is on the work, not the sync.
+    __syncthreads();
+
     // Gated RMSNorm across the HV dims of this head.
-    red[hv] = c * c;
+    if (kc == 0) red[hv] = c * c;
     __syncthreads();
     for (int st = HV >> 1; st > 0; st >>= 1) {
-        if (hv < st) red[hv] += red[hv + st];
+        if (kc == 0 && hv < st) red[hv] += red[hv + st];
         __syncthreads();
     }
     const float ss = red[0];
     const float r = 1.0f / sqrtf(ss / (float)HV + 1e-6f);
-    core[(size_t)vh * HV + hv] = c * r * nw[hv] * gdn_silu(z[(size_t)vh * HV + hv]);
+    if (kc == 0) core[(size_t)vh * HV + hv] = c * r * nw[hv] * gdn_silu(z[(size_t)vh * HV + hv]);
 }
 
 // ssmo-out head permutation: the FOLDED basis stores the grouped [hd,rep,nk] fold while
