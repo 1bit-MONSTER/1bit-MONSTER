@@ -14,8 +14,8 @@ Coordinator:
 
 Usage:
   # Start servers (in separate terminals or background):
-  ./build/zaya_server --model models/ZR1-1.5B.1bp --port 8081
-  ./build/zaya_server --model models/ZAYA1-8B-Q4_K_M.gguf --port 8082
+  ./build/1bit zaya --model models/ZR1-1.5B.1bp --port 8081
+  ./build/1bit zaya --model models/ZAYA1-8B-Q4_K_M.gguf --port 8082
   
   # Run coordinator:
   python3 spec-decode/tests/zr1_zaya_spec_demo.py
@@ -220,8 +220,8 @@ def main():
         except:
             print(f"  {name}: ❌ NOT REACHABLE ({url})")
             print(f"\n  Start servers:\n"
-                  f"    ./build/zaya_server --model models/ZR1-1.5B.1bp --port {args.draft_port}\n"
-                  f"    ./build/zaya_server --model models/ZAYA1-8B-Q4_K_M.gguf --port {args.verify_port}")
+                  f"    ./build/1bit zaya --model models/ZR1-1.5B.1bp --port {args.draft_port}\n"
+                  f"    ./build/1bit zaya --model models/ZAYA1-8B-Q4_K_M.gguf --port {args.verify_port}")
             sys.exit(1)
     
     run_spec_decode(args.prompt, args.n_draft, args.n_rounds)

@@ -136,36 +136,66 @@ README_ENGINES_WITHOUT_SOURCE = {
 }
 
 
+# Pages that publish benchmark figures. This check used to read README.md alone;
+# the numbers moved to the wiki and README became a 70-line landing page, so the
+# scan found no engine name and no row and returned [] unconditionally -- a gate
+# that could not fail, while the page it should have been reading carried a live
+# violation (issue #2476). A missing page is reported rather than skipped, so the
+# target cannot move silently a second time.
+CLAIM_FILES = ("README.md", "docs/wiki/performance.md")
+
+
+def claim_row(line: str) -> tuple[str, str] | None:
+    """(number, status) for a benchmark row in either shape in this tree.
+
+        README  | **123.4** | measured |
+        wiki    | Name | **318 tok/s** | Engine | ✅ validated |
+
+    Both put the figure in a bold cell and the status in the last cell, so split
+    on the pipes instead of keeping a regex that knows only the first shape."""
+    if line.count("|") < 2:
+        return None
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    if len(cells) < 2:
+        return None
+    for cell in cells:
+        m = re.fullmatch(r"\*\*\s*([0-9.]+)\s*[^*]*?\*\*", cell)
+        if m:
+            return m.group(1), cells[-1]
+    return None
+
+
 def check_readme_consistency() -> list[str]:
-    """Fail if README.md stamps a tok/s figure as measured/validated/reported
-    for an engine that benchmarks/latest.json has quarantined in _unverified.
+    """Fail if a published claim page stamps a tok/s figure as
+    measured/validated/reported for an engine that benchmarks/latest.json has
+    quarantined in _unverified.
 
     Hardware-free: safe to run on any CI runner (see --check-readme)."""
-    readme = REPO / "README.md"
-    if not readme.is_file():
-        return ["README.md missing"]
     spec = json.loads(BENCH.read_text())
     unverified = set(spec.get("_unverified", {})) - {"_comment"}
 
     violations: list[str] = []
-    # Data rows end with: | **<num>** | <status> |
-    row = re.compile(r"\|\s*\*\*([0-9.]+)\*\*\s*\|\s*([^|]+?)\s*\|\s*$")
-    for line in readme.read_text().splitlines():
-        for engine, key in README_ENGINES_WITHOUT_SOURCE.items():
-            if engine not in line:
-                continue
-            if key not in unverified:
-                continue
-            m = row.search(line)
-            if not m:
-                continue
-            num, status = m.group(1), m.group(2).strip()
-            positive = any(p in status for p in ("measured", "validated", "reported"))
-            if positive:
-                violations.append(
-                    f'ReADME marks "{engine}" {num} tok/s as "{status}", but '
-                    f"{key} is quarantined in _unverified (no reproducible source). "
-                    "Use a hedged status instead."
+    for rel in CLAIM_FILES:
+        page = REPO / rel
+        if not page.is_file():
+            violations.append(f"{rel} missing")
+            continue
+        for line in page.read_text().splitlines():
+            for engine, key in README_ENGINES_WITHOUT_SOURCE.items():
+                if engine not in line:
+                    continue
+                if key not in unverified:
+                    continue
+                parsed = claim_row(line)
+                if parsed is None:
+                    continue
+                num, status = parsed
+                positive = any(p in status for p in ("measured", "validated", "reported"))
+                if positive:
+                    violations.append(
+                        f'{rel} marks "{engine}" {num} tok/s as "{status}", but '
+                        f"{key} is quarantined in _unverified (no reproducible source). "
+                        "Use a hedged status instead."
                 )
     return violations
 

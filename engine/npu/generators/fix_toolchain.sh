@@ -33,7 +33,34 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # ── Default paths ────────────────────────────────────────────────────
 
 AIE_TOOLS_DIR="${AIE_TOOLS_DIR:-${HOME}/mlir-aie/install_tmp}"
-PEANO_DIR="${PEANO_DIR:-${AIE_TOOLS_DIR}/peano}"
+
+# Peano is not necessarily a subdirectory of the MLIR-AIE root. On the dev boxes it
+# is the llvm-aie wheel inside the mlir-aie venv, so the previous default
+# (${AIE_TOOLS_DIR}/peano) did not exist -- and that made --check report
+# "Peano not found", SKIP the #1870 aiecc/peano LLVM-version gate entirely, and
+# still exit 0. In other words the tool could not check the one thing it exists to
+# check. Detect it instead of assuming the layout.
+if [ -z "${PEANO_DIR:-}" ]; then
+    for _peano_cand in "${HOME}"/mlir-aie/.venv/lib/python3*/site-packages/llvm-aie \
+                       "${AIE_TOOLS_DIR}/peano"; do
+        if [ -d "$_peano_cand" ]; then PEANO_DIR="$_peano_cand"; break; fi
+    done
+    PEANO_DIR="${PEANO_DIR:-${AIE_TOOLS_DIR}/peano}"
+fi
+
+# The toolchain is split across two roots here: aiecc is in the MLIR-AIE tree,
+# while opt/llc/clang/FileCheck are in Peano (llvm-aie). Resolve from either,
+# rather than reporting "not found" for tools that are present but elsewhere.
+find_tool() {
+    local tool="$1" root
+    for root in "$AIE_TOOLS_DIR" "$PEANO_DIR"; do
+        if [ -n "$root" ] && [ -x "$root/bin/$tool" ]; then
+            printf '%s\n' "$root/bin/$tool"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # ── Color output ─────────────────────────────────────────────────────
 
@@ -64,14 +91,17 @@ check_toolchain() {
         errors=$((errors + 1))
     else
         for tool in aiecc opt llc clang FileCheck; do
-            if [ -x "$AIE_TOOLS_DIR/bin/$tool" ]; then
-                ok "$tool found at $AIE_TOOLS_DIR/bin/$tool"
+            if tool_path=$(find_tool "$tool"); then
+                ok "$tool found at $tool_path"
             else
-                warn "$tool not found at $AIE_TOOLS_DIR/bin/$tool"
+                warn "$tool not found in $AIE_TOOLS_DIR/bin or $PEANO_DIR/bin"
             fi
         done
 
-        # Check LLVM version
+        # Check LLVM version. Deliberately $AIE_TOOLS_DIR only: this reports the
+        # AIE tools' own LLVM, and resolving it through Peano would report Peano's
+        # version here instead. (The #1870 gate below already falls back to
+        # `aiecc --version` when this tree ships no llc.)
         if [ -x "$AIE_TOOLS_DIR/bin/llc" ]; then
             local llvm_ver
             llvm_ver=$("$AIE_TOOLS_DIR/bin/llc" --version 2>/dev/null | head -1)

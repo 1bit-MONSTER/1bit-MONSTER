@@ -330,7 +330,8 @@
   #define GU_I8R 1792        // H*IM/8192 = 7168*2048/8192
   #define D_I8R 1792         // IM*H/8192
   #define LM_I8R 113120      // NV*H/8192 = 129280*7168/8192
-=======
+#endif
+
 // Qwen3-1.7B: tag=qwen3_1_7b
 #ifdef MODEL_qwen3_1_7b
   #define MODEL_TAG "qwen3_1_7b"
