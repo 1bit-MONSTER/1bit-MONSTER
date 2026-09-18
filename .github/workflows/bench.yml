@@ -34,7 +34,16 @@ concurrency:
 
 jobs:
   benchmark:
-    runs-on: self-hosted
+    # [self-hosted, strix-halo], not bare `self-hosted`, because this repo has TWO
+    # self-hosted runners and only one of them has the NPU. Bare `self-hosted` matched
+    # ryzen-pr-agent too, where `ldconfig` finds no XRT, so `Check XRT` set XRT_OK=false,
+    # every step below it was SKIPPED by its `if: env.XRT_OK == 'true'`, and the job
+    # reported SUCCESS having built and benchmarked nothing — measured on runs
+    # 35299194441 and 35298939536 (runner=ryzen-pr-agent, "Build engine: skipped",
+    # "Benchmark: skipped", conclusion=success). That is the false green in #2508, and it
+    # was 42 of the last 60 runs. end-to-end-smoke.yml already pins this label for the
+    # same reason; this workflow was the only one still on the bare label.
+    runs-on: [self-hosted, strix-halo]
     timeout-minutes: 60
     if: github.event.repository.owner.login == '1bit-MONSTER'
     steps:
@@ -43,8 +52,12 @@ jobs:
       - name: Check NPU driver
         run: |
           if ! ls /dev/accel/accel* >/dev/null 2>&1; then
-            echo "::warning::NPU device not found — driver may need reload"
+            # A job named "NPU Benchmark" concluding success without a device claims a
+            # measurement that does not exist (#2508). The step skipped below, so fail
+            # here, where the reason is visible.
+            echo "::error::NPU device not found — no benchmark can be measured on this runner (#2508). Driver may need reload."
             echo "DRIVER_OK=false" >> $GITHUB_ENV
+            exit 1
           else
             echo "NPU device present"
             echo "DRIVER_OK=true" >> $GITHUB_ENV
@@ -53,8 +66,9 @@ jobs:
       - name: Check XRT
         run: |
           if ! ldconfig -p | grep -q xrt_coreutil; then
-            echo "::warning::XRT not found in ldconfig — NPU benchmarks unavailable on this runner"
+            echo "::error::XRT not found in ldconfig — the engine cannot be built or run here, so no benchmark can be measured (#2508)."
             echo "XRT_OK=false" >> $GITHUB_ENV
+            exit 1
           else
             echo "XRT found"
             echo "XRT_OK=true" >> $GITHUB_ENV
@@ -88,9 +102,35 @@ jobs:
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path || '' }}
           DEC: ${{ github.event.inputs.decode_tokens || '32' }}
+          # The engine resolves xclbins through NPU_XCLBIN_DIR when it is set, and otherwise
+          # through an installed layout — `~/.local/share/1bit-monster/xclbins`, which on this
+          # runner is EMPTY (0 files). That is why every candidate failed with `FAIL QKV`
+          # (run 35299693789) even though the repo ships the artifacts they need: 374 xclbins,
+          # including the complete Qwen3-4B set (QKV K2560 N6144, O K2560 N2560, G/U K2560
+          # N9728, D K9728 N2560). The job builds from the repo, so it has to read from it.
+          NPU_XCLBIN_DIR: ${{ github.workspace }}/engine/npu/xclbins
         run: |
-          # Auto-detect model if not specified
-          if [ -z "$MODEL_PATH" ]; then
+          # Candidate models. The list is ordered, but "the file exists" is NOT the property
+          # that decides whether this job can measure anything: the engine resolves xclbins
+          # through NPU_XCLBIN_DIR, then a CWD-RELATIVE repo path, then the installed layout, and
+          # a model whose artifacts are not in whichever of those wins cannot init at all.
+          #
+          # Measured before the fix (run 35299693789, runner=strixhalo-pr-agent): all four
+          # candidates died at FAIL QKV. The step does `cd engine/npu/build-cmake`, so the
+          # repo-relative fallback missed, and the installed layout it fell back to holds 0 files.
+          # Selecting by file existence alone therefore picked a model that could not run on this
+          # runner - which is how this job spent its life concluding success without a measurement
+          # (#2508), and why the honest version of it goes red.
+          #
+          # The artifacts were never missing: this repo tracks the tag-keyed set for every
+          # candidate below (final_i8_QKV_qwen3_0_6b.xclbin and friends - it is the
+          # DIMENSION-keyed spelling final_i8_QKV_K1024_N4096.xclbin that does not exist, which is
+          # what a `grep K1024` finds). A search path, not a coverage gap: #2484 is a separate
+          # question, and the fix is one environment variable rather than a build.
+          candidates=()
+          if [ -n "$MODEL_PATH" ]; then
+            candidates+=("$MODEL_PATH")      # explicit request: one attempt, no fallback
+          else
             for candidate in \
               "$HOME/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx" \
               "$HOME/.config/flm/models/Qwen3-1.7B-NPU2/model.q4nx" \
@@ -98,13 +138,12 @@ jobs:
               "$HOME/models/qwen3-0.6b.q4nx" \
               "$HOME/models/zaya1-8b.q4nx"; do
               if [ -f "$candidate" ]; then
-                MODEL_PATH="$candidate"
-                echo "Auto-detected model: $MODEL_PATH"
-                break
+                candidates+=("$candidate")
+                echo "Candidate model: $candidate"
               fi
             done
           fi
-          if [ -z "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH" ]; then
+          if [ ${#candidates[@]} -eq 0 ]; then
             echo "::error::No Q4NX model found. Pass model_path via workflow_dispatch or place a .q4nx model on the runner."
             exit 1
           fi
@@ -113,12 +152,43 @@ jobs:
             ''|*[!0-9]*) echo "::error::decode_tokens must be a positive integer, got '$DEC'"; exit 1 ;;
           esac
           echo "=== NPU Benchmark $(date -u) ==="
-          echo "Model: $MODEL_PATH"
           echo "Decode tokens: $DEC"
           cd engine/npu/build-cmake
-          OMP_NUM_THREADS=16 ./npu_engine_universal "$MODEL_PATH" "$DEC" 2>&1 | tee benchmark.log
-          echo "---"
-          grep "ms/tok" benchmark.log || echo "::warning::No ms/tok line found"
+          # `| tee` discards the engine's status and `grep || echo` discards the
+          # measurement's, so every way this can fail to measure - an init failure
+          # (`return 1` below init_i8/init_bf16), a crash, no xclbin for this shape -
+          # used to land on a green job (#2508). Both are checked now, per candidate.
+          measured=""
+          reasons=""
+          for m in "${candidates[@]}"; do
+            echo "--- trying: $m"
+            set +e
+            OMP_NUM_THREADS=16 ./npu_engine_universal "$m" "$DEC" 2>&1 | tee benchmark.log
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -eq 0 ] && grep -q "ms/tok" benchmark.log; then
+              measured="$m"; break
+            fi
+            # Separate the two failure kinds. A missing artifact is a property of the MODEL
+            # CHOICE, so trying the next candidate is the fix. Anything else is a breakage, and
+            # must not be masked by quietly falling through to a different model.
+            if grep -q "No such file" benchmark.log && grep -qi "xclbin" benchmark.log; then
+              miss=$(grep -o "No such file '[^']*'" benchmark.log | head -1)
+              echo "::warning::$m cannot be benchmarked here - $miss (#2484)"
+              reasons="$reasons
+            $m -> $miss"
+              continue
+            fi
+            echo "::error::the engine exited $rc without completing a benchmark on $m - the log above says why"
+            exit 1
+          done
+          if [ -z "$measured" ]; then
+            echo "::error::no candidate model could be benchmarked: every one is missing an xclbin for its shape (#2484).$reasons"
+            exit 1
+          fi
+          echo "Model: $measured"
+          echo "--- measurement:"
+          grep "ms/tok" benchmark.log | tail -3
 
       - name: Upload benchmark log
         if: always()

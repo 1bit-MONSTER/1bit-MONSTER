@@ -66,6 +66,22 @@ else
     echo "✓ selfcheck wiring control (a comment is not an invocation)"
 fi
 
+
+# ── runner labels: a job that needs the NPU must pin the runner that has it ──
+# bench.yml said `runs-on: self-hosted`, which matched BOTH self-hosted runners. On the
+# one without XRT the engine build and the benchmark were skipped by their own
+# `if: env.XRT_OK == 'true'` guards and the job reported SUCCESS — 42 of its last 60 runs
+# passed with a median duration of 0.6 min, having measured nothing (#2508). The check
+# carries its own fixtures, because after pinning the label no real workflow violates it.
+if runner_label_out=$("$PYTHON" Testing/runner_label_selfcheck.py 2>&1); then
+    printf '%s\n' "$runner_label_out" | sed 's/^/  /'
+    echo "✓ runner_label"
+else
+    echo "✗ runner_label"
+    printf '%s\n' "$runner_label_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 run() {  # run <name> <compile-args...> -- <run-args...>
     local name="$1"; shift
     local src=(); local runargs=()
