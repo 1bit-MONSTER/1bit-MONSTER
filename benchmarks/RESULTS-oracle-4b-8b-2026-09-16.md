@@ -1,3 +1,7 @@
+> **SUPERSEDED (2026-09-18) — see the CORRECTION section at the end.** The 1.7B/4B/8B
+> rows in this document were taken with an UNPINNED layer.xclbin and the old harness
+> extraction window. Corrected: 1.7B 20/20, 4B 19-20/20, 8B 18-19/20. I1 is unaffected.
+
 # Qwen3-4B and Qwen3-8B oracle accuracy vs the FLM oracle (20-prompt set) — 2026-09-16
 
 Together with `RESULTS-oracle-1_7b-2026-09-16.md`, this closes the (b) gap the
@@ -38,3 +42,59 @@ Per-row data: `benchmarks/oracle-acc-qwen3-4b-2026-09-16.tsv`,
 - `I1` (`flm_nids` == `nids`) held on all 60 rows across the three models, so the
   oracle and the native arm consumed the same token stream in every comparison — the
   assertion the harness previously only *noted* is now enforced per row.
+
+# CORRECTION (2026-09-18): the 1.7B/4B/8B rows below are SUPERSEDED
+
+Two measurement-condition defects invalidate the rows in this document. They are
+corrected here rather than deleted, because the original numbers were a harness
+artefact, not a model result.
+
+## Defect 1 — layer.xclbin was not pinned (silent garbage on the runlist arm)
+
+`/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-0.6B-NPU2/layer.xclbin` was
+**replaced on 2026-09-18 08:19** — now 401980 B, md5 `fa9f8df2f2b5618a560fd5470104aade`
+— while this repo's per-ctx ELFs are built for the pinned copy in
+`engine/npu/xclbins/flm_models/` (339980 B, md5 `57431faab8593fadbffb5b9d5a9a0735`). The
+engine **auto-selects the amd-oss path** (`91cfc0fd6`), so the runlist arm silently
+produces garbage: @agent-c6b96f measured native **0/20** with FLM still 18/20 and I1 OK.
+Pinning `LAYER_XCLBIN=$ROOT/engine/npu/xclbins/flm_models/<Model>/layer.xclbin` restores a
+coherent stream. **Both oracle harnesses now set that pin** (`oracle_accuracy_model.sh:38-48`,
+`oracle_accuracy_0_6b.sh:39`). The rows below were taken before the pin existed.
+
+## Defect 2 — the harness extraction window
+
+`origin/main`'s harness fixes (#2433/#2434: 4000-character window, per-run scratch,
+answer-region verdict) were not in the harness when these rows were taken; @agent-c6b96f
+adopted them while **keeping our per-row I1 assertion**.
+
+## Corrected scoreboard (pinned layer.xclbin, ntok=128, I1 OK=20 on every model)
+
+| model | FLM oracle | native | source |
+|---|---:|---:|---|
+| Qwen3-0.6B | 17 | **19** | @agent-c6b96f, corrected run |
+| Qwen3-1.7B | 20 | **20** | @agent-c6b96f, corrected run |
+| Qwen3-4B | 20 | 19 | @agent-c6b96f; `d621482f2` records 4B **20/20** |
+| Qwen3-8B | 20 | 19 | @agent-c6b96f; `22d897c63` records 8B **18/20** |
+| Qwen3-VL-4B | 20 | **20** | @agent-c6b96f, corrected run |
+
+## Superseded rows in this document
+
+| model | this doc claimed | status |
+|---|---|---|
+| Qwen3-1.7B | 10/20 vs FLM 9/20 | **superseded** — 20/20 vs 20/20 |
+| Qwen3-4B | 8/20 vs FLM 11/20 | **superseded** — 19-20/20 |
+| Qwen3-8B | 6/20 vs FLM 8/20 | **superseded** — 18-19/20 |
+
+So the "Qwen3-4B and 8B land below the oracle" conclusion drawn from the rows below is
+**wrong**: it was the unpinned `layer.xclbin` plus the old extraction window, not the
+models. The I1 finding is unaffected — I1 held at OK=20/MISMATCH=0 in both the original
+and the corrected runs, and the assertion is now enforced per row.
+
+## Two further conditions for any accuracy run (from @agent-c6b96f)
+
+- **Runs must be SERIAL.** Two concurrent harness runs plus a third engine stall the NPU
+  (TDR → slow fallback, ~900 s/prompt), even though two hwctx run at full speed for
+  throughput.
+- **Llama-3.1-8B is UNVERIFIED.** It hangs on at least one prompt (row 2, 40 ids, no
+  output in 600 s), so the earlier 20/20 claim for it (task-acc-vl-llama, `e060acc4e` /
+  `dac5417f4`) cannot stand as verified.
