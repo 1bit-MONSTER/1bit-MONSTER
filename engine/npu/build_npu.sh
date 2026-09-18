@@ -59,50 +59,71 @@ XRT_INC="/usr/include"
 # the directory happened to already exist on this box.
 mkdir -p "$BUILDDIR"
 
+# ── Header dependencies (the build_npu.sh trap, issue #2601) ────
+# Every engine object below is compiled from a .cpp that includes headers under
+# engine/npu/src and engine/npu/include. The old guard compared only the .cpp's
+# mtime, so a header-only edit silently relinked the OLD object: the build
+# reported success and shipped a binary that did not contain the fix (check with
+# `grep -a <marker> <binary>`, not the script's rc). Treat every header as a
+# dependency of every engine object, and make a failed compile fatal instead of
+# letting the trailing `ls` define the exit status.
+SRC_HEADERS=("$SRCDIR"/src/*.h "$SRCDIR"/include/*.h)
+NPU_INFER_HEADERS=("$NPU_INFER_INC"/*.h)
+stale() {   # stale <object> <dep>...  -> true when a (re)build is needed
+    local o="$1"; shift
+    [ -f "$o" ] || return 0
+    local f
+    for f in "$@"; do
+        [ "$f" -nt "$o" ] && return 0
+    done
+    return 1
+}
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
 # One-time: compile dequantizer
-if [ ! -f "$DEQUANT_O" ] || [ "$DEQUANT" -nt "$DEQUANT_O" ]; then
+if stale "$DEQUANT_O" "$DEQUANT" "${SRC_HEADERS[@]}"; then
     echo "gcc -c -O3 -o $DEQUANT_O $DEQUANT"
-    gcc -c -O3 -o "$DEQUANT_O" "$DEQUANT"
+    gcc -c -O3 -o "$DEQUANT_O" "$DEQUANT" || die "dequant_q4nx.cpp failed to compile"
 fi
 
 # One-time: compile NPU instruction generator
-if [ ! -f "$INSTR_GEN_O" ] || [ "$INSTR_GEN" -nt "$INSTR_GEN_O" ]; then
+if stale "$INSTR_GEN_O" "$INSTR_GEN" "${SRC_HEADERS[@]}"; then
     echo "g++ -c -std=c++26 -O3 -o $INSTR_GEN_O $INSTR_GEN"
     g++ -c -std=c++26 -O3 -fopenmp -I"$SRCDIR"/src -I"$SRCDIR"/include -I$XRT_INC \
-        -o "$INSTR_GEN_O" "$INSTR_GEN"
+        -o "$INSTR_GEN_O" "$INSTR_GEN" || die "gemm_npu_instructions.cpp failed to compile"
 fi
 
 # One-time: compile the Zaya decode path
-if [ ! -f "$ZAYA_DECODE_O" ] || [ "$ZAYA_DECODE" -nt "$ZAYA_DECODE_O" ]; then
+if stale "$ZAYA_DECODE_O" "$ZAYA_DECODE" "${SRC_HEADERS[@]}" "$SRCDIR"/generators/*.h; then
     echo "g++ -c -std=c++26 -O3 -mavx2 -o $ZAYA_DECODE_O $ZAYA_DECODE"
     g++ -c -std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT \
         -I"$SRCDIR"/src -I"$SRCDIR"/include -I"$SRCDIR"/generators \
         -I"$REPO_ROOT"/include -I$XRT_INC \
-        -o "$ZAYA_DECODE_O" "$ZAYA_DECODE"
+        -o "$ZAYA_DECODE_O" "$ZAYA_DECODE" || die "zaya_decode.cpp failed to compile"
 fi
 
 # One-time: compile the runlist whole-layer stack (model.c + runtime_layer + bridge)
-if [ ! -f "$NPU_MODEL_O" ] || [ "$NPU_MODEL_C" -nt "$NPU_MODEL_O" ]; then
+if stale "$NPU_MODEL_O" "$NPU_MODEL_C" "${NPU_INFER_HEADERS[@]}"; then
     echo "gcc -c -O3 -std=c11 -o $NPU_MODEL_O $NPU_MODEL_C"
-    gcc -c -O3 -std=c11 -I"$NPU_INFER_INC" -o "$NPU_MODEL_O" "$NPU_MODEL_C"
+    gcc -c -O3 -std=c11 -I"$NPU_INFER_INC" -o "$NPU_MODEL_O" "$NPU_MODEL_C" || die "npu-infer model.c failed to compile"
 fi
-if [ ! -f "$RUNLIST_RT_O" ] || [ "$RUNLIST_RT" -nt "$RUNLIST_RT_O" ]; then
+if stale "$RUNLIST_RT_O" "$RUNLIST_RT" "${NPU_INFER_HEADERS[@]}"; then
     echo "g++ -c -std=c++17 -O3 -o $RUNLIST_RT_O $RUNLIST_RT"
-    g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_RT_O" "$RUNLIST_RT"
+    g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_RT_O" "$RUNLIST_RT" || die "runtime_layer.cpp failed to compile"
 fi
-if [ ! -f "$RUNLIST_BRIDGE_O" ] || [ "$RUNLIST_BRIDGE" -nt "$RUNLIST_BRIDGE_O" ]; then
+if stale "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE" "${NPU_INFER_HEADERS[@]}" "${SRC_HEADERS[@]}"; then
     echo "g++ -c -std=c++17 -O3 -o $RUNLIST_BRIDGE_O $RUNLIST_BRIDGE"
-    g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE"
+    g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE" || die "npu_runlist_bridge.cpp failed to compile"
 fi
 # bf16 mm bridge (FLM headers + libgemm/libdequant at link time)
-if [ ! -f "$BF16MM_BRIDGE_O" ] || [ "$BF16MM_BRIDGE" -nt "$BF16MM_BRIDGE_O" ] || [ "$SRCDIR/src/npu_engine_bf16_mm.h" -nt "$BF16MM_BRIDGE_O" ]; then
+if stale "$BF16MM_BRIDGE_O" "$BF16MM_BRIDGE" "$SRCDIR/src/npu_engine_bf16_mm.h" "${SRC_HEADERS[@]}"; then
     echo "g++ -c -std=c++17 -O2 -o $BF16MM_BRIDGE_O $BF16MM_BRIDGE"
-    g++ -c -std=c++17 -O2 -I"$SRCDIR/src" -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$BF16MM_BRIDGE_O" "$BF16MM_BRIDGE"
+    g++ -c -std=c++17 -O2 -I"$SRCDIR/src" -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$BF16MM_BRIDGE_O" "$BF16MM_BRIDGE" || die "npu_engine_bf16_mm_bridge.cpp failed to compile"
 fi
 # flm prefill bridge (libqwen3_npu)
-if [ ! -f "$FLM_PREFILL_BRIDGE_O" ] || [ "$FLM_PREFILL_BRIDGE" -nt "$FLM_PREFILL_BRIDGE_O" ]; then
+if stale "$FLM_PREFILL_BRIDGE_O" "$FLM_PREFILL_BRIDGE" "${SRC_HEADERS[@]}"; then
     echo "g++ -c -std=c++17 -O2 -mavx2 -o $FLM_PREFILL_BRIDGE_O $FLM_PREFILL_BRIDGE"
-    g++ -c -std=c++17 -O2 -mavx2 -include climits -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$FLM_PREFILL_BRIDGE_O" "$FLM_PREFILL_BRIDGE"
+    g++ -c -std=c++17 -O2 -mavx2 -include climits -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$FLM_PREFILL_BRIDGE_O" "$FLM_PREFILL_BRIDGE" || die "flm_prefill_bridge.cpp failed to compile"
 fi
 
 # Models to build
@@ -173,16 +194,18 @@ for model in "${MODELS[@]}"; do
     binary="$BUILDDIR/npu_engine_$model"
     echo ""
     echo "--- $model -> $binary ---"
-    $CXX "-DMODEL_$model" "${CXXFLAGS[@]}" -o "$binary" "$SRC" "${ENGINE_OBJS[@]}" "${LIBS[@]}"
+    $CXX "-DMODEL_$model" "${CXXFLAGS[@]}" -o "$binary" "$SRC" "${ENGINE_OBJS[@]}" "${LIBS[@]}" \
+        || die "model $model failed to compile/link"
     ls -lh "$binary"
 done
 
 # Also build a default (qwen3_0_6b) as npu_engine for backward compat
 echo ""
 echo "--- default (qwen3_0_6b) -> $BUILDDIR/npu_engine ---"
-$CXX -DMODEL_qwen3_0_6b "${CXXFLAGS[@]}" -o "$BUILDDIR/npu_engine" "$SRC" "${ENGINE_OBJS[@]}" "${LIBS[@]}"
+$CXX -DMODEL_qwen3_0_6b "${CXXFLAGS[@]}" -o "$BUILDDIR/npu_engine" "$SRC" "${ENGINE_OBJS[@]}" "${LIBS[@]}" \
+    || die "default (qwen3_0_6b) failed to compile/link"
 ls -lh "$BUILDDIR/npu_engine"
 
 echo ""
 echo "=== All builds complete ==="
-ls -lh "$BUILDDIR"/npu_engine*
+ls -lh "$BUILDDIR"/npu_engine* || die "no engine binaries were produced"
