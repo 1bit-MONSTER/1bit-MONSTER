@@ -17,7 +17,7 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 | **Open WebUI** | ✅ Compatible | Point `OPENAI_API_BASE` at the NPU server |
 | **LangChain** | ✅ Compatible | `ChatOpenAI(openai_api_base="http://localhost:8081/v1")` |
 | **Arch (AUR)** | 📋 PKGBUILD ready | `yay -S 1bit-monster-bin` |
-| **Homebrew** | 📋 Formula ready | `brew install 1bit-monster` |
+| **Homebrew** | ⚠️ no formula in the repo — see #2488 | — (the row used to say "📋 Formula ready" and `brew install 1bit-monster`; no formula has ever been in this repo or in a tap) |
 | **Snap** | 📋 snapcraft.yaml ready | `snap install 1bit-monster` |
 
 ### Model coverage

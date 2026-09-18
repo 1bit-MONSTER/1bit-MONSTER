@@ -137,7 +137,10 @@ VLLM_BASE_URL = str(_env_or("BENCH_VLLM_URL",
                             _paths.get("vllm_base_url", "http://127.0.0.1:8000")))
 
 # 1bit-monster zaya_server (the primary engine in this fork of the harness).
-# Built from the repo root with:  cmake --build build --target zaya_server
+# Built from the repo root with:  cmake --build build --target onebin  (→ build/1bit)
+# The path below is the `zaya_server` argv[0] symlink; the dispatcher inside
+# build/1bit needs it because the launch command is `<exe> --model … --port …`
+# with no subcommand. install.sh creates it; a bare cmake build does not.
 ZAYA_SERVER_EXE = (
     _path(_paths.get("zaya_server_exe"), "BENCH_ZAYA_SERVER")
     or (REPO_ROOT / "build" / "zaya_server"))
@@ -473,6 +476,37 @@ def zaya_server_exe_for(backend: str) -> Path:
     spec = BACKENDS.get(backend)
     exe = spec.zaya_exe if spec is not None else None
     return exe or ZAYA_SERVER_EXE
+
+
+def zaya_launch_prefix(backend: str) -> list[str]:
+    """The argv prefix that launches the zaya engine for `backend`.
+
+    The engine is ONE ELF — target `onebin`, emitted as `build/1bit`, dispatched
+    on argv[0] or a leading subcommand (tools/onebin.cpp). The harness launches
+    it as `<exe> --model <file> --port <port>` with no subcommand, so it needs
+    the legacy name, and that name only reaches a handler because install.sh and
+    packaging/Makefile create `build/zaya_server` as an argv[0] symlink. A bare
+    `cmake --build build --target onebin` emits just `build/1bit`, and the
+    harness then died on a missing file with no hint why (issue #2478).
+
+    So: use the configured binary when it is there; when it is the default
+    `zaya_server` path and `1bit` sits beside it, launch `1bit zaya`; otherwise
+    fail with the two commands that fix it, rather than spawning a path that is
+    not there. A *custom* per-backend exe is deliberately not substituted — a
+    missing per-backend build is a configuration error, not a packaging one.
+    """
+    exe = zaya_server_exe_for(backend)
+    if exe.exists():
+        return [str(exe)]
+    if exe.name == "zaya_server":
+        onebin = exe.parent / "1bit"
+        if onebin.exists():
+            return [str(onebin), "zaya"]
+    raise FileNotFoundError(
+        f"zaya engine not found: {exe}\n"
+        f"  build it:  cmake --build build --target onebin   # emits build/1bit\n"
+        f"  or run:    bash install.sh   # also creates build/zaya_server "
+        f"(the argv[0] symlink)")
 
 
 # llama.cpp server launch options.

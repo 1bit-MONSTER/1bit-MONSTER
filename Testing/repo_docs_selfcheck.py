@@ -26,6 +26,10 @@ Checks:
      Testing/) that appear nowhere in the source — a documented knob nothing
      parses. Flags of other people's tools on the same line are ignored.
 
+  7. version-control conflict markers committed anywhere in the tree. Always
+     gated, wherever they sit: unlike a stale path, a marker is never history —
+     it is a merge that did not finish.
+
 Two scopes, because they are different defects. The GATED surface is what a user
 follows — the front page, the guides and wiki, the packaging and site READMEs —
 and a finding there fails the run. Everything else (plans, goals, issue records,
@@ -108,6 +112,11 @@ PLANNED_LINE = re.compile(r"^\s*(?:[-*]\s*)?(?:\d+\.\s*)?(?:Write|Create|Add|Por
 # `feat/jarvis-v2-rewrite`, `fix/…`, `goal/…` on a line mean the line is talking
 # about a branch, the same way a commit hash does.
 BRANCHISH = re.compile(r"\b(?:feat|fix|chore|docs|test|refactor|goal|rebuild|run|census|npu)/[\w.-]+")
+
+# The three conflict markers that always carry a ref name. A bare `=======` is the
+# fourth, but it is also a legal Markdown setext underline, so it is matched
+# separately and only outside Markdown (see check 7).
+CONFLICT_REF = re.compile(r"^(?:<<<<<<< |>>>>>>> |\|\|\|\|\|\|\| )")
 
 
 # The gated surface is what a user follows: the front page, the guides and wiki,
@@ -593,7 +602,35 @@ def main() -> int:
                     continue
                 findings.append((str(wf.relative_to(ROOT)), i, f"invokes missing {ref}"))
 
-    gating = [f for f in findings if gated(f[0], mode)]
+    # 7. Version-control conflict markers, anywhere in the tree.
+    #
+    # Found for real: engine/npu/src/npu_dims.h carried a bare `=======` left by a
+    # two-sided merge resolution. It had also eaten the `#endif` that closed
+    # MODEL_deepseek_v4_flash, so that block ran to EOF and swallowed seven later
+    # model blocks _and_ the `#ifndef MODEL_TAG` guard. gcc refuses the file
+    # outright ("error: version control conflict marker in file" + "unterminated
+    # #ifndef"), and the one tool that parses it,
+    # Testing/npu_insts_lookup_selfcheck.sh, read the next model's dimensions as
+    # this one's — `MODEL_TAG` came out as "qwen3_1_7b" for a deepseek build.
+    #
+    # A lone `=======` is legal Markdown (a setext underline), so outside Markdown
+    # it is a marker while inside Markdown only the lines that carry a ref name
+    # count. Those are never legal prose.
+    markers: list[tuple[str, int, str]] = []
+    for rel in git("ls-files").splitlines():
+        path = ROOT / rel
+        try:
+            if path.stat().st_size > 2_000_000:
+                continue      # generated data; a marker there is not a merge defect
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        markdown = rel.endswith((".md", ".markdown"))
+        for i, line in enumerate(text.splitlines(), 1):
+            if CONFLICT_REF.match(line) or (not markdown and line.rstrip() == "======="):
+                markers.append((rel, i, "version-control conflict marker committed"))
+
+    gating = [f for f in findings if gated(f[0], mode)] + markers
     advisory = [f for f in findings if not gated(f[0], mode)]
 
     for doc, line, msg in advisory:
@@ -603,7 +640,7 @@ def main() -> int:
               f"history, plans and internal design docs; run with --all to gate them too)\n")
 
     if gating:
-        print(f"repo consistency FAILED — {len(gating)} finding(s) in the user-facing docs:")
+        print(f"repo consistency FAILED — {len(gating)} finding(s):")
         for doc, line, msg in gating[:40]:
             print(f"  - {doc}:{line}: {msg}")
         if len(gating) > 40:

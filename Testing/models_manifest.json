@@ -1,5 +1,5 @@
 {
-  "_comment": "MONSTER family manifest (Phase 3, 2026-08-14). One entry per validated family. hf_arch_strings = suffix-stripped family tags (see safetensors_reader.cpp) + HF class names; mapping_target = rcpp_arch_t token; quirk_flags = what backend_generic must handle; e2e_model = HF repo for the real-checkpoint gate; oracle = GGUF for tokenize/detokenize parity. Status: validated | in_progress | pending.",
+  "_comment": "MONSTER family manifest (Phase 3, 2026-08-14). One entry per validated family. hf_arch_strings = suffix-stripped family tags (see safetensors_reader.cpp) + HF class names; mapping_target = the rcpp_arch_t token the census RESOLVES this family to — not necessarily a dedicated token: mimo_v2 carries QWEN2 because no RCPP_ARCH_MIMO exists and the qwen2-derived token is what rcpp_arch_from_string returns for its spellings, while src/model_router.cpp dispatches it by string to the dedicated cpu_mimo_v2 engine (the same split as glm_moe_dsa -> LLAMA via glmmoedsa, and as the Qwen3.5-MoE family in issue #2501); quirk_flags = what backend_generic must handle; e2e_model = HF repo for the real-checkpoint gate; oracle = GGUF for tokenize/detokenize parity. Status: validated | mapped-unvalidated | documented-limitation | in_progress | pending — the first three are the ones in use today, and all five are what Testing/manifest_mapping_selfcheck.py enforces.",
   "families": [
     {
       "family": "llama",
@@ -289,7 +289,7 @@
       "hf_arch_strings": [
         "openelm"
       ],
-      "mapping_target": "LLAMA (load refuses loudly)",
+      "mapping_target": "LLAMA",
       "quirk_flags": {
         "limitation": "heterogeneous per-layer heads/ffn + fused qkv_proj + per-head q/k_norm + transformer.token_embeddings naming \u2014 does NOT fit the uniform generic engine (pilot #14 confirmed 2026-08-14)"
       },
@@ -604,7 +604,7 @@
       "hf_arch_strings": [
         "glm_moe_dsa"
       ],
-      "mapping_target": "GLM",
+      "mapping_target": "LLAMA",
       "quirk_flags": {
         "rope": "interleave-main/halfsplit-indexer",
         "rotate_at_load": false,
@@ -628,7 +628,7 @@
         "mimov2flash",
         "mimo"
       ],
-      "mapping_target": "MIMO",
+      "mapping_target": "QWEN2",
       "quirk_flags": {
         "rope": "partial-first-0.334",
         "rotate_at_load": false,

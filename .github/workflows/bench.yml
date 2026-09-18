@@ -60,26 +60,28 @@ jobs:
             echo "XRT_OK=true" >> $GITHUB_ENV
           fi
 
-      - name: Build dequantizer
-        if: env.XRT_OK == 'true'
-        run: |
-          mkdir -p engine/npu/build
-          g++ -c -O3 -std=c++23 -o engine/npu/build/dequant_q4nx.o engine/npu/src/dequant_q4nx.cpp
-
       - name: Build engine (continuous batch)
         if: env.XRT_OK == 'true'
         run: |
-          # npu_engine_v12.cpp is a struct-only header — the actual engine
-          # with main() is npu_engine_all.cpp
-          g++ -std=c++23 -O3 -march=native -fopenmp -ffast-math \
-            -o engine/npu/build/npu_engine_v12 \
-            engine/npu/src/npu_engine_universal.cpp engine/npu/build/dequant_q4nx.o \
-            engine/npu/src/zaya_decode.cpp \
-            engine/npu/src/gemm_npu_instructions.cpp \
-            npu-infer/src/flm_bridge.cpp \
-            -Iengine/npu/include -Iengine/npu/generators -Inpu-infer/include -Iinclude \
-            -I/opt/xrt/include -Iengine/npu -I. \
-            -L/opt/xrt/lib -lxrt_coreutil -luuid -lm -ldl -lpthread -laiebu
+          # Build the engine through its own CMake target instead of re-listing its
+          # sources here. That list was a hand-maintained copy of
+          # engine/npu/CMakeLists.txt's NPU_ENGINE_SOURCES and build_npu.sh's
+          # ENGINE_OBJS, and it drifted: #2435 added three bridge TUs to both of
+          # those and to neither here, and the only signal was this job failing to
+          # link with 26 undefined references (#2505). Reading the target means a
+          # source added to the engine is compiled here by construction.
+          #
+          # It also replaces a stale copy: this build linked npu-infer/src/flm_bridge.cpp,
+          # which CMakeLists.txt dropped on 2026-08-15 ("no engine code calls
+          # FlmBridge"), and it built with slightly different flags than the engine
+          # that ships. A benchmark should measure the shipped build.
+          #
+          # Cost: 17 s for configure+build here, against ~30 s for the hand-rolled
+          # g++ it replaces. The dequantizer is no longer a separate step — the
+          # target already compiles dequant_q4nx.cpp into the binary.
+          cmake -S engine/npu -B engine/npu/build-cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build engine/npu/build-cmake --target npu_engine_universal -j"$(nproc)"
+          ls -la engine/npu/build-cmake/npu_engine_universal
 
       - name: Benchmark
         if: env.DRIVER_OK == 'true'
@@ -113,8 +115,8 @@ jobs:
           echo "=== NPU Benchmark $(date -u) ==="
           echo "Model: $MODEL_PATH"
           echo "Decode tokens: $DEC"
-          cd engine/npu/build
-          OMP_NUM_THREADS=16 ./npu_engine_v12 "$MODEL_PATH" "$DEC" 2>&1 | tee benchmark.log
+          cd engine/npu/build-cmake
+          OMP_NUM_THREADS=16 ./npu_engine_universal "$MODEL_PATH" "$DEC" 2>&1 | tee benchmark.log
           echo "---"
           grep "ms/tok" benchmark.log || echo "::warning::No ms/tok line found"
 
@@ -123,7 +125,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: benchmark-log
-          path: engine/npu/build/benchmark.log
+          path: engine/npu/build-cmake/benchmark.log
           retention-days: 30
 
       - name: Update BENCHMARKS.md timestamp

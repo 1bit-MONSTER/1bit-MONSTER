@@ -178,16 +178,39 @@ def _open_draft_pr(arch, target, models):
     # its branch. (`finally` below is what guarantees it.)
     orig_branch = _git_out(["git", "symbolic-ref", "-q", "--short", "HEAD"])
     orig_head = _git_out(["git", "rev-parse", "HEAD"])
+    # False until the alias is safely committed on the branch. The distinction
+    # matters in `finally`: an uncommitted alias must be thrown away, a committed
+    # one must not be.
+    committed = False
     try:
+        # Base the branch on the PR's base, NOT on whatever HEAD this run happens to
+        # have. In CI the checkout is fresh main, but a run outside CI inherits the
+        # local checkout's age, and a branch forked from an old HEAD presents a diff
+        # full of squash-merge noise around a one-line change: #2443/#2444 each showed
+        # 18 files for one line, 17 of them byte-identical to main (issue #2498). The
+        # stale base also fed _apply_alias a stale header, so a class main had mapped
+        # since the fork looked unmapped and was re-proposed.
+        #
+        # ORDER MATTERS: the apply has to come AFTER this switch. `git switch` refuses
+        # to carry a modified file whose incoming version differs, and bitnet_model.h
+        # is exactly that file — applying first makes the switch fail with "local
+        # changes would be overwritten", which is how this was first attempted.
+        #
+        # `-C` still creates the branch or rebuilds one a previous run left behind
+        # (that case used to fall through to a commit with nothing staged and fail).
+        for cmd in (["git", "fetch", "--quiet", "origin", "main"],
+                    ["git", "switch", "--quiet", "-C", branch, "origin/main"]):
+            r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+            if r.returncode != 0:
+                text = (r.stderr or r.stdout).strip()
+                print(f"[autopr] cmd failed: {' '.join(cmd)}\n{text[:300]}",
+                      file=sys.stderr)
+                return None
         if not _apply_alias(arch, target):
             print(f"[autopr] {arch}: already mapped in bitnet_model.h — "
                   f"nothing to propose", file=sys.stderr)
             return None
         cmds = [
-            # -C: create the branch, or rebuild it from the current HEAD when a
-            # previous run left one behind (that case used to fall through to a
-            # commit with nothing staged and fail).
-            ["git", "switch", "-C", branch],
             ["git", "add", os.path.relpath(ENGINE, ROOT)],
             ["git", "commit", "-m", f"fix(census): auto-propose {arch} -> {target}"],
             ["git", "push", "-u", "origin", branch],
@@ -198,6 +221,8 @@ def _open_draft_pr(arch, target, models):
         r = None
         for cmd in cmds:
             r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+            if cmd[1] == "commit" and r.returncode == 0:
+                committed = True
             if r.returncode != 0 and cmd[1] == "push":
                 # A rebuilt bot branch is usually behind its remote; retry once
                 # with a lease — census/auto-map-* belongs to this tool alone.
@@ -223,7 +248,20 @@ def _open_draft_pr(arch, target, models):
             return None
         return out if parsed.scheme == "https" and parsed.netloc == "github.com" else None
     finally:
-        # Hand the checkout back exactly as we found it.
+        # Give the checkout back exactly as it was found.
+        if not committed:
+            # The alias is in the index AND the worktree. Both must go, or the
+            # next actor in this workflow inherits them and the switch below
+            # cannot even proceed. That is not hypothetical: on 2026-09-17 the
+            # autopr staged `language` and `picolm`, its commit failed for want
+            # of a git identity, and the poster step's bare `git commit` then
+            # swept both aliases into a blog-post PR (#2450). `--source=HEAD`
+            # is the pre-commit tree here, because a failed commit leaves HEAD
+            # untouched.
+            subprocess.run(["git", "restore", "--staged", "--worktree",
+                            "--source=HEAD", "--",
+                            os.path.relpath(ENGINE, ROOT)],
+                           cwd=ROOT, capture_output=True)
         if orig_branch:
             subprocess.run(["git", "switch", "--quiet", orig_branch], cwd=ROOT,
                            capture_output=True)

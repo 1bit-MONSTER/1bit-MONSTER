@@ -22,7 +22,7 @@
  * Build: g++ -std=c++17 -O3 -I include -I src tools/tq2_to_q4nx.cpp \
  *            src/onebp_model.cpp -o build/tq2_to_q4nx -lpthread
  *
- * Then:  NPU_MODEL_PATH=model.q4nx ./build/unified_server -w models/ -p 8088
+ * Then:  NPU_MODEL_PATH=model.q4nx ./build/1bit unified -w models/ -p 8088
  */
 #include <cstdio>
 #include <cstdlib>
@@ -322,6 +322,6 @@ int main(int argc, char** argv) {
 
     printf("\n=== DONE: %s (%.1f MB, %d tiles) in %.1f seconds ===\n",
            argv[2], fsz / 1e6, total_tiles, sec);
-    printf("Run: NPU_MODEL_PATH=%s ./build/unified_server -w models/ -p 8088\n", argv[2]);
+    printf("Run: NPU_MODEL_PATH=%s ./build/1bit unified -w models/ -p 8088\n", argv[2]);
     return 0;
 }

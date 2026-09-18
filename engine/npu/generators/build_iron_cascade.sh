@@ -72,7 +72,15 @@ grep -q "cascade_flow" "$W/design.mlir" || { echo "ERROR: no cascade_flow in des
 
 # 4. aiecc → xclbin (peano flow; the cascade kernels are peano-only)
 export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
-export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/iron/lib/python3.14/site-packages
+# iron's venv already provides aie + ml_dtypes through its own aie.pth
+# (mlir_aie/python). Prepending install_tmp/python here SHADOWED iron's
+# bindings, so iron's aiecc was handed a different tree's dialect -- which is
+# why these scripts failed with "Error parsing MLIR file". With the shadowing
+# gone the parse succeeds and the next blocker is explicit: this iron's aiecc
+# does not accept --aie-generate-xclbin / --aie-generate-npu-insts, so these
+# scripts need an iron build that has them. See the same-root note in
+# run_build.sh.
+export PYTHONPATH=/home/bcloud/iron/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs:/home/bcloud/iron/lib/python3.14/site-packages/aie/_mlir_libs
 mkdir -p "$G/../xclbins"
 cd "$W"

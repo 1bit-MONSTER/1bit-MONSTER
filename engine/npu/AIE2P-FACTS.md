@@ -104,6 +104,47 @@ def rni_bf16(x):  # x: fp32 ndarray -> uint16 bf16 values, RNI rounding
   issues mailbox calls to the dead firmware that never return. The driver's
   `aie2_hw_reset()` self-heal only fires on job timeouts, not release-path ioctl
   hangs — recovery is reboot-only.
+- **⚠️ Candidate driver cause (2026-09-17, unverified — not yet reproduced).** The
+  "every mailbox call fails / reboot-only" presentation above has a known *upstream
+  driver* cause that this box's module predates, so the firmware-degradation
+  attribution may be premature. `amd/xdna-driver` `ebd297c` (2026-09-01) fixes
+  exactly this shape:
+
+  > `xdna_send_msg_wait()` … returns `-ETIME` without ever looking at the ring
+  > buffer, so a response that was written but never announced is never seen …
+  > `aie_send_mgmt_msg_wait()` responds to it by calling `aie_destroy_chann()`, so
+  > **one missed interrupt on a command that actually completed tears down the
+  > management mailbox and leaves `aie->mgmt_chann` NULL, after which every
+  > management message returns `-ENODEV`** until something restarts the channel.
+  > Firmware is reported to complete some commands, **SUSPEND in particular**, by
+  > writing the response into the ring buffer **without raising the completion
+  > interrupt**.
+
+  The chain is present verbatim in the tree our module was built from
+  (`src/driver/amdxdna/amdxdna_mailbox_helper.c:56-59` returns `-ETIME` with no
+  ring drain; `aie2_message.c:62-65` then stops, destroys and NULLs `mgmt_chann`,
+  and the guard at `:57` returns `-ENODEV` forever after). **Verified check** —
+  the running module lacks the fix:
+
+  ```
+  $ strings /lib/modules/$(uname -r)/kernel/drivers/accel/amdxdna/amdxdna.ko \
+        | grep -c xdna_mailbox_drain_channel
+  0
+  ```
+
+  Not reproduced, and not a refutation of the firmware account — both could
+  contribute. But it means `_exit(0)` teardown workarounds and "recovery is
+  reboot-only" may be consequences of a since-fixed driver bug rather than
+  properties of the hardware. Test = build/load `drivers/accel/amdxdna/` at
+  current head and see whether the wedge reproduces. Tracked in #2459; see also
+  [#2459 comment 5718446966](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/2459#issuecomment-5718446966).
+
+- **Which build is doing it — checkable, and checked.** The installed module is the
+  out-of-tree tree upstream deleted in `813e0bf` (compile path `src/driver/amdxdna`),
+  built 2026-09-01, and nothing upstream has landed in that tree since — so the chain
+  above predates `ebd297c` (ring-buffer check before a mailbox timeout) and `77e5325`
+  (MMU-notifier unregister before BO removal). `scripts/npu-driver-reapply.sh` prints
+  which tree the installed module came from; see #2459.
 - Fix: default teardown flushes stdio explicitly then `_exit(0)` (no atexit /
   static dtors — same pattern as npu_engine_universal and the #1426 fix). Set
   `NPU_CLEAN_TEARDOWN=1` to run the real destructors and return normally (safe

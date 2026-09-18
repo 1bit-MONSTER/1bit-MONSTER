@@ -55,8 +55,8 @@ int main() {
     auto m = pl.run(gpu_fn, npu_fn);
     fprintf(stderr, "\nResult: %.2f ms total (%.2f ms/layer)\n",
             m.total_ms, m.total_ms / cfg.layer_count);
-    fprintf(stderr, "Efficiency: overlap efficiency (virtual time) = %.1f%%\n",
-            m.overlap_efficiency / m.total_ms / 10.0f);
+    fprintf(stderr, "Overlap share of wall clock = %.1f%%\n",
+            m.overlap_efficiency * 100.0);
 
     // Verify slot data is reachable (zero-copy proof: write host, read via GPU ptr).
     // Already proven in test_zero_copy — here just ensure we can iterate.

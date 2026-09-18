@@ -10,7 +10,8 @@ License (see upstream `LICENSE`). Upstream's copyright notice is retained here;
 modifications are the 1bit-monster additions listed below.
 
 - the **`zaya` engine** (`engines.py` → `ZayaServer`): launches
-  `build/zaya_server` against any model the harness can point at,
+  `build/zaya_server` (the argv[0] symlink to `build/1bit`; equivalently
+  `build/1bit zaya`) against any model the harness can point at,
 - **`timings` support in zaya_server itself** (`tests/zaya_server.cpp`): the
   server now emits the llama.cpp-compatible `timings.predicted_per_second`
   block in its `/v1/chat/completions` responses, so zaya's decode rate is
@@ -25,7 +26,7 @@ modifications are the 1bit-monster additions listed below.
 
 | Engine | Launch | Notes |
 |---|---|---|
-| `zaya` | `build/zaya_server --model <file> --port 8090` | Primary engine under test. Auto-detects its backend (HIP > Vulkan > Zamba2 > GGUF-CPU > CPU). Accepts `.gguf` (Qwen2/Qwen3/Mamba families) and native `.1bp`/`.h1b` files. |
+| `zaya` | `build/zaya_server --model <file> --port 8090` (symlink → `build/1bit zaya`) | Primary engine under test. Auto-detects its backend (HIP > Vulkan > Zamba2 > GGUF-CPU > CPU). Accepts `.gguf` (Qwen2/Qwen3/Mamba families) and native `.1bp`/`.h1b` files. |
 | `llamacpp` | vendored `third_party/llama.cpp` `llama-server` | Reference engine; emits its own server-side `timings`. |
 
 ## Honest measurement caveats (zaya)
@@ -53,7 +54,10 @@ zaya currently runs **text / multi_turn scenarios only**; `function_call`,
 
 ```bash
 # 0. Build both engines
-cmake --build build --target zaya_server -j8          # zaya
+cmake --build build --target onebin -j8               # zaya = `1bit zaya`
+# The harness launches build/zaya_server — an argv[0] symlink to build/1bit that
+# install.sh creates. A bare cmake build yields build/1bit only, so create it if
+# you skipped install.sh:  ln -sf 1bit build/zaya_server
 # (llama-server: see third_party/llama.cpp build instructions)
 
 # 1. Full matrix (defaults: zaya + llamacpp, hip backend, small models)

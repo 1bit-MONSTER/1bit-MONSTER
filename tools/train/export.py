@@ -173,7 +173,7 @@ def main():
         gguf_files = list(export_dir.glob("*.gguf"))
         if gguf_files:
             print(f"[1bit/export] ✅ GGUF: {gguf_files[0]}")
-            print(f"[1bit/export] Load with: ./build/zaya_server --model {gguf_files[0]}")
+            print(f"[1bit/export] Load with: ./build/1bit zaya --model {gguf_files[0]}")
 
     elif args.format in ("merged-16bit", "merged-4bit"):
         save_method = "merged_16bit" if args.format == "merged-16bit" else "merged_4bit"
