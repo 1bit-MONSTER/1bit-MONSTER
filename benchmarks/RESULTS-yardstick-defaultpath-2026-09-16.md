@@ -292,3 +292,44 @@ The prefill ratios, the TTFT direction, and the **gate** (the bf16 arm's token s
 the byte-exact `NPU_RUNLIST=1` arm at 1k) are all unaffected — those were not warm-up
 measurements. The `layer.xclbin` pin requirement stands, and is now engine-level
 (`resolve_layer_xclbin()`, `2101ec20e`).
+
+
+## Update (2026-09-18): the lost overlap is FIXED, and 1k now clears all three clauses for three models
+
+The "lost-overlap" item above is not just withdrawn — it is **fixed**. `efb35df4c`: the unified
+(bf16-prefill → runlist-decode) path called `RuntimeLayerEngine::forward()`, which is
+single-slot build → execute → wait, so **every token paid the ~1.0-1.5 ms host build**. It now
+uses the same alternating-slot schedule as `npu_runlist_decode` (five thin bridge wrappers:
+`apply_rope` / `build` / `execute` / `wait` / `get_logits`), with `NPU_UNIFIED_SERIAL=1`
+keeping the old path for A/B in the same binary.
+
+Same-window A/B, Qwen3-0.6B, 1k, 32 decode tokens, one binary:
+
+| schedule | ms/tok | tok/s |
+|---|---|---:|
+| **overlapped (new default)** | 12.6, 12.7 | **80, 78** |
+| serial (`NPU_UNIFIED_SERIAL=1`) | 13.8, 13.9 | 72, 72 |
+| FLM on-box (this window) | — | 72.33 |
+
+The 32-token streams are **identical between the two schedules**, which is the gate.
+
+It generalises (`c97e92f44`) to the H=2560 pair:
+
+| model | overlapped ms/tok | native tok/s | FLM (earlier window) |
+|---|---|---:|---:|
+| Qwen3-4B | 52.2, 52.3 | **19.2, 19.1** | 18.70 |
+| Qwen3-VL-4B | 52.3, 52.6 | **19.1, 19.0** | 18.63 |
+
+**So at 1k, Qwen3-0.6B, Qwen3-4B and Qwen3-VL-4B now clear all three criterion-(c) clauses**
+— prefill 1.33x / 1.33x / 1.21x, TTFT faster, decode 1.04-1.10x / ~1.03x / ~1.03x.
+
+**Caveat, stated by the author:** only 0.6B had a same-window A/B; the H=2560 overlapped +
+FLM figures come from an **earlier window**, so those two rows are cross-window and inherit the
+session variance (runlist exec has varied up to ~27% between sessions).
+
+**Still open for (c):** 8k — 8B and Llama invert there, and 4B/VL-4B at 8k remains ungated
+(`NPU_PROMPT_MAX` clamp plus the `ctx=8194` ELF window) — and 1.7B/8B/Llama decode at 1k needs
+re-measuring with repeats.
+
+If these rows are re-taken, the decode column should move up simply because the unified path is
+now the overlapped one; the pure-runlist lane in the gate arm was already overlapped.
