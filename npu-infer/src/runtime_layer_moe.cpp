@@ -386,42 +386,45 @@ bool MoERuntimeLayerEngine::logits_host(float* out, int vocab) {
 
     for (int i = 0; i < vocab; i++) out[i] = 0.0f;
 
-    // Stream one 8704-byte source row at a time: each yields TR output rows for one
-    // tile_col slice of the hidden dim. No full dequantized copy (that would be 2 GB).
-    for (long long ir = 0; ir < i8_rows; ir++) {
-        const uint8_t* rd = data + ir * ROW_BYTES;
-        const uint8_t* scales = rd;                       // 256 bf16, [0,512)
-        const int8_t*  values = (const int8_t*)(rd + 512); // 8192 signed int8
-        const long long tile_row = ir / n_tile_cols;
-        const int tile_col = (int)(ir % n_tile_cols);
-        const int hbase = tile_col * TC;
-
+    // Parallelize over tile_row: each tile_row owns TR output rows and reads
+    // n_tile_cols consecutive ir blocks (one per 256-wide hidden slice). No two
+    // threads write the same out[v], so this is race-free.
+    const long long n_tile_rows = i8_rows / n_tile_cols;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (long long tile_row = 0; tile_row < n_tile_rows; tile_row++) {
         for (int lr = 0; lr < TR; lr++) {
             const long long v = tile_row * TR + lr;
             if (v >= (long long)vocab) continue;
-            const int8_t* vrow = values + (size_t)lr * TC;
-            // 8 group scales (one per 32-col group), hoisted out of the col loop.
-            // The old code recomputed bf16_to_f32 + isfinite + fabs once PER COLUMN
-            // (256x per row) even though the scale only changes every 32 columns.
-            float gscale[TC / 32];
-            for (int g = 0; g < TC / 32; g++) {
-                uint16_t sb; memcpy(&sb, scales + (size_t)(g * 32 + lr) * 2, 2);
-                gscale[g] = bf16_to_f32(sb);
-                if (!std::isfinite(gscale[g]) || std::fabs(gscale[g]) > 100.0f) gscale[g] = 0.0f;
-            }
             float acc = 0.0f;
-            for (int g = 0; g < TC / 32; g++) {
-                const int8_t* gv = vrow + (size_t)g * 32;
-                const float* gh = hid.data() + (size_t)hbase + (size_t)g * 32;
-                for (int c = 0; c < 32; c++)
-                    acc += gh[c] * ((float)gv[c] * gscale[g]);
+            for (int tile_col = 0; tile_col < n_tile_cols; tile_col++) {
+                const long long ir = tile_row * n_tile_cols + tile_col;
+                const uint8_t* rd = data + ir * ROW_BYTES;
+                const uint8_t* scales = rd;                       // 256 bf16, [0,512)
+                const int8_t*  values = (const int8_t*)(rd + 512); // 8192 signed int8
+                const int hbase = tile_col * TC;
+                const int8_t* vrow = values + (size_t)lr * TC;
+                // 8 group scales (one per 32-col group), hoisted out of the col loop.
+                float gscale[TC / 32];
+                for (int g = 0; g < TC / 32; g++) {
+                    uint16_t sb; memcpy(&sb, scales + (size_t)(g * 32 + lr) * 2, 2);
+                    gscale[g] = bf16_to_f32(sb);
+                    if (!std::isfinite(gscale[g]) || std::fabs(gscale[g]) > 100.0f) gscale[g] = 0.0f;
+                }
+                for (int g = 0; g < TC / 32; g++) {
+                    const int8_t* gv = vrow + (size_t)g * 32;
+                    const float* gh = hid.data() + (size_t)hbase + (size_t)g * 32;
+                    for (int c = 0; c < 32; c++)
+                        acc += gh[c] * ((float)gv[c] * gscale[g]);
+                }
             }
-            // ACCUMULATE, not assign: each output row v is visited once per
-            // tile_col (n_tile_cols = H/256 times), each covering a 256-wide
-            // slice of the hidden dim. `out[v] = acc` kept only the LAST slice
-            // (tile_col = n_tile_cols-1) and silently dropped the other 7/8 of
-            // the hidden dot product, so the logits were finite but wrong.
-            out[v] += acc;
+            // Each output row v is now written exactly once: the acc above sums
+            // over ALL n_tile_cols hidden slices (the original `out[v] = acc` in a
+            // per-ir loop kept only the LAST tile_col slice and silently dropped
+            // the other 7/8 of the hidden dot product, so the logits were finite
+            // but wrong).
+            out[v] = acc;
         }
     }
     return true;

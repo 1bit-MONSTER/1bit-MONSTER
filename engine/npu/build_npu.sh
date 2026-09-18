@@ -120,8 +120,8 @@ if stale "$RUNLIST_RT_O" "$RUNLIST_RT" "${NPU_INFER_HEADERS[@]}"; then
     g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_RT_O" "$RUNLIST_RT" || die "runtime_layer.cpp failed to compile"
 fi
 if stale "$RUNLIST_MOE_O" "$RUNLIST_MOE" "${NPU_INFER_HEADERS[@]}"; then
-    echo "g++ -c -std=c++17 -O3 -o $RUNLIST_MOE_O $RUNLIST_MOE"
-    g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_MOE_O" "$RUNLIST_MOE" || die "runtime_layer_moe.cpp failed to compile"
+    echo "g++ -c -std=c++17 -O3 -fopenmp -o $RUNLIST_MOE_O $RUNLIST_MOE"
+    g++ -c -std=c++17 -O3 -fopenmp -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_MOE_O" "$RUNLIST_MOE" || die "runtime_layer_moe.cpp failed to compile"
 fi
 if stale "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE" "${NPU_INFER_HEADERS[@]}" "${SRC_HEADERS[@]}"; then
     echo "g++ -c -std=c++17 -O3 -o $RUNLIST_BRIDGE_O $RUNLIST_BRIDGE"
