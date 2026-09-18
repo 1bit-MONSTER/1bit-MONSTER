@@ -513,7 +513,8 @@
           <pre class="term-body"><code><span class="c"># build from source: no installer yet</span>
 $ git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 $ cd 1bit-MONSTER &amp;&amp; cmake -B build &amp;&amp; cmake --build build
-$ <span class="cmd">./build/1bit</span> zaya -m model.1bp -p <span class="s">"Hello world"</span>
+$ <span class="cmd">./build/1bit</span> zaya --model model.1bp   <span class="c"># serves on :8088</span>
+$ curl -s localhost:8088/completion -d <span class="s">'{"prompt":"Hello world","n_predict":32}'</span>
 $<span class="caret"></span></code></pre>
         </div>
       </div>
