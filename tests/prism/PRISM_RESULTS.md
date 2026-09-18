@@ -560,7 +560,7 @@ that has now retired three mechanisms, applied to their own.
 | launch cost, trivial kernel `<<<1,32>>>` | 1.826 us/launch over 20000 launches | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP trivial-kernel loop \| strixhalo-quiet \| - \| - \| 2026-09-18]` |
 | launch cost, realistic shape `<20,256>`, n=5120 | 1.984 us/launch over 20000 launches | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP trivial-kernel loop \| strixhalo-quiet \| - \| - \| 2026-09-18]` |
 | host time to issue a token | 1541 dispatches x that rate = 2.8-3.1 ms against 29.5 ms of GPU work per token | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
-| Q1_0 GEMV floor at the box triad | 18.1 ms for 3.80 GB at ~210 GB/s; measured in-situ 21.2 ms = 85% of the floor rate | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from rocprofv3 and hip_bw_probe \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| Q1_0 GEMV floor at the box triad - whole-pack basis (the GEMV-weights-only basis gives 17.16 ms) | 18.0 ms for 3.78 GB payload at ~210 GB/s; measured in-situ 21.2 ms is about 85% of the floor rate | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from rocprofv3 and hip_bw_probe \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
 | non-GEMV budget the gate leaves, if the GEMV reaches its floor | 5.7 ms, i.e. non-GEMV must fall by about a third | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
 | same, if the GEMV does not improve | 2.6 ms, i.e. non-GEMV must fall by about two thirds | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
 | GEMV at floor, non-GEMV untouched | 26.5 ms = 37.7 tok/s - **still short of the gate** | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
@@ -651,7 +651,7 @@ isolated gain survives inside the loop, which is exactly where the tax lives.
 | the three kernel wins (GDN, rmsnorm, FWHT) in the wall | Q1_0 read 29.6 ms here against 29.6 ms in the earlier load-2.2 window, so the measured kernel win did not appear; load was 11.5 against 2.2 | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP backend, two windows \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | in-situ terms now | GEMV ~20.0 ms, non-GEMV ~4.7-5 ms, wall 29.6 ms | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
 | GEMV floor at this triad | 16.9 ms for 3.60 GB at 213 GB/s; floor + current non-GEMV = 21.6-21.9 ms, which would clear the 23.81 ms the gate allows | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
-| pack size discrepancy, unresolved | this lane's records use 3.80 GB file / 3.782 GB payload; the peer used 3.60 GB in the floor arithmetic | `[Bonsai-27B-Q1_0 \| Q1_0 \| container metadata vs peer figure \| cpu-host \| - \| - \| 2026-09-18]` |
+| pack size discrepancy | **RESOLVED - see section 4g**: three defensible figures (3.603 GB GEMV weights only, 3.78 GB payload, 4.04 GB file), reconciled through the embedding gather, and every effective-GB/s row now names its basis | `[Bonsai-27B-Q1_0 \| Q1_0 \| container metadata vs peer figure \| cpu-host \| - \| - \| 2026-09-18]` |
 
 **The wall did not move and no improvement is claimed** (row above). Three kernel wins with measured in-situ gains
 produced no change in the wall on a busier box, so the box tax absorbed what the kernels gave back - and the peer
