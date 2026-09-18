@@ -95,6 +95,13 @@ jobs:
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path || '' }}
           DEC: ${{ github.event.inputs.decode_tokens || '32' }}
+          # The engine resolves xclbins through NPU_XCLBIN_DIR when it is set, and otherwise
+          # through an installed layout — `~/.local/share/1bit-monster/xclbins`, which on this
+          # runner is EMPTY (0 files). That is why every candidate failed with `FAIL QKV`
+          # (run 35299693789) even though the repo ships the artifacts they need: 374 xclbins,
+          # including the complete Qwen3-4B set (QKV K2560 N6144, O K2560 N2560, G/U K2560
+          # N9728, D K9728 N2560). The job builds from the repo, so it has to read from it.
+          NPU_XCLBIN_DIR: ${{ github.workspace }}/engine/npu/xclbins
         run: |
           # Candidate models. The list is ordered, but "the file exists" is NOT the property
           # that decides whether this job can measure anything: a model whose shape has no
