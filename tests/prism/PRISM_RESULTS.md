@@ -135,7 +135,9 @@ deliverable constraint is unchanged.
 | Q1_0 GEMV, dp4a path | 223.4 GB/s, corr 0.999996 vs f64 CPU dot | - | approximate: int8 activations | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP prism_gemv_dp4a.hip \| strixhalo-quiet \| - \| synthetic x \| 2026-09-18]` |
 | PTQ1_0 extracted int8 dot | 122.3 GB/s | - | too slow for its gate | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| HIP extracted int8 dot \| strixhalo-quiet \| - \| synthetic x \| 2026-09-18]` |
 | PTQ1_0 budget vs that dot | 48.7 ms needed, 37.0 ms allowed; needs >=160.6 GB/s aggregate | - | **infeasible on this dot** | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| derived \| strixhalo-quiet \| - \| - \| 2026-09-18]` |
-| Q1_0 non-GEMV share of decode | effective 129.2 GB/s vs its own GEMV 223.4 GB/s = 42% of decode | - | the remaining distance | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a forward vs GEMV bench \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| Q1_0 in-situ split, same binary and window (weight GEMVs skipped by a diagnostic hook, reverted after) | full 29.5 ms/token; weight GEMVs 21.1 ms (= 180.1 GB/s aggregate); all other kernels + launches 8.4 ms | - | measured in-situ, not standalone | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a forward with and without GEMVs \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| Q1_0 dp4a bandwidth, standalone per tensor | lm_head 201.1, ssm_out 235.8, ffn_down 335.6, ffn_gate 249.6, ffn_up 246.0 GB/s | - | in-situ aggregate is 180.1 GB/s, so the loss is the activation-quant pass + dependency + launches, not the dot | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP prism_gemv_dp4a.hip \| strixhalo-quiet \| - \| synthetic x \| 2026-09-18]` |
+| Q1_0 gate arithmetic (gate needs 23.81 ms/token) | GEMV at 250 GB/s = 15.2 ms, + 8.4 ms non-GEMV = 23.6 ms -> 42.4 tok/s; with non-GEMV at 2.5 ms -> 17.7 ms -> 56.5 tok/s | - | **reachable by either lever alone** | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 
 **PQ2_0 is MET**, on a gate-clearing decode in a window whose triad cleared the quiet threshold on both sides, with the
 fork oracle and the eleven-position CPU-vs-device greedy comparison green in that same window. Margin: one
@@ -160,9 +162,22 @@ where the float tile kernel was exact, because activations are int8-quantized in
 row above). Kernel-level exactness is therefore no longer the correctness gate for this path - the fork
 oracle and the CPU-vs-device greedy comparison are, and for the MET above both ran in-window.
 
-**What is left for Q1_0 is not the weight path.** The remaining distance is GDN, attention, FWHT and launch
-overhead (share row above). The peer's next two items - measured per-kernel attribution, and a dp4a PTQ1_0
-dot - are the plan.
+**Superseding the earlier framing of Q1_0's residual (my estimate, now replaced by measurement).** The
+non-GEMV share was estimated from an aggregate; it is now measured in-situ (split row above), and the same
+run shows the in-situ GEMV aggregate sitting below the dot's standalone rate (per-tensor row above). The
+remaining distance is therefore *both* the machinery around the dot - activation quant, dependency, launch
+overhead - and the non-GEMV kernels, and either lever alone clears the Q1_0 gate (arithmetic row above). The
+peer's next extraction targets exactly that machinery: the fork's fused multi-GEMV
+(`vec_dot_ptq1_0_q8_1_multi<ncols_dst>`), one launch and one activation quant feeding several matvecs, which
+maps onto our gate+up pair and the four GDN GEMVs that share a single activation buffer. PTQ1_0's own dp4a dot
+remains a separate item.
+
+**Retraction recorded from the peer - their second, and the fourth instrument fault of the day.** The
+non-GEMV figure they were about to send was wrong: a standalone dummy-buffer harness had three kernels
+early-returning (FWHT, GDN recurrence and the ssmout permutation all reported near-zero), so it undercounted
+badly. The rows above come from the real forward instead. Note the shape of the error - it is the same one I
+made with the no-decode dummy: **a harness that does not do the real work cannot bound the real path.** Rule
+recorded: in-situ for attribution, standalone only for comparing kernels against each other.
 
 **Result: MISSED, and it is a kernel limit, not a measurement artifact.** The tile GEMV's own best is the
 section-3 row tagged `[3-packs | verbatim | HIP prism_gemv_tile.hip | strixhalo-unknown | - | synthetic x | 2026-09-18]`;
