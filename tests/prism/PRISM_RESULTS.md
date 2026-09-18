@@ -58,6 +58,8 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | bwprobe triad after the run, 128/256/512/1024 MB | 219.5 / 214.9 / 208.7 / 204.6 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad, @agent-1141bd interleaved-A/B window (before -> after) | 211.2-220.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad, @agent-1141bd multi-GEMV window 15:07 (before -> after) | 210.8-213.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
+| triad, @agent-1141bd PTQ1_0-dot window 15:13, 256 MB before -> after | 203.5-215.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
+| triad sweep, same window, lower sizes AFTER the run - the box drifted mid-run | 180.9-192.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
@@ -180,6 +182,42 @@ precisely that fix, and it bought only the low-single-digit-percent win above - 
 confirmed**, and the right next step is to measure the quant kernel's own time and the launch count directly,
 rather than to invest further in fusion on an assumption. This is the third time today that a plausible
 mechanism needed a measurement before belief.
+
+### PTQ1_0 per-block dp4a dot round (883535b89) - the round's real gate move
+
+The dot that was ported first was the fork's *scalar* HIP branch of `vec_dot_ptq1_0_q8_1`; the **multi**
+variant's per-block path is a different implementation and does suit our trit order, which is what the pack
+needed. Portability work, recorded because it is the non-obvious part: four qs bytes are widened into 16-bit
+lanes with `__byte_perm` so the multiply-by-three cannot carry across bytes, each carry becomes the next base-3
+trit, and four trits feed ONE `sudot4` against the int8 activations. The fork's per-byte `__vsub4` does not
+exist in HIP; since the digit bytes are 0..2 the peer emulates it with the no-borrow SWAR decrement
+`((q | 0x80808080) - 0x01010101) ^ 0x80808080`, verified against the f64 CPU dot within the same
+approximate-dot tolerance as Q1_0 - so the fork-oracle and greedy-sequence gates remain the correctness gates
+for this pack too.
+
+| measurement | value | tag |
+|---|---|---|
+| isolated dot rate, PTQ1_0 tensors: ffn_gate / ffn_down / output.weight | 122.3 -> 159.0 / 264.5 / 194.5 GB/s | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| HIP per-block dp4a dot \| strixhalo-quiet \| - \| synthetic x \| 2026-09-18]` |
+| end-to-end decode, same window | 57.6 -> 43.5 ms/token = 17 -> 23 tok/s = 85% of gate (was 63%) | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| HIP per-block dp4a forward \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| PTQ1_0 dot ALONE vs its gate budget | 37.42 ms for 5.95 GB at 159.0 GB/s vs 37.04 ms allowed - still 0.38 ms short, end-to-end short by 6.46 ms | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| derived \| strixhalo-quiet \| - \| - \| 2026-09-18]` |
+| same-window correctness | fork oracle 5/5 on all three packs, compare_gen ok on all three | `[3-packs \| verbatim \| HIP forward vs CPU floor + fork oracle \| strixhalo-quiet \| 11 \| capital-of-France \| 2026-09-18]` |
+
+**PTQ1_0 is the round's real gain** and it is corroborated three ways rather than by the bracket alone: the
+isolated dot numbers above, a decode reading in a plainly busy window, and the four-gate run itself. **But the
+dot alone is still fractionally over budget** (row above): at the new rate the weights by themselves exceed the
+time the gate allows, so PTQ1_0 still needs a faster dot, or a faster dot plus non-GEMV work - it is no longer
+infeasible, it is short.
+
+**Drift in that window, recorded rather than ignored.** The bracketing triad reading cleared the threshold on
+both sides, but the lower-size sweep on the *after* side fell below it mid-run (busy-tagged row in section 4).
+The Q1_0 and PQ2_0 readings taken in that same run are therefore drift-depressed, and the canonical quiet
+values remain the previous window block's - so this round's claim is PTQ1_0's, not a Q1_0 or PQ2_0 movement. The peer stated this
+before I could find it, which is the standard this lane is holding to.
+
+**Pre-registered next step, with its own falsification condition.** Rather than another fusion, the peer is
+measuring in-situ the two quantities the quant/launch story never had: the activation-quant kernel's own time
+and the launch count per token. Their stated condition, recorded here so it cannot be quietly dropped: if the
+quant turns out to be small and the launches are not the cost, the story is dead and they will say so.
 
 **Correction recorded from the peer (their own artifact, not a device bug).** An earlier Q1_0 CPU-vs-device
 greedy comparison was reported FAILED: the CPU floor had been run under a `timeout` that killed it partway,
