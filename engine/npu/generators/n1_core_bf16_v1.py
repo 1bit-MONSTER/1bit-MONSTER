@@ -51,17 +51,19 @@ def main():
     parser.add_argument("-k", type=int, default=64)
     parser.add_argument("-n", type=int, default=128)
     parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols (must divide N//n)")
+    parser.add_argument("-x", "--col-offset", type=int, default=0,
+                        help="column offset (issue #2128 half-array builds: 0 or 4)")
     parser.add_argument("-r", "--rows", type=int, default=4, help="n_aie_rows (must divide M//m)")
     parser.add_argument("-b", "--batch-size", type=int, default=5,
                         help="K-tiles per DMA round (fifo depth = batch+1; 6 keeps BDs <= 16)")
     args = parser.parse_args()
     with mlir_mod_ctx() as ctx:
         my_matmul(args.M, args.K, args.N, args.m, args.k, args.n,
-                  args.cols, args.rows, args.batch_size)
+                  args.cols, args.rows, args.batch_size, args.col_offset)
         print(ctx.module)
 
 
-def my_matmul(M, K, N, m, k, n, n_aie_cols=8, n_aie_rows=4, BATCH_SIZE=5):
+def my_matmul(M, K, N, m, k, n, n_aie_cols=8, n_aie_rows=4, BATCH_SIZE=5, col_off=0):
     dtype_in = bfloat16
     dtype_out = bfloat16
 
@@ -86,7 +88,7 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8, n_aie_rows=4, BATCH_SIZE=5):
         zero = external_func("zero_bf16", inputs=[C_ty], link_with=kernel_o)
         matmul = external_func("matmul_bf16_bf16", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
 
-        tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(2 + n_aie_rows)]
+        tiles = [[tile(col_off + col, row) for col in range(n_aie_cols)] for row in range(2 + n_aie_rows)]
         shim_tiles, mem_tiles = tiles[0], tiles[1]
         core_tiles = tiles[2:]  # core_tiles[j][c] = tile(c, 2+j)
 
