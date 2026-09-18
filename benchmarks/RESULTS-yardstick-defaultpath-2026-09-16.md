@@ -1,4 +1,4 @@
-> **CORRECTION (2026-09-18): the decode column is WARM-UP (8-token window) and (c) decode fails for 0.6B too.** See the CORRECTION section at the end.
+> **CORRECTION (2026-09-18): the decode column is WARM-UP (8-token window). The follow-on "3.3 ms handoff penalty" claim is WITHDRAWN — 1k decode is parity within variance; the open item is the ~1.0-1.5 ms/token lost build overlap.** See the CORRECTION section at the end.
 
 # Criterion (c): the DEFAULT (bf16-prefill) path vs FLM, 1k..8k — Qwen3-0.6B
 
@@ -249,25 +249,42 @@ decode at 1k-8k" — is SUPERSEDED: the decode clause fails for 0.6B too** (0.93
 at 8k) once the warm-up window is removed. Nothing in this document satisfies (c)'s decode
 clause as written; the prefill column (1.01-1.34x) and the TTFT column are the parts that hold.
 
-## The shortfall is localised, and recoverable (`57de78912`)
+## WITHDRAWN mechanism (2026-09-18): there is NO reproducible exec penalty
 
-Same binary, same prompt, 1024 ctx, 16 decode tokens, `NPU_RUNLIST_STATS=1`:
+An earlier version of this section claimed a **3.3 ms/token device-side penalty in the
+bf16 → runlist KV handoff** (59 vs 82 tok/s). @agent-c6b96f has **withdrawn it**
+(`11443632e`, `54cdb56fc`): after a rebuild the same unified configuration measures
+**12.52-12.61 ms/token of device exec, not 15.46-15.94**. Both readings are stable *within*
+their process and differ between builds/sessions by ~27%, which is device/BO-allocation
+state, not the handoff. The A/B intended to remove it (`NPU_UNIFIED_FREE_BF16=1`, releasing
+the bf16 BOs before decode) measured **nothing**: 12.51-12.55 ms exec against 12.52-12.61
+baseline.
 
-| arm | exec | build | total |
-|---|---:|---:|---:|
-| bf16 prefill + runlist decode | 15.46-15.94 ms/tok | 1.5 ms/tok | **59 tok/s** |
-| runlist prefill + runlist decode | 12.48-12.50 ms/tok | 1.5 ms/tok | **82 tok/s** |
+Current binary, Qwen3-0.6B, 1k, 32 decode tokens:
 
-Host build time is identical, so the **3.3 ms/token is device-side in the bf16 → runlist KV
-handoff**. At 32 tokens the pure runlist decode is **80 tok/s vs FLM's 75.25 — it beats FLM**;
-it is the default path's 69.9 that does not. **Recovering it would close (c) for 0.6B** while
-keeping prefill 1.33x and TTFT faster.
+| arm | tok/s |
+|---|---:|
+| native unified (default) | 72, 72, 71 |
+| native pure runlist | 78, 77 |
+| FLM on-box | 72.33 (75.25 in the earlier window) |
 
-`benchmarks/RESULTS-unified-decode-penalty-2026-09-18.md` specifies the next diagnostic (not
-run): dump the first 4 KB of the KV BO after each prefill for the same prompt/position and
-compare byte streams — candidates being KV layout/quantisation, the `NPU_PROMPT_MAX`-clamped
-length, and BO residency. That is the `(c)` decode target, and @agent-c6b96f has left it to
-this lane.
+So the follow-on line — "the decode clause fails for 0.6B at 0.93x" — is **also superseded**:
+at 1k the default unified decode is **0.98-1.00x FLM, i.e. parity within measurement
+variance**, not a decisive deficit. The 8k row (33.4 vs 33.63) is unchanged in substance.
+
+What **does** survive from that work:
+
+- **KV-content exclusion:** 48% low-order-bit differences with identical offsets, span and
+  topology — so the differing streams are a quantisation/rounding difference, not a layout
+  fault.
+- **A code-path finding:** the unified decode uses `RuntimeLayerEngine::forward()` —
+  single-slot build → execute → wait — so it **does not hide the ~1.0-1.5 ms/token host build**
+  the way `npu_runlist_decode`'s alternating slots do (~12.5 ms exec versus 13.9-14.0 ms/tok
+  reported). **That lost overlap, not any handoff penalty, is the open item** for the default
+  path.
+
+Also flagged: 32-token runlist exec **varies up to ~27% between sessions**, so any 32-token
+number needs repeats before it is used as a verdict.
 
 ## What is unaffected
 
