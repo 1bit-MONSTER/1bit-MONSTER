@@ -41,26 +41,21 @@ Measured with a per-phase timing driver (model layer 1, warm device, N=3):
 | init: pack layer-1 weight BO (460 MB) | 210–354 ms |
 | embed | 0.02 ms |
 | **forward(1) — single layer, single `xrt::runlist` submit** | **5.8–6.4 ms** |
-| **lm_head — HOST path (3-D Q8_0, 248320 vocab)** | **465–474 ms** |
+| **lm_head — HOST path (3-D Q8_0, 248320 vocab)** | **18–27 ms** (OpenMP, 32 threads) |
 
 ### Fresh decode estimate vs FLM
 
 - 40 layers × ~6 ms = ~240 ms/token for the whole-layer forwards.
-- host lm_head ≈ **470 ms/token** (dominant, ~2× the entire layer stack).
-- Naive full-decode: ~700 ms/token ≈ **1.4 tok/s** — still ~12× below FLM's
-  17.48 tok/s @1k, but ~2.5–4× above the stale native 0.32–0.57 figures.
+- host lm_head ≈ **~20 ms/token** after `#pragma omp parallel for` (was ~470 ms single-threaded).
+- Naive full-decode: ~260 ms/token ≈ **3.8 tok/s** — still ~4.5× below FLM's
+  17.48 tok/s @1k, but ~7–12× above the stale native 0.32–0.57 figures and
+  ~2.7× above the pre-OMP ~1.4 tok/s measurement.
 
 ## Bottleneck (step 5 direction)
 
-Two concrete walls, in order:
+Two walls, in order:
 
-1. **Host lm_head ≈ 470 ms/token.** The 3-D Q8_0 lm_head cannot be expressed by
-   the device lm_head kernel (`ndim==3 → n_tiles==0`, #2434), so every token pays
-   a CPU dequant + matmul over 248320 vocab. This alone caps decode at ~2 tok/s.
-   Fix direction: dequantize the lm_head once to a device-expressible 2-D layout
-   (bf16/fp32) so the device lm_head ELF can run it, or vectorize the host
-   dequant (`dequant_q8_0_to_float_ex`).
-2. **The layer ELF does not consume expert weights.** `forward()`'s own comment
+1. **The layer ELF does not consume expert weights.** `forward()`'s own comment
    (and `RESULTS-moe35b-flm-real-arg-bindings-2026-09-16.md`) records that the
    per-ctx `moe_layer_ctxN.elf` runs the shared-expert/attention/norm/router
    portion but the routed expert FFN is carried by *other* kernels (FLM's
@@ -68,10 +63,20 @@ Two concrete walls, in order:
    5.8 ms forward therefore measures the non-expert slice, not full MoE decode.
    Fix direction: wire the expert GEMM/dequant kernels into the runlist (or the
    engine's existing `NPU_MOE` expert path) after the layer ELF.
+2. **Host lm_head ≈ 470 ms/token was the dominant cost — now FIXED.** The 3-D
+   Q8_0 lm_head cannot be expressed by the device lm_head kernel
+   (`ndim==3 → n_tiles==0`, #2434), so it dequantizes + matmuls on the CPU.
+   Landed two focused perf PRs: (a) accumulate (not assign) across the 8
+   tile_col slices (the old `out[v] = acc` kept only the last 256 of 2048 hidden
+   dims — finite but wrong logits) and (b) `#pragma omp parallel for` over
+   tile_row. Result: 470 ms → ~20 ms/token (~20×). The layer forward is now the
+   dominant term.
 
 ## Verdict
 
 Build-wiring landed (PR #2608), symbols exported, smoke produces finite non-zero
-logits end-to-end (host lm_head path). The fresh decode is ~1.4 tok/s (naive),
-dominated by the host lm_head (~470 ms) — the concrete optimization target for
-parity. Expert-FFN integration remains the second wall.
+logits end-to-end (host lm_head path, now full-width after the accumulate fix).
+The fresh decode is ~3.8 tok/s (naive), up from ~1.4 tok/s after the lm_head
+parallelization. Remaining parity gap is the layer forward (240 ms/token) and,
+more fundamentally, the expert-FFN integration — the concrete next optimization
+target.
