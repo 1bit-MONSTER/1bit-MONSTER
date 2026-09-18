@@ -310,6 +310,44 @@ jobs:
           fi
           echo "OK: $(git ls-files -s -- '*.sh' | wc -l) tracked .sh files, all mode 100755"
 
+      - name: Required check names still exist
+        # A required check is matched by NAME in ruleset 19117606. Renaming one of these
+        # jobs detaches the gate silently: the ruleset waits for a context that never
+        # reports, and a PR merges with that gate absent rather than failing. The job name
+        # above is kept as "Version consistency" for exactly this reason, and this step is
+        # what notices when someone renames one of the others.
+        #
+        # Stated blind spot, so it is not mistaken for coverage: if THIS job were renamed,
+        # the check that would catch it would not run either. The other three are covered.
+        run: |
+          set -euo pipefail
+          required=(
+            "C++ (cmake configure + build)"
+            "Lint (clang-format)"
+            "Scope Guard"
+            "Version consistency"
+          )
+          # `|| true`: a glob that matches nothing must reach the guard below, which names
+          # the cause. Letting grep fail here would exit non-zero for an unnamed reason —
+          # still loud, but it would read as a broken check rather than an empty corpus.
+          names=$( { grep -rhoE '^\s{4}name:\s*.+$' .github/workflows/*.yml 2>/dev/null || true; } \
+                  | sed 's/^\s*name:\s*//' | sed 's/[[:space:]]*$//' | sort -u)
+          if [ -z "$names" ]; then
+            echo "::error::no job names parsed from .github/workflows — this check would be vacuous"
+            exit 1
+          fi
+          missing=""
+          for r in "${required[@]}"; do
+            printf '%s\n' "$names" | grep -Fxq "$r" || missing="$missing
+            $r"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::required check name(s) from ruleset 19117606 that no workflow job declares:$missing"
+            echo "::error::a renamed job detaches its required gate silently. Keep the name, or update the ruleset in the same change."
+            exit 1
+          fi
+          echo "required check names present: ${#required[@]} of $(printf '%s\n' "$names" | grep -c .) job names in $(ls .github/workflows/*.yml | wc -l) workflows"
+
   metal:
     name: Metal backend (macOS build + smoke gate)
     runs-on: macos-14
