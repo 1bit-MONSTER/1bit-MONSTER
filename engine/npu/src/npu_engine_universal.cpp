@@ -112,6 +112,7 @@ static inline float* q4_dequant_geom(const uint8_t* d, int rows, int inf, int cp
 }
 // bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
 extern "C" void bf16mm_dump_w(int idx, const char* path);
+extern "C" void bf16mm_release_bos();
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" void bf16mm_set_attn_qout(int qout);
 extern "C" void bf16mm_set_attn_hd(int hd);
@@ -5065,6 +5066,15 @@ struct Bf16Ctx {
 
             // ===== unified decode: bf16-prefill KV + final hidden -> runlist =====
             if (unified) {
+                // A/B (NPU_UNIFIED_FREE_BF16=1): drop the bf16 context's device
+                // footprint BEFORE the runlist decode, so the decode's BO address
+                // map is not perturbed by ~1 GB of bf16 weight BOs and hw contexts.
+                // The prefill is finished; nothing below touches Bf16Mm or these
+                // contexts again. See RESULTS-unified-decode-penalty-2026-09-18.md.
+                if (getenv("NPU_UNIFIED_FREE_BF16")) {
+                    bf16mm_release_bos();
+                    bcq.reset(); bco.reset(); bcg.reset(); bcu_ptr.reset(); bcd.reset();
+                }
                 std::vector<uint16_t> bfh(H);
                 // The runlist lm_head kernel applies the final norm (fnorm BO) to
                 // the act BO itself — hand it the PRE-final-norm hidden state.

@@ -195,14 +195,63 @@ measurement, the key count was already ruled out by reading the code, and the re
 mechanism is device-memory/BO residency — with a second, independently fixable ~1.4 ms/token
 of lost decode overlap on top. Two targets, both named, one of them a small code change.
 
+
+## WITHDRAWN (2026-09-18, later the same session): the 3.3 ms "handoff penalty" was cross-window variance
+
+After rebuilding, the same unified configuration measures **12.52–12.61 ms/token of device
+exec**, not the 15.46–15.94 ms that the earlier window reported. Four consecutive 1k/16-token
+runs and three 1k/32-token runs on the current binary:
+
+| configuration (Qwen3-0.6B, 1k, current binary) | decode ms/tok | tok/s |
+|---|---:|---:|
+| unified (bf16 prefill + runlist decode), 16 tok ×4 | 13.5, 13.5, 13.5, 14.0 | 74, 74, 74, 71 |
+| unified, 32 tok ×3 | 13.9, 13.9, 14.0 | 72, 72, 71 |
+| pure runlist, 32 tok ×2 | 12.8, 13.0 | 78, 77 |
+| FLM on-box, 32 tok (this window) | — | **72.33** |
+| FLM on-box, 32 tok (earlier window) | — | 75.25 |
+
+So:
+
+- **The unified path's exec is not 3.3 ms slower than the pure path's.** Both are ~12.5 ms
+  in the current binary (pure: reported 12.8–13.0 ms/tok; unified: 13.9–14.0, the residual
+  being the lost build overlap). The earlier 15.46–15.94 ms reading was stable *within* that
+  process but did not reproduce *across* builds/sessions — the numbers are stable within a
+  process and vary by up to ~27% between them, which is the signature of device/BO
+  allocation state (other engines resident, allocation order), not of the KV handoff.
+- **The A/B intended to remove it found nothing to remove**: `NPU_UNIFIED_FREE_BF16=1`
+  (release the bf16 weight/scratch BOs and hw contexts before the decode) gives
+  12.51–12.55 ms exec against 12.52–12.61 baseline — no effect, as expected if there was no
+  penalty. The hook is kept, inert and opt-in, as a tested negative.
+- **The KV-content comparison is unaffected**: it independently ruled out the handoff *values*
+  (48% low-order-bit differences, identical offsets/span/topology), which remains valid.
+- **The "decode clause fails for 0.6B at 0.93x" reading is superseded.** In the current
+  window native unified is 71–72 tok/s against FLM's 72.33 (≈0.98–1.00x) and pure runlist is
+  77–78 (≈1.07x). FLM itself moved 75.25 → 72.33 between windows. The honest statement at 1k
+  is therefore **at parity within measurement variance (~0.98–1.00x), not a decisive deficit**
+  — and *any* decode comparison here needs repeated runs and a quiet device before it is
+  cited, which is the same lesson as the 8-token warm-up correction.
+
+The two candidate mechanisms this document listed (KV layout, BO residency) are both now
+closed: layout/values by the byte diff, residency by the A/B. What remains true is the
+smaller, code-path finding: the unified decode uses `RuntimeLayerEngine::forward()`
+(single-slot `build → execute → wait`), so it does not hide the ~1.0–1.5 ms/token host build
+the way `npu_runlist_decode`'s alternating slots do. That is worth ~1.0–1.5 ms/token, is
+reproducible in the numbers above (12.5 ms exec vs 13.9–14.0 ms/tok), and is the only
+remaining decode optimisation named here.
+
 ## Status
 
-Criterion (c) remains unmet. Its decode shortfall is now decomposed and bounded: **+3.36
-ms/token of device exec from the unified process's device state (mechanism: BO
-residency/address map — KV content ruled out by measurement), plus ~1.4 ms/token of lost
-build/exec overlap from using the single-slot `forward()` instead of the double-buffered
-slots.** The pure-runlist decode at the same context is 80 tok/s against FLM's 75.25, so the
-target behind these two fixes is real.
+**Correction: the headline of this document no longer stands.** There is no reproducible
+3.3 ms/token device-side handoff penalty; the reading that produced it did not survive a
+rebuild, and the A/B that was meant to remove it measured nothing (12.51 vs 12.52 ms exec).
+What survives is (a) the KV-content exclusion, (b) the ~1.0–1.5 ms/token lost-overlap cost of
+using the single-slot `forward()` in the unified decode, and (c) the process-level finding
+that runlist exec time varies up to ~27% between builds/sessions, which means every decode
+comparison in this lane must be repeated before it is cited.
 
-Instrumentation landed with this doc: `RuntimeLayerEngine::dump_kv_bo`, `NPU_KV_DUMP_PURE`
-and `NPU_KV_DUMP_UNIFIED` (all inert unless the env vars are set).
+At 1k/32 tok in the current window the default unified decode is 71–72 tok/s against FLM's
+72.33 (~0.98–1.00x) and the pure runlist is 77–78 (≈1.07x), so the criterion-(c) decode
+clause is at parity within variance rather than decisively failed for Qwen3-0.6B.
+
+Instrumentation landed: `RuntimeLayerEngine::dump_kv_bo`, `NPU_KV_DUMP_PURE`,
+`NPU_KV_DUMP_UNIFIED`, and `NPU_UNIFIED_FREE_BF16` (all inert unless set).

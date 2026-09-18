@@ -162,6 +162,20 @@ struct Bf16Mm {
 
     ~Bf16Mm() { /* BOs owned by xrt */ }
 
+    // Free the large device-side scratch/weight BOs and the assembled per-shape
+    // kernels. Used to A/B whether the bf16 context's device footprint is what
+    // slows the subsequent runlist decode (see RESULTS-unified-decode-penalty
+    // 2026-09-18.md). NOT safe to keep using this object afterwards.
+    void release_device_bos() {
+        w_dev.clear();
+        w_cache.reset(); w_cache_ptr = nullptr; w_cache_elems = 0;
+        a_cache.reset(); c_cache.reset(); a_cache_elems = 0; c_cache_elems = 0;
+        a_cache0.reset(); a_cache1.reset(); c_cache0.reset(); c_cache1.reset();
+        a_cache0_elems = a_cache1_elems = c_cache0_elems = c_cache1_elems = 0;
+        bo_cache.reset(); bo_cache_bytes = 0; bo_cache_ptr = nullptr;
+        mm_app_cache.clear();
+    }
+
     /// Load mm.xclbin + dequant.xclbin from xclbin_dir and construct the
     /// Gemm/Dequant + npu_app contexts.
     bool init(xrt::device& d, const std::string& model_dir,

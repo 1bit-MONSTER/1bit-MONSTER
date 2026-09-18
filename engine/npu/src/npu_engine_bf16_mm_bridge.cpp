@@ -91,3 +91,5 @@ extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* k
 }
 
 extern "C" void bf16mm_dump_w(int idx, const char* path) { g_mm.dump_w(idx, path); }
+
+extern "C" void bf16mm_release_bos() { g_mm.release_device_bos(); }
