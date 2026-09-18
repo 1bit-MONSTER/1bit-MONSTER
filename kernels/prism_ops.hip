@@ -32,18 +32,29 @@ __global__ void l2norm_heads_kernel(float* __restrict__ x, int n_heads, int hd) 
 }
 
 // One block per row; grid-stride over the row then a shared reduction. Supports any n.
+// Warp-strided partial sums + shuffle reductions + ONE cross-warp combine. The previous
+// version was 1 block x 256 threads with an 8-barrier tree over a 20-element stride, i.e.
+// latency-bound at ~30x its memory bound for n=5120 (6.04 us/call measured in-situ, where a
+// bandwidth-bound pass over the same bytes is ~0.2 us). Now 1024 threads, ~1 barrier for the
+// combine, all shuffle reductions warp-local.
 __global__ void rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ w, int n) {
+    __shared__ float wsum[32];
+    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
     float ss = 0.0f;
-    for (int i = threadIdx.x; i < n; i += blockDim.x) ss += x[i] * x[i];
-    __shared__ float s[256];
-    s[threadIdx.x] = ss;
+    for (int i = tid; i < n; i += blockDim.x) ss += x[i] * x[i];
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) ss += __shfl_down_sync(0xffffffffffffffffull, ss, off);
+    if (lane == 0) wsum[warp] = ss;
     __syncthreads();
-    for (int st = blockDim.x >> 1; st > 0; st >>= 1) {
-        if (threadIdx.x < st) s[threadIdx.x] += s[threadIdx.x + st];
-        __syncthreads();
+    if (warp == 0) {
+        ss = (lane < (int)(blockDim.x >> 5)) ? wsum[lane] : 0.0f;
+#pragma unroll
+        for (int off = 16; off > 0; off >>= 1) ss += __shfl_down_sync(0xffffffffffffffffull, ss, off);
+        if (lane == 0) wsum[0] = ss;
     }
-    const float r = rsqrtf(s[0] / (float)n + 1e-6f);
-    for (int i = threadIdx.x; i < n; i += blockDim.x) x[i] = x[i] * r * w[i];
+    __syncthreads();
+    const float r = rsqrtf(wsum[0] / (float)n + 1e-6f);
+    for (int i = tid; i < n; i += blockDim.x) x[i] = x[i] * r * w[i];
 }
 
 __global__ void gbeta_kernel(const float* __restrict__ a, const float* __restrict__ dt,
@@ -109,7 +120,7 @@ extern "C" int prism_l2norm_heads_f32(float* x, int n_heads, int hd, void* strea
 
 extern "C" int prism_rmsnorm_f32(float* x, const float* w, int n, void* stream) {
     if (!x || !w || n <= 0) return 1;
-    hipLaunchKernelGGL((rmsnorm_kernel), dim3(1), dim3(256), 0, (hipStream_t)stream, x, w, n);
+    hipLaunchKernelGGL((rmsnorm_kernel), dim3(1), dim3(1024), 0, (hipStream_t)stream, x, w, n);
     HIP_CHECK(hipGetLastError());
     return 0;
 }
