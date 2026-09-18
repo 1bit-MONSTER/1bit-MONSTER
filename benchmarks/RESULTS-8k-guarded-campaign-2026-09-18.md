@@ -74,3 +74,28 @@ Medians over accepted runs: native **0.785 ms/prompt-token (1274 t/s)**, FLM **1
 No quiet-window protocol can fix a *host-side* fairness problem, only mitigate it: run 2 was
 still caught by the load-rise check because a `pf` instance started mid-run. The device-side
 holder was clear in all three runs; what moved the numbers was CPU.
+
+## 4B/VL-4B/8B/Llama: not obtainable in this environment (0/2 on 4B)
+
+A second wait-quiet attempt, Qwen3-4B, 2 runs, `C8K_WAIT_MAX=90`:
+
+```
+run 1 [SUSPECT(pre-load=20.57>18)] native 13709ms (1.673 ms/tok) | FLM 501.66 t/s | pf pid=682592 …
+run 2 [SUSPECT(pre-load=39.68>18)] native 13244ms (1.617 ms/tok) | FLM 518.12 t/s | pf pid=797184 …
+```
+
+The Prism suite was running **several `pf` instances in parallel from different temp dirs**
+(`/tmp/tmp.xqnuLjduaC/pf`, `/tmp/tmp.UIlDp8QLNO/pf`), so the load never fell to the ceiling for
+long enough to sample a 3–5 minute run. 4B/VL-4B/8B/Llama therefore have **no guard-accepted 8k
+number**, and the honest position for them is "unmeasured", not "parity by extrapolation".
+
+**Load sensitivity is model-dependent, which matters for how much that costs.** The 4B attempt
+was only 7% slower than its quiet single-run (13709 ms at load 20.6 vs 12858 ms), whereas 0.6B
+was 2.4x slower at comparable load. The reason is in the engine's own breakdown: 4B's 8k
+prefill is ~5.7 s of device attention plus ~6.8 s of host work, while 0.6B's is ~2.4 s of
+attention plus ~4 s of host — so the host term is a roughly fixed wall-clock cost and the
+smaller the model, the larger the fraction of its prefill that a busy host inflates.
+
+**What would unblock the remaining four rows:** a ~30-minute window with no `pf`-style hog and
+no foreign `accel0` job. The need has been relayed to the lane that owns the load; the guard's
+`C8K_WAIT_QUIET=1` will take that window automatically the moment it exists.
