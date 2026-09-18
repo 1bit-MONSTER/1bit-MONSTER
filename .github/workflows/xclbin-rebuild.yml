@@ -1,0 +1,53 @@
+name: Xclbin rebuild
+
+# Intent: the committed NPU xclbin set is the source of truth (the MLIR/chess toolchain could not
+# reliably rebuild it), which is why engine/npu/xclbins/PROVENANCE.json records what shipped. That
+# record had no way to be checked, because a rebuild of the same shape produces a different xclbin:
+# measured on this box, `final_i8_G_K2560_N9728.xclbin` is 61,706 B committed and 69,389 B rebuilt,
+# with ~72% of bytes differing. Two rebuilds of the same tree differ in exactly 68 bytes — the
+# embedded XclBinUUID in its three copies and the TimeStamp in its two — so the payload drift is
+# toolchain drift over time, not nondeterminism (issue #2262).
+#
+# What reproduces byte-for-byte is the part the engine loads: every rebuilt
+# `insts_i8_*_qwen3_4b.txt` is identical to the committed one. This asserts that, so the next
+# generator or toolchain change that moves the instruction stream fails here instead of quietly
+# invalidating the committed set. It is cheap: ~9 s for all three shapes, no device.
+#
+# Runs on the self-hosted runner because it needs the mlir-aie/peano toolchain. It is not in the
+# ruleset's required set, and deliberately does not trigger on merge_group: a required check that
+# does not run for a queue ref is how a merge queue stalls (see the required set in ci.yml).
+
+on:
+  pull_request:
+    paths:
+      - "engine/npu/xclbins/**"
+      - "engine/npu/generators/**"
+      - "Testing/xclbin_rebuild_selfcheck.sh"
+      - ".github/workflows/xclbin-rebuild.yml"
+  schedule:
+    # The toolchain moves under us without anything in this repo changing - a rebase of the
+    # nightly, a peano bump, a generator edit upstream. Nightly catches that without a PR.
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xclbin-rebuild-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    name: committed xclbins reproduce (instruction streams)
+    runs-on: [self-hosted, strix-halo]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Rebuild the committed shapes and compare the instruction streams
+        run: |
+          # Invoke via bash, like the kernel-object lint: the script is committed +x, and calling
+          # it explicitly removes the "executable bit lost in a merge" failure class (exit 126),
+          # which reads as "the check failed" rather than "the check never ran".
+          bash Testing/xclbin_rebuild_selfcheck.sh

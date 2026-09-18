@@ -34,7 +34,11 @@
 set -uo pipefail
 
 GENDIR="$(cd "$(dirname "$0")" && pwd)"
-XCLBIN_DIR="$GENDIR/../xclbins"
+# Output directory: the committed artifacts by default. Pass one to rebuild into a temp dir
+# instead — Testing/xclbin_rebuild_selfcheck.sh does exactly that, so a reproducibility check
+# never writes into the tree it is checking.
+XCLBIN_DIR="${1:-$GENDIR/../xclbins}"
+mkdir -p "$XCLBIN_DIR"
 PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
 AIECC=/home/bcloud/mlir-aie/install_tmp/bin/aiecc
 PEANO=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
@@ -80,6 +84,7 @@ for entry in "${SHAPES[@]}"; do
 done
 
 echo "═══ ${ok} built, ${fail} failed ═══"
+[ "$XCLBIN_DIR" = "$GENDIR/../xclbins" ] || { echo "(built into $XCLBIN_DIR — not the committed set)"; exit $(( fail > 0 )); }
 echo "Then regenerate the manifest so the new artifacts have provenance:"
 echo "  python3 engine/npu/tests/check_xclbin_provenance.py --write-manifest \\"
 echo "      --toolchain 'aiecc (mlir-aie install_tmp, LLVM 23.0.0) + peano, npu2'"
