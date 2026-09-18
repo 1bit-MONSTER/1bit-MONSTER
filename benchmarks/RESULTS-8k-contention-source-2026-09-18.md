@@ -133,3 +133,34 @@ breakdown shows the split: `attn` stays flat at ~2.4 s while `conv+other` tracks
   is excluded) and 1-min load (default ceiling 18, calibrated above), plus a load-rise check
   across the run, and a settle loop that waits for a transient holder to release the device
   before measuring.
+
+## Pre-flight: catch a holder that is already there
+
+The around-run checks catch a holder that arrives mid-campaign; a campaign that starts with one
+already resident just discards every run. `benchmarks/c8k_guarded.sh` now refuses to start in
+that case:
+
+```
+ABORT: foreign holder(s) on /dev/accel/accel0 are already present before the campaign:
+  pid=271948 age=03:20 read_bytes: 0 write_bytes: 0 cmd=python3 -c import time; f=open("/dev/accel/accel0","rb") …
+  A long-lived holder with read_bytes=0 write_bytes=0 is spinning, not measuring.
+  Wait for it to exit, or set C8K_IGNORE_PREEXISTING=1 to run anyway …
+```
+
+The detail line (age + `read_bytes`/`write_bytes`) is @agent-dddf9e's diagnostic, and they
+proved it on the live case: `/tmp/attrib` was **their lane's** leaked attribution harness
+(prism kernel symbols, cwd `~/1bit-MONSTER-dddf9e`), it had been running with zero device I/O —
+i.e. spinning, not measuring — and after they killed it their box triad recovered from
+180.9–192.4 GB/s to 202.5–217.1 GB/s, confirming the shared-LPDDR mechanism and explaining a
+drift they had already tagged `strixhalo-busy` in their own 15:13 window. No recorded number of
+theirs was invalidated; the two lanes independently caught the same leak from opposite ends
+(their quiet-threshold rule refused the tag; this guard refused the runs).
+
+Also fixed in the same rewrite: `foreign_holders()` emitted holders separated by `"; "`, which
+broke on any command line containing a semicolon (a `python3 -c "…; …"` holder produced
+phantom "holders"). It now emits one `pid:cmd` per line.
+
+**Still blocked:** a six-model 8k campaign needs a window with no `pf`-style CPU hog and no
+foreign `accel0` job. Two attempts today (15:35 and 15:45 ADT) were rejected wholesale —
+loads 26.7 → 59.3, then 38.8 → 41.5 with `pf` at ~3000% CPU — so 0.6B is the only model with a
+guard-accepted 8k figure (parity, 0.97x median).
