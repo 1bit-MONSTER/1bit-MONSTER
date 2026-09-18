@@ -13,11 +13,12 @@ working directory.
 /home/bcloud/1bit-MONSTER-<agent>  # the same thing under the older naming
 ```
 
-Either form works — the rule that matters is one worktree per branch. Measured
-2026-09-18: of **104** registered worktrees, **79** live under `/home/bcloud/wt/`, **15**
-under `/home/bcloud/1bit-MONSTER-*`, and **9** inside the checkout at
-`/home/bcloud/1bit-MONSTER/wt/`. `git worktree list` is the authority; this section only
-tells you where the others are.
+Either form works — the rule that matters is one worktree per branch. The shape is
+stable; the counts are not, because agents create and retire worktrees constantly. Most
+live under `/home/bcloud/wt/`, a smaller number under `/home/bcloud/1bit-MONSTER-*`, and
+a few inside the checkout at `/home/bcloud/1bit-MONSTER/wt/`; the rest are the main
+checkout and other clones. Read `git worktree list` for the current set — this section
+only tells you where to look.
 
 The inner form (inside the checkout) needs one local accommodation: those worktrees are
 embedded repositories in the shared checkout's working tree, so without an ignore rule
