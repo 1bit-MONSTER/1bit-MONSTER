@@ -19,8 +19,33 @@ jobs:
           sudo -u bcloud env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user stop embed-server.service 2>/dev/null || true
           sleep 2
       - name: Swap firmware and reload driver
+        # The swap used to be a single line whose failure message said the opposite of
+        # what happened:
+        #
+        #   sudo mv .../npu_7.sbin .../npu_7.sbin.custom 2>/dev/null || echo "already moved"
+        #
+        # There is no uncompressed `npu_7.sbin` on any of the three firmware layouts this
+        # box ships — /lib/firmware/amdnpu/{1502_00,17f0_10,17f0_11}/ each contain
+        # `npu_7.sbin.zst` (a symlink, e.g. -> npu.sbin.1.1.2.65.zst in 17f0_11) and no
+        # `npu_7.sbin`. So the `mv` failed with ENOENT, `2>/dev/null` hid it, and the `||`
+        # printed "already moved" — every run reported a swap that never happened, and
+        # only the module reload below ever took effect.
+        #
+        # This now reports which of the three cases applies. It deliberately does NOT move
+        # anything new: whether the file to hide on these layouts is the `npu_7.sbin.zst`
+        # symlink, and which firmware the driver should fall back to, is a decision about
+        # this box's firmware that the evidence above does not settle.
         run: |
-          sudo mv /lib/firmware/amdnpu/17f0_11/npu_7.sbin /lib/firmware/amdnpu/17f0_11/npu_7.sbin.custom 2>/dev/null || echo "already moved"
+          fw="${NPU_FW_DIR:-/lib/firmware/amdnpu/17f0_11}"
+          if [ -e "$fw/npu_7.sbin.custom" ]; then
+            echo "already swapped: $fw/npu_7.sbin.custom exists"
+          elif [ -e "$fw/npu_7.sbin" ]; then
+            sudo mv "$fw/npu_7.sbin" "$fw/npu_7.sbin.custom"
+            echo "swapped: $fw/npu_7.sbin -> npu_7.sbin.custom"
+          else
+            echo "::warning::nothing to swap: $fw/npu_7.sbin does not exist, so the module reload below happens with whatever firmware the loader already resolves. Contents:"
+            ls -la "$fw" 2>/dev/null | sed 's/^/    /'
+          fi
           sudo rmmod amdxdna 2>/dev/null || true
           sudo modprobe amdxdna
           sleep 3
