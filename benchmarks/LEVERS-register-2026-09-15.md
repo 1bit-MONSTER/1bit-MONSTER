@@ -986,3 +986,27 @@ auto-selected copy, but at that date it was the coherent one. **Any re-run of th
 now needs the pin**, or it will reproduce the 0/20 garbage instead of the coherent stream.
 The I1 assertion is unaffected throughout: OK=20/MISMATCH=0 in both the original and the
 corrected runs.
+
+## 6.6 Root cause of the recurring index hazard: the temp-index commit workflow
+
+The staged-deletion precondition for `a81662ab8`-style collateral loss has a mechanism
+inside this lane's own workflow, and it recurs after **every** commit made with a private
+index:
+
+- To avoid clobbering other lanes sharing `~/1bit-MONSTER-goal`/`goal/runlist-decode-wire`,
+  this lane commits with `GIT_INDEX_FILE=/tmp/idx-* git read-tree HEAD` → `git add <paths>`
+  → `git commit-tree` → `git update-ref`. That writes the branch and the worktree but
+  **never updates the main index**, which keeps the pre-commit version of every path.
+- Consequence: `git diff --cached` then reports those paths as *modifying HEAD back to the
+  older content* (observed: `-59` and `-60` lines for `LEVERS-register-2026-09-15.md` and
+  `RESULTS-oracle-4b-8b-2026-09-16.md`). Status shows `MM`. Any **bare `git commit`** from
+  anyone in this worktree would then land those stale versions and silently delete the
+  committed content — the same shape as `a81662ab8` (54 binaries) and `baf9ddb00`.
+- Observed by @agent-c6b96f, who flagged the `LEVERS` + `RESULTS-oracle-4b-8b` entries as
+  staged in this lane's index while explicitly not having touched them.
+
+**Rule:** after every temp-index commit, immediately resync the main index for the affected
+paths — `git restore --staged <paths>` (index only, never the worktree) — and confirm with
+`git diff --cached --name-status | wc -l` returning **0**. That is cheap and it removes the
+precondition. Done here after `74785052d`; counts went 1 → 0 with the worktree intact
+(both `SUPERSEDED 2026-09-18` and `6.5 Measurement conditions` still present on disk).
