@@ -152,3 +152,21 @@ The un-routed families' verdicts and the ≤1024-key family boundary above are u
   the accuracy gate). Remaining lever: the host prefill path itself (~0.45 ms/token ≈ 3 GFLOPS
   effective, so memory/format-bound). Raised with the user — hours of work, past the 2 h threshold.
 - **Criterion (c) as measured: 1k met for all six; 8k 17 of 18 cells met; the 18th classified.**
+
+### Addendum 2026-09-18 (third) — boundary list refresh
+
+Supersedes the table above where the two differ. "Outside the set" stated plainly, with the
+source that bounds it, as of this date:
+
+| outside the set | why / source |
+|---|---|
+| contexts **beyond 8192** | layer ELFs bake `MAX_L=8192`; the generated int8 attention caps at ~3072 (AIE program memory, `0c3feded4`); N=16384 needs a chunked/multi-core design. **Changed today:** decode is no longer *unmeasurable* inside the window — a prompt of `8192-ng` keeps every decode forward at `ctx<=8192`, and all six models are measured there at parity or ahead (`RESULTS-8k-decode-top-of-window-2026-09-18.md`). The bound is `ctx<=8192`, full stop. |
+| **0.6B TTFT >= FLM at 8192** | host `conv+other` prefill term, 4007–4071 ms of a 4030–4094 ms total, ~0.49 ms/token, ~3 GFLOPS effective; the device attention is ~96% hidden, so prefill pipelining has a ~25 ms ceiling, and the fast int8 device prefill is the path that fails the accuracy gate. Per-token at 8k: native 0.492–0.500 vs FLM 0.486–0.496 ms. (`RESULTS-0_6b-prefill-scaling` + `-hostbound-2026-09-18.md`) |
+| family bf16 attention **above 1024 keys** | no correct nh20/nh24/hd256 attention ELF for the `Bf16Mm` `(act,out,kv)` ABI; the generated kernel is `AttnCtx`-ABI (`52e051825`) |
+| **LFM2-1.2B / 2.6B** | no engine binary exists (`engine/npu/build/`) |
+| the ~6 s per-launch cost | **not** in this list — fixed, 2.515 ms vs the shipped capture's 2.161 ms = 1.16x, NPU==EMU |
+| the 35B MoE runtime | vendored lib's whole-layer path ERTs / NaNs (`c1b76d` addenda) |
+| any number taken without the measurement guards | the 8k campaign's contaminant classes (foreign `accel0` holders; host CPU floors, including the load-average lag in both directions). Runs are discarded, never averaged in. |
+
+The un-routed families' ≤1024 path remains correct-but-slow (CPU attention), which is the honest
+verdict `RESULTS-family-attention-shape-2026-09-14.md` records.
