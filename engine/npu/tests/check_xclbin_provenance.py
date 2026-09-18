@@ -48,6 +48,13 @@ POPULATION, UNITS, TIMEZONE (stated because a census is meaningless without them
   102 of the files carry one checkout mtime (2026-08-20 00:49), which yields a different
   census to anyone reaching for `ls -l`.
 * Sizes are bytes; percentages are unit-independent (MB decimal vs MiB binary differ).
+* Streams: every tracked top-level *.txt is recorded in `streams` (sha256 + size, or the
+  target when the entry is an alias). They are what the engine uploads to the NPU, and
+  they are the one payload a rebuild CAN reproduce byte for byte (issue #2262) - yet no
+  byte of them was hashed: on 2026-09-18, appending "TAMPER" to insts_i8_G_qwen3_4b.txt
+  left this gate at "OK: matches PROVENANCE.json", exit 0, because only *.xclbin entered
+  `artifacts`. 116 regular streams, 60,962,904 bytes - 6x census.payload_bytes, which
+  counts the xclbins alone.
 
 EXIT CODES
 ----------
@@ -164,6 +171,26 @@ def observe(root: Path) -> dict:
             regular.append(p)
     txt_symlinks = [p for p in top_level if p.endswith(".txt") and modes[p] == MODE_SYMLINK]
 
+    # Recorded, and (via COMPARED_SECTIONS) compared: the instruction streams are the
+    # payload a rebuild reproduces byte for byte, and 61 MB of them were invisible here.
+    streams: dict[str, dict] = {}
+    for p in top_level:
+        name = os.path.basename(p)
+        if not name.endswith(".txt"):
+            continue
+        path = root / p
+        if modes[p] == MODE_SYMLINK:
+            if not os.path.islink(path):
+                raise Failure(
+                    f"{p}: tracked as a symlink (git mode 120000) but the worktree entry "
+                    "is not a symlink - an alias was materialised into a real file"
+                )
+            streams[name] = {"symlink": os.readlink(path)}
+            continue
+        if not path.exists():
+            raise Failure(f"{p}: tracked instruction stream is missing from the worktree")
+        streams[name] = {"sha256": sha256_of(path), "bytes": path.stat().st_size}
+
     # which symlinks resolve, and which are declared-dangling (target absent by design)
     dangling: dict[str, str] = {}
     resolving: dict[str, str] = {}
@@ -267,6 +294,7 @@ def observe(root: Path) -> dict:
         },
         "declared_dangling": dict(sorted(dangling.items())),
         "symlinks": dict(sorted(symlinks.items())),
+        "streams": dict(sorted(streams.items())),
         "artifacts": dict(sorted(artifacts.items())),
     }
 
@@ -331,7 +359,7 @@ HOST_DEPENDENT_KEYS = {
 # Sections of the manifest that describe the COMMITTED set. `generated`/`build` record the
 # generation event and the arm that produced the artifacts, and are not properties of the
 # tree, so they are not compared.
-COMPARED_SECTIONS = ("population", "census", "observed")
+COMPARED_SECTIONS = ("population", "census", "observed", "streams")
 
 
 def _walk_recorded(prefix: tuple, want, got, problems: list[str]) -> None:
@@ -541,6 +569,12 @@ def main(argv: list[str] | None = None) -> int:
                 "declared_dangling maps), never this split.",
                 "declared_dangling lists the third-party targets that did not resolve on "
                 "generated.host. It is a target map, not a resolution requirement.",
+                "streams records every tracked top-level *.txt: sha256 and bytes, or the "
+                "target when the entry is an alias. These are what the engine uploads to the "
+                "NPU, and the one payload a rebuild reproduces byte for byte (issue #2262). "
+                "They were counted in population.tracked_top_level_entries and hashed "
+                "nowhere: on 2026-09-18 appending TAMPER to insts_i8_G_qwen3_4b.txt left this "
+                "gate at exit 0. census.payload_bytes still counts the xclbin bytes alone.",
             ],
             "build": {
                 "toolchain": toolchain,
@@ -566,7 +600,18 @@ def main(argv: list[str] | None = None) -> int:
             "declared_dangling": obs["declared_dangling"],
             "symlinks": obs["symlinks"],
             "artifacts": obs["artifacts"],
+            "streams": obs["streams"],
         }
+        # A section observe() produces but this literal forgets is dropped in silence, and
+        # the manifest then reads as if the section did not exist. That is how the payload
+        # stayed unpinned: nothing observed the streams, and nothing would have persisted
+        # them either. The literal stays explicit so the persisted shape is reviewable;
+        # this makes forgetting to extend it impossible instead of merely unlikely.
+        unpersisted = sorted(set(obs) - set(payload))
+        if unpersisted:
+            print(f"REFUSING to write: observe() produced {unpersisted} and this writer does "
+                  "not persist them", file=sys.stderr)
+            return 1
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
         print(f"\nwrote {manifest_path.relative_to(root)} "

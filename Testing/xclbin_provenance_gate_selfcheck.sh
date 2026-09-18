@@ -16,6 +16,13 @@
 # manifest diff is defeated by regenerating it, which the tool's own failure text tells you
 # to do, so an invariant that matters has to hold without a baseline.
 #
+# The instruction streams are covered the same way: `streams` records a sha256 and byte
+# count for every tracked top-level *.txt (and the target of the 12 aliases), which is
+# 116 files and 60,962,904 bytes - 6x census.payload_bytes, all of it hashed nowhere on
+# 2026-09-18, when appending TAMPER to insts_i8_G_qwen3_4b.txt still left the gate at
+# "OK: matches PROVENANCE.json". The writer's own section literal is checked too: a
+# section observe() produces and the writer forgets is dropped in silence.
+#
 # Run: bash Testing/xclbin_provenance_gate_selfcheck.sh
 set -uo pipefail
 
@@ -37,6 +44,7 @@ make_fixture() { # make_fixture <alias-target>
     _xclbin c 1755000002 "$FIX/evil.xclbin"                 # outside the artifact dir
     _xclbin d 1755000003 "$D/sub/other.xclbin"              # tracked, but not a sibling
     echo "insts" > "$D/insts_i8_D_K1_N1.txt"
+    ln -s insts_i8_D_K1_N1.txt "$D/insts_i8_D_alias.txt"   # an alias of a stream, not of an xclbin
     ln -s "$1" "$D/final_i8_D_alias.xclbin"
     git -C "$FIX" init -q
     git -C "$FIX" add -A >/dev/null 2>&1
@@ -63,6 +71,20 @@ expect() { # expect <name> <pass|fail> [marker-in-message]
     fi
 }
 
+# persists — the sections observe() produces that the written manifest does not carry.
+persists() {
+    python3 - "$TOOL" "$FIX" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+tool, root = sys.argv[1], Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("prov", tool)
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+obs = mod.observe(root)
+man = json.load(open(root / "engine/npu/xclbins/PROVENANCE.json"))
+print(" ".join(sorted(set(obs) - set(man))))
+PY
+}
+
 perturb() { # perturb <python statement(s) over `m`>, from a freshly regenerated manifest
     regenerate
     python3 - "$FIX/engine/npu/xclbins/PROVENANCE.json" "$1" <<'PY'
@@ -84,11 +106,16 @@ lnk=$(git -C "$FIX" ls-files -s -- engine/npu/xclbins | awk '$1=="120000"' | wc 
 tracked=$(git -C "$FIX" ls-files -- engine/npu/xclbins | wc -l)
 recorded=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["population"]["tracked_paths_under_dir"])' \
     "$FIX/engine/npu/xclbins/PROVENANCE.json")
-if [ "$reg" -ge 3 ] && [ "$lnk" -ge 1 ] && [ "$recorded" = "$tracked" ]; then
-    printf '  ok   %-54s %s regular, %s symlink, manifest=%s\n' "fixture floor" "$reg" "$lnk" "$recorded"
+nsha=$(python3 -c 'import json,sys;s=json.load(open(sys.argv[1]))["streams"];print(sum(1 for v in s.values() if "sha256" in v))' \
+    "$FIX/engine/npu/xclbins/PROVENANCE.json" 2>/dev/null || echo 0)
+nalias=$(python3 -c 'import json,sys;s=json.load(open(sys.argv[1]))["streams"];print(sum(1 for v in s.values() if "symlink" in v))' \
+    "$FIX/engine/npu/xclbins/PROVENANCE.json" 2>/dev/null || echo 0)
+if [ "$reg" -ge 3 ] && [ "$lnk" -ge 1 ] && [ "$recorded" = "$tracked" ] && [ "$nsha" -ge 1 ] && [ "$nalias" -ge 1 ]; then
+    printf '  ok   %-54s %s regular, %s symlink, %s stream(s), %s stream alias, manifest=%s\n' \
+        "fixture floor" "$reg" "$lnk" "$nsha" "$nalias" "$recorded"
 else
-    printf '  FAIL %-54s %s regular, %s symlink, manifest=%s tracked=%s\n' \
-        "fixture floor" "$reg" "$lnk" "$recorded" "$tracked"
+    printf '  FAIL %-54s %s regular, %s symlink, %s stream(s), %s stream alias, manifest=%s tracked=%s\n' \
+        "fixture floor" "$reg" "$lnk" "$nsha" "$nalias" "$recorded" "$tracked"
     fail=1
 fi
 
@@ -111,6 +138,35 @@ perturb 'm["census"]["payload_bytes"] += 1'
 expect "census.payload_bytes drifted"                       fail "census.payload_bytes"
 perturb 'm["observed"]["pairs_with_insts"] = []'
 expect "observed.pairs_with_insts drifted"                  fail "observed.pairs_with_insts"
+
+# --- the instruction streams: recorded, compared, and persisted ------------------
+perturb 'm["streams"]["insts_i8_D_K1_N1.txt"]["sha256"] = "0" * 64'
+expect "recorded stream hash drifted"                       fail "streams.insts_i8_D_K1_N1.txt"
+make_fixture final_i8_D_K1_N1.xclbin;           regenerate
+printf 'x' >> "$D/insts_i8_D_K1_N1.txt"
+expect "stream CONTENT changed under a green manifest"      fail "streams.insts_i8_D_K1_N1.txt"
+make_fixture final_i8_D_K1_N1.xclbin;           regenerate
+ln -sfn insts_i8_D_K1_N1.txt.new "$D/insts_i8_D_alias.txt"
+expect "stream alias repointed"                             fail "streams.insts_i8_D_alias.txt"
+
+# The writer's own section literal: a section observe() produces and this literal forgets
+# is dropped in silence, which is how the streams stayed unrecorded in the first place.
+make_fixture final_i8_D_K1_N1.xclbin;           regenerate
+dropped="$(persists)"
+if [ -z "$dropped" ]; then
+    printf '  ok   %-54s %s\n' "writer persists every observed section" "none dropped"
+else
+    printf '  FAIL %-54s dropped: %s\n' "writer persists every observed section" "$dropped"
+    fail=1
+fi
+perturb 'del m["streams"]'
+dropped="$(persists)"
+if [ "$dropped" = "streams" ]; then
+    printf '  ok   %-54s %s\n' "control: a dropped section is reported" "streams"
+else
+    printf '  FAIL %-54s got %s\n' "control: a dropped section is reported" "${dropped:-<nothing>}"
+    fail=1
+fi
 
 # --- and the two exclusions stay excluded: tightening must not resurrect host state (#2218) ---
 perturb 'm["population"]["dangling_symlinks"] += 1'
