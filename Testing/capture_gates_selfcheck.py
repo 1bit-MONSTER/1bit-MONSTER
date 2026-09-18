@@ -15,9 +15,12 @@ The invariant: every `CAP_*` name the documentation tells an operator to set is 
   * in that file's `refused[]` list, which exits 2 at load time before a byte is dumped.
 
 The interposer carries two machine-readable markers for its own lists, and this check
-verifies they agree with the source, so a marker cannot drift away from the code:
+verifies they agree with the source, so a marker cannot drift away from the code.
+These are the current lines, not an illustration — when the marker was two names and
+the file read nine, this check was red on main and the example here was part of the
+reason the drift went unnoticed:
 
-    // capture-gates-read: CAP_DIR CAP_POSTRUN_ACT
+    // capture-gates-read: CAP_BIG_MAX CAP_DIR CAP_DUMP_BIG CAP_MM_W CAP_NO_SYNC CAP_POSTRUN_ACT CAP_POSTRUN_KV CAP_RUNLIST_KV CAP_SKIP_BIG
     // capture-gates-refused: CAP_NO_SYNC CAP_SKIP_BIG CAP_DUMP_BIG
 
 Sources scanned for documented gates: the coordination protocol and every published
@@ -109,11 +112,25 @@ def main(argv: list[str] | None = None) -> int:
           "; ".join(f"{n} ({documented.get(n, '?')})" for n in missing))
 
     # ---- controls: each matcher must be able to fail ---------------------------
+    # An emptied refused[] list cannot be caught *through coverage*: every name in
+    # refused[] is also read via getenv() (refused <= read), so dropping the list
+    # leaves the documented set covered. The previous form of this control asserted
+    # exactly that catch and therefore could never fire — it was reporting the truth
+    # about its own premise, which is why the run below failed on it. What does catch
+    # the edit is the marker comparison, so this control constructs the emptied list
+    # from the source and asserts THAT rule fires.
+    #
+    # It is written against the CONSTRUCTED list rather than against a difference from
+    # the shipped text, so a source that is already empty still reports the substantive
+    # failure (marker != refused[]) once, instead of two misattributed control failures.
+    empty_src = re.sub(r"refused\[\]\s*=\s*\{[^}]*\}", "refused[] = {}", src,
+                       count=1, flags=re.S)
+    _, refused_empty, _, _ = source_lists(empty_src)
     controls = [
         ("a documented gate nothing handles",
          coverage_problems(set(documented) | {"CAP_FAKE_GATE"}, handled)),
         ("an emptied refused[] list",
-         coverage_problems(set(documented), read | set())),
+         [1] if (refused_empty == set() and decl_refused != refused_empty) else []),
         ("a marker that disagrees with the source",
          [1] if decl_read != (read - {"CAP_DIR"}) else []),
     ]
