@@ -454,6 +454,26 @@ else
     fail=$((fail+1))
 fi
 
+# The census's --pairing mode separates "a xclbin with no .txt that the engine loads"
+# (a wrong-answer row: init_i8 drops to the runtime generator, which is single-core-row
+# and wrong against a multi-row xclbin) from "not this engine's artifact". Its classifier
+# matched "([A-Z][A-Z0-9_]{2,})" in ONE file, so five of the six legacy slots — "O", "G",
+# "U", "D", "GU" — could never match, and 103 of the 146 committed final_i8_*.xclbin names
+# fell to the "note" branch: measured, stripping final_i8_D_qwen3_4b's .txt printed "no
+# engine slot token matches this name" with the summary still at "0 of them belong to a
+# slot the engine loads" (#2584). These cases strip the .txt of each slot in a synthetic
+# fixture and read the lines the real tool prints.
+echo "== xclbin pairing census (RISK branch) =="
+total=$((total+1))
+if census_pair_out=$(bash Testing/npu_xclbin_census_selfcheck.sh 2>&1); then
+    printf '%s\n' "$census_pair_out" | sed 's/^/  /'
+    echo "✓ npu_xclbin_census_pairing"
+else
+    echo "✗ npu_xclbin_census_pairing"
+    printf '%s\n' "$census_pair_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # NPU lane contract: the NPU runs on the engine's own worker (src/backend_npu.cpp
 # → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
 # the legacy FLM test harness printed "FLM not installed" as if the NPU were
