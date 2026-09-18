@@ -14,7 +14,7 @@ Why this exists, measured 2026-09-18:
   * A retarget arrives as `pull_request: edited`. Without that trigger, a stacked
     PR whose base merges becomes a main-based PR that nothing ever enqueues.
 
-Seven properties are checked. Each is also checked against a mutated copy of the
+Eight properties are checked. Each is also checked against a mutated copy of the
 file, because a check that cannot fail is not a check. Each mutation removes the
 signal its matcher claims to test, located BY CONTENT: the first version deleted
 the first `::warning::` line and relied on it being the stacked-base one, so the
@@ -46,6 +46,10 @@ looked at.
      time - and a call that sometimes silently works would auto-merge a stacked PR
      into its base FEATURE branch, with the warning below it never reached to say
      so.
+  8. both skip branches exit 0. The step runs under `bash -e`, so `exit 1` there would
+     fail the job for a PR that is behaving correctly - a red check manufactured by the
+     guard that exists to prevent one. Flipping either passed every other check here.
+
 
 Comments are stripped before matching: a `gh pr merge` spelled out in the step's
 own explanation is not an invocation. That is the same mistake
@@ -177,6 +181,42 @@ def warn_after_enqueue(text: str) -> str:
             if not re.search(r'^\s*echo "::warning::[^"]*not the default branch', l)]
     return "\n".join(keep + ['          echo "::warning::$base is not the default branch"'])
 
+def skip_paths_exit_zero(text: str) -> bool:
+    """Both skip branches must exit 0, not 1.
+
+    `exit 0` there is not cosmetic. The step runs under `bash -e`, so the status of those
+    two branches is the difference between "this PR is not ours to enqueue" and a failing
+    check on a PR that is behaving correctly. A mutation flipping either one to `exit 1`
+    passed all 24 other checks here — the warnings, their wording and their ordering were
+    all intact — which is the unchecked-outcome shape these controls exist to catch."""
+    lines = code(text).splitlines()
+    found = 0
+    for i, l in enumerate(lines):
+        if re.search(r'^\s*echo "::warning::[^"]*(?:conflicts with|not the default branch)', l):
+            nxt = next((m.strip() for m in lines[i + 1:i + 4] if m.strip()), "")
+            if nxt != "exit 0":
+                return False
+            found += 1
+    return found >= 2
+
+
+def skip_exits_one(text: str, which: str) -> str:
+    """Mutation: the named skip branch exits 1 instead of 0.
+
+    Returns the text unchanged when there is nothing to flip — a crash here would abort
+    every remaining check with a traceback instead of reporting "this control could not be
+    set up", which is the useful message. Found by running the control against a file that
+    was already mutated, where it raised ValueError."""
+    key = "conflicts with" if which == "conflict" else "not the default branch"
+    i = text.find(key)
+    if i < 0:
+        return text
+    m = re.search(r"exit 0", text[i:])
+    if not m:
+        return text
+    j = i + m.start()
+    return text[:j] + "exit 1" + text[j + 6:]
+
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -205,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     check(refuses_conflicts(text), "a conflicting PR is skipped rather than enqueued")
     check(stacked_base_is_decided_first(text),
           "a non-default base is decided before the merge call, not after it")
+    check(skip_paths_exit_zero(text),
+          "both skip branches exit 0 — not enqueuing is not a failure")
 
     # ---- controls: each matcher must be able to fail ---------------------------
     mutations = [
@@ -233,6 +275,12 @@ def main(argv: list[str] | None = None) -> int:
         ("stacked-base warning moved after the enqueue",
          warn_after_enqueue(text),
          stacked_base_is_decided_first),
+        ("conflict skip exits 1 instead of 0",
+         skip_exits_one(text, "conflict"),
+         skip_paths_exit_zero),
+        ("stacked-base skip exits 1 instead of 0",
+         skip_exits_one(text, "stacked"),
+         skip_paths_exit_zero),
     ]
     for label, mutated, probe in mutations:
         check(mutated != text, f"control setup: '{label}' changes the file")
