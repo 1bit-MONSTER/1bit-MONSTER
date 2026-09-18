@@ -37,6 +37,8 @@ def main():
     parser.add_argument("-k", type=int, default=64)
     parser.add_argument("-n", type=int, default=128)
     parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols (q heads)")
+    parser.add_argument("-x", "--col-offset", type=int, default=0,
+                        help="column offset (issue #2128 half-array builds: 0 or 4)")
     parser.add_argument("-H", "--heads", type=int, default=0,
                         help="total q heads in the model (default 0 = same as --cols). "
                              "Must equal --cols until the multi-pass head-block loop exists.")
@@ -44,11 +46,11 @@ def main():
     args = parser.parse_args()
     with mlir_mod_ctx() as ctx:
         my_attn(args.M, args.K, args.N, args.m, args.k, args.n, args.cols,
-                args.batch_size, args.heads or args.cols)
+                args.batch_size, args.heads or args.cols, args.col_offset)
         print(ctx.module)
 
 
-def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
+def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None, col_off=0):
     dtype_in = np.int8
     dtype_out = np.int32
     K_FRAME = 2048   # fused-style A-frame K (the small-K 4D tap fails on AIE2P)
@@ -129,7 +131,7 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
                                 inputs=[C_ty, C_ty, C_ty, C_ty, A_ty, A2o_ty],
                                 link_with=kernel_o)
 
-        tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(2 + 1)]
+        tiles = [[tile(col_off + col, row) for col in range(n_aie_cols)] for row in range(2 + 1)]
         shim_tiles, mem_tiles = tiles[0], tiles[1]
         core_tiles = tiles[2:]
 

@@ -173,7 +173,12 @@ else
 fi
 # XRT uses shared libs (must come AFTER source on command line)
 LIBS=("${XRT_LIBS[@]}" -laiebu -luuid -lm -ldl -L"$FLM_LIB" -lgemm -ldequant -lqwen3_npu -lqwen3_6_moe_npu -lqwen3_5vl_npu -lq4_npu_eXpress -lmha -llm_head -lllama_npu -lgemma4e_npu -lphi4_npu -lnanbeige_npu -llfm2_npu "-Wl,-rpath,$FLM_LIB")
-CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$SRCDIR/generators" -I"$REPO_ROOT/include" -I"$XRT_INC")
+# -mavx512* + -ffp-contract=off: Zen 5 has a full 512-bit datapath and the bf16
+# prefill is host-bound. -ffp-contract=off is required -- AVX-512F brings FMA and GCC's
+# default contraction moves the 8k boot token (576 -> 785 on 0.6B). With it the build is
+# bit-identical to the -mavx2 one (same hidden-state sha256 on all six models) and 8k
+# prefill is 3-6% faster on the small models.
+CXXFLAGS=(-std=c++26 -O3 -mavx2 -mavx512f -mavx512bw -mavx512vl -mavx512dq -mavx512vbmi -ffp-contract=off -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$SRCDIR/generators" -I"$REPO_ROOT/include" -I"$XRT_INC")
 ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_MOE_O" "$RUNLIST_BRIDGE_O" "$BF16MM_BRIDGE_O" "$FLM_PREFILL_BRIDGE_O")
 
 echo "=== Building NPU engine variants ==="
