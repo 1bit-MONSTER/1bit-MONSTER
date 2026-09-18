@@ -329,6 +329,15 @@ reported as a delta, not a replacement.
 > the fix needs zig which is not installed, and the deliverable wants our own kernels with no third-party runtime
 > in the loop - so ZINC stays an *optional cross-check* if zig ever lands rather than the source of the number.
 >
+> **Update 17:24 - TARGETS REVISED BY THE OPERATOR (authoritative) and two tasks added.** The objective of record is now
+> **≥36 tok/s Q1_0 / ≥25 PTQ1_0 / ≥22 PQ2_0**; the original 42/27/22 are retained only as roof-bound ceilings (the
+> revision is 85.7% / 92.6% / 100% of them). Strict-basis verdicts from the 17:22 window: **Q1_0 34.36 tok/s (SHORT by
+> 1.64)**, **PTQ1_0 24.51 (SHORT by 0.49 — the display rounds to 25, and the weaker claim is recorded deliberately)**,
+> **PQ2_0 24.21 (MET with margin)**. Two tasks came with the revision: ① a **GEMV unpack-ALU rewrite** — now **retired by
+> measurement** (section 4i: sum-over-set-bits wins on five shapes and loses on two, ~2% weighted = ~0.7 tok/s, about a
+> third of what Q1_0 needs, not worth a per-shape dispatch); ② **P4.2 GDN-on-NPU scheduled**, where the toolchain flow now
+> works end to end (AIE object via the Peano toolchain, a real xclbin from `build_all.sh`, repo's tracked xclbins
+> verified untouched) and the GDN kernel itself is the remaining — and genuinely new — work.
 > **Update 16:46 - P5 COMPLETE for all three packs** (`q1_0 + PQ2_0 + PTQ1_0` correctness PASSED on Vulkan against a codec-faithful reference; commits `8d7c8113a` + `25d5751cc`), column reported as a fallback at 23-43 GB/s and busy-tagged for re-bracketing.
 >
 > **Update 16:46 - Q1_0 GEMV: ALU-bound confirmed by a pattern-matched bound.** Running the production dp4a grid/lane

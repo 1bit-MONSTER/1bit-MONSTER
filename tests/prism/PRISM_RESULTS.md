@@ -335,8 +335,9 @@ a read-only stub than as dp4a, while the one tensor large enough to exceed cache
 above carry both figures). Second: therefore the earlier statement that the GEMV sits near the achievable bound, so
 the unpack costs only a small fraction, was **right for the big tensors and wrong as a general claim**. Since the ffn
 tensors are two thirds of every layer (row above) and are cache-resident, the bulk of the weight stream runs at under
-half of what its own pattern could do, and the unpack ALU is the lever after all - inferred, then doubted, now
-measured against a pattern-matched bound instead of a generic one.
+half of what its own pattern could do, and the unpack ALU is the lever after all - inferred,
+then doubted, measured against a pattern-matched bound, and then **tested to the point of retirement in section 4i:
+the lever is real, but the formulation tried recovers only about a third of what Q1_0 needs.**
 
 **Instrument caveat, theirs and kept:** the three tensors are different sizes, so part of that read-only figure
 reflects L2 residency rather than raw DRAM behaviour, and the pattern bound is **not** claimed to be achievable for a
@@ -391,6 +392,13 @@ comfortable pass** - see the next paragraph.
 
 | PTQ1_0 against its revised target, strict reading | 40.8 ms/token = 24.51 tok/s against a target of at least 25, i.e. 0.5 tok/s short; the pass depends on rounding the displayed value up | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| derived from the window above \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 
+**A rounding flag, applied in the direction that costs a "MET" - and the weaker claim is what is recorded.** The
+kernel owner accepted the flag and declined to defend the pass, recommending the SHORT reading because this lane has
+benefited every time from preferring the weaker statement and because the shortfall sits inside the box's run-to-run
+spread. So PTQ1_0 is recorded **SHORT on the strict basis** (the margin is in the row above), carrying the convention question rather
+than deciding it: a target of "at least 25" is satisfied only by a displayed value that rounds up to 25, and that
+question belongs to the operator. The same strict basis gives Q1_0 SHORT by 1.64 and PQ2_0 **MET with margin**.
+
 **A rounding flag, applied in the direction that costs a "MET"** (row above). This lane corrected the same class of
 rounding earlier when it flattered a claim of improvement - a one-token move that sat inside the same binary's
 spread - so the same standard applies when the rounding is what converts a miss into a pass. The measured value and
@@ -398,9 +406,9 @@ its distance from the threshold are recorded; the met-or-missed verdict belongs 
 
 **Target revision recorded with its provenance rather than absorbed.** The objective text this lane was given states
 one set of targets (the row above quotes it); this message cites a revised set, which the kernel owner ties to a goal
-revision in progress. Both sets are now recorded with their fractions, and the revised set is labelled **as reported, pending
-the operator's revision text** - because a gate that moves has to say who moved it, or a lane can quietly lower its
-own bar and call it progress.
+revision in progress. Both sets are now recorded with their fractions, and the revised set is now **the objective of record** - the
+goal was revised and confirmed by the operator, so the authoritative targets are the revised ones and the originals
+are retained only as roof-bound ceilings (the revision is a fixed fraction of each roof, not a private arithmetic).
 
 **Fifth hypothesis for the unexplained earlier failure: tested and refuted.** The kernel owner offered a device gate
 that reuses an engine without resetting its state buffers, which would read whatever a previous gate left behind and
@@ -409,6 +417,35 @@ that initialises one engine for one model and exits (two gates never call `reset
 engine, and one uses no engine at all), and no gate loops over multiple packs in a single process. Cross-gate and
 cross-pack state reuse is therefore not possible, and the hypothesis joins the other four as refuted. The flake stays
 unexplained, and it stays unexplained because its log was deleted.
+
+## 4i. The unpack lever tested and RETIRED (17:24), and P4.2's toolchain milestone
+
+**The surviving hypothesis was tested rather than left standing.** The kernel owner implemented the sum-over-set-bits
+form of the 1-bit dot (the mask being the same spread intermediate the current unpack already builds) and swept all
+seven GEMV shapes of the model. It is correct everywhere, and shape-dependent:
+
+| shape | before | after | tag |
+|---|---|---|---|
+| attn_qkv | 239.1 GB/s | 258.5 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| attn_gate | 226.5 GB/s | 238.6 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| ssm_out | 261.8 GB/s | 271.0 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| ffn_gate | 248.6 GB/s | 260.5 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| ffn_up | 247.7 GB/s | 258.4 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| ffn_down | 340.7 GB/s | 311.6 GB/s (loss) | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| output.weight | 211.3 GB/s | 202.3 GB/s (loss) | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| weighted overall yield | about 2% = roughly 0.7 tok/s, against a shortfall that needs about 4.8% | - | covers about a third of the gap | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from the sweep above \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+
+**Recorded as retired, not pending.** It buys about a third of what Q1_0 needs, and buying the rest would require a
+per-shape dispatch whose complexity the gain does not justify. This corrects a framing of mine two hours old: the
+unpack was the surviving hypothesis after five retirements, and it is now a **tested-and-measured** lever that is real
+but small in this formulation - so Q1_0's remaining shortfall needs either a different unpack idea, which would need
+its own measurement, or something else entirely. Retiring it with numbers is the better outcome than carrying it as a
+hope, and it is the sixth mechanism today to be settled by measurement rather than argument.
+
+**P4.2 milestone, separately:** the AIE toolchain flow now works end to end - a kernel object compiled with the Peano
+toolchain (`clang++ --target=aie2p-none-unknown-elf`) under `/tmp/gdnobj/`, verified present here - and `build_all.sh`
+drove a real xclbin out of it, with the repository's tracked xclbin set verified untouched (R17's lesson applied
+without being asked). The GDN kernel itself remains, and the plan already calls it the genuinely new part.
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 
