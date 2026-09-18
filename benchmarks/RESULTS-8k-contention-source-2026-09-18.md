@@ -65,3 +65,32 @@ whole lifetime and does not take `/tmp/1bit-npu-device.lock`, so it silently inv
 NPU measurement taken beside it. The lane's own rule is to leave other lanes' work alone, so it
 was not touched; the room has been told, and the guard now makes the contamination visible in
 every campaign's output rather than in a post-hoc explanation.
+
+## The guard is now IN THE ENGINE, and verified with a controlled holder
+
+The warning above is fine for a human running a campaign, but the class of error is silent by
+construction: a tool that does not take the lock cannot be fixed by asking its author to look
+at a document. So the same check is now in `engine/npu/src/npu_runlist_bridge.cpp`
+(`check_foreign_accel_holders()`), called at both runlist entry points —
+`npu_runlist_session_init` (the unified path) and `npu_runlist_decode` (the whole-layer path):
+
+- default: prints `[contention] WARNING: foreign holder(s) on /dev/accel/accel0: <pid>:<cmd>; …`
+  naming each non-`flm serve` holder, and continues;
+- `NPU_STRICT_DEVICE=1`: refuses to run (`exit(3)`) instead of producing a number;
+- `NPU_ALLOW_CONTENDED=1`: silences it;
+- the production `flm serve` is excluded (it is expected to hold the device).
+
+**Verified with a controlled holder**, not with whatever happened to be on the box: a dummy
+`python3` process holding `/dev/accel/accel0` was started, and the three modes behave as
+specified —
+
+```
+default                  -> rc=0, "[contention] WARNING: foreign holder(s) …: 172049:python3 -c …"
+NPU_STRICT_DEVICE=1      -> rc=3, WARNING then "[contention] refusing to run (NPU_STRICT_DEVICE=1)"
+NPU_ALLOW_CONTENDED=1    -> rc=0, 0 contention lines
+```
+
+That is a better test than the live `/tmp/attrib` case, because the live case disappeared
+between two checks (the two processes had exited by the time the rebuilt binary was ready) —
+which is itself the point: the contamination is transient and unattended, so the instrument has
+to be deterministic.

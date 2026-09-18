@@ -164,7 +164,63 @@ static std::string resolve_layer_xclbin(const std::string& model_dir, const char
     return xb;
 }
 
+// ── foreign-holder guard ──────────────────────────────────────────────────────
+// The engine takes /tmp/1bit-npu-device.lock; other tools do not, so a foreign
+// process on /dev/accel/accel0 silently inflates every number taken beside it.
+// Measured 2026-09-18: two long-lived /tmp/attrib processes inflated identical 8k
+// prefills 3.3x and 4.4x (0.503 -> 2.194 / 1.654 ms per prompt token). Warn
+// whenever one is present; NPU_STRICT_DEVICE=1 refuses instead; the production
+// `flm serve` is expected and excluded; NPU_ALLOW_CONTENDED=1 silences.
+static void check_foreign_accel_holders() {
+    if (getenv("NPU_ALLOW_CONTENDED")) return;
+    DIR* proc = opendir("/proc");
+    if (!proc) return;
+    std::string bad;
+    struct dirent* e;
+    while ((e = readdir(proc))) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        const int pid = atoi(e->d_name);
+        if (pid <= 0 || pid == getpid()) continue;
+        char fdp[64];
+        snprintf(fdp, sizeof fdp, "/proc/%d/fd", pid);
+        DIR* fd = opendir(fdp);
+        if (!fd) continue;
+        bool holds = false;
+        struct dirent* fe;
+        while ((fe = readdir(fd))) {
+            char link[80], tgt[256];
+            snprintf(link, sizeof link, "%s/%s", fdp, fe->d_name);
+            const ssize_t n = readlink(link, tgt, sizeof tgt - 1);
+            if (n > 0) { tgt[n] = 0; if (strstr(tgt, "accel0")) { holds = true; break; } }
+        }
+        closedir(fd);
+        if (!holds) continue;
+        char cmd[200] = {0}, cpath[64];
+        snprintf(cpath, sizeof cpath, "/proc/%d/cmdline", pid);
+        FILE* f = fopen(cpath, "rb");
+        if (f) { size_t n = fread(cmd, 1, sizeof cmd - 1, f); fclose(f);
+                 for (size_t i = 0; i < n; i++) if (!cmd[i]) cmd[i] = ' '; }
+        if (strstr(cmd, "flm serve")) continue;   // the production server, expected
+        char one[256];
+        snprintf(one, sizeof one, "%d:%s; ", pid, cmd[0] ? cmd : "?");
+        bad += one;
+    }
+    closedir(proc);
+    if (bad.empty()) return;
+    fprintf(stderr,
+            "\n[contention] WARNING: foreign holder(s) on /dev/accel/accel0: %s\n"
+            "             The engine takes /tmp/1bit-npu-device.lock; these do not, so this run's\n"
+            "             timings may be inflated (measured up to 4.4x on 2026-09-18).\n"
+            "             NPU_ALLOW_CONTENDED=1 silences; NPU_STRICT_DEVICE=1 refuses.\n\n",
+            bad.c_str());
+    if (getenv("NPU_STRICT_DEVICE")) {
+        fprintf(stderr, "[contention] refusing to run (NPU_STRICT_DEVICE=1)\n");
+        exit(3);
+    }
+}
+
 extern "C" int npu_runlist_session_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV) {
+    check_foreign_accel_holders();
     ensure_elf_gen_env(model_path, H);
     load_eos_ids(model_path);
     sess_build_cfg(H, NC, NH, NKV, IM, NV);
@@ -495,6 +551,7 @@ static void ensure_elf_gen_env(const char* model_path, int H) {
 
 extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* ids_file,
                                int H, int NC, int NH, int NKV, int IM, int NV) {
+    check_foreign_accel_holders();
     ensure_elf_gen_env(model_path, H);
     load_eos_ids(model_path);
     // 1) prompt token ids (the engine feeds pre-tokenized ids; no tokenizer here)
