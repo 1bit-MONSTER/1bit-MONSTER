@@ -258,6 +258,20 @@
   "file": "1bit-post-significant-herrhruby-mr-midtrain-9b-v4-quarter.html",
   "mode": "covered"
  },
+ "covered:INCModel3/Qwen3.5-9B-MXFP8-FP8KV-FP8Attn-CT-RTN-AutoRound": {
+  "arch": "qwen3_5",
+  "date": "2026-09-13",
+  "family": "Qwen",
+  "file": "1bit-post-significant-incmodel3-qwen3-5-9b-mxfp8-fp8kv-fp8attn-ct-rtn-autoround.html",
+  "mode": "covered"
+ },
+ "covered:InfiniCloud/llm-jp-4-32b-a3b-thinking-GPTQ-INT4-G64": {
+  "arch": "qwen3moe",
+  "date": "2026-09-13",
+  "family": "Qwen",
+  "file": "1bit-post-significant-infinicloud-llm-jp-4-32b-a3b-thinking-gptq-int4-g64.html",
+  "mode": "covered"
+ },
  "covered:IzNrsydn/legal-chatbot-llama3-finetuned": {
   "arch": "qwen2",
   "date": "2026-09-02",
@@ -328,6 +342,13 @@
   "file": "1bit-post-significant-saifiindustries-qwen3-5-35b-a3b.html",
   "mode": "covered"
  },
+ "covered:SirGreblik/GLM-5.2-colibri-int4-g64-with-int8-mtp": {
+  "arch": "glmmoedsa",
+  "date": "2026-09-13",
+  "family": "Glm",
+  "file": "1bit-post-significant-sirgreblik-glm-5-2-colibri-int4-g64-with-int8-mtp.html",
+  "mode": "covered"
+ },
  "covered:Solstice-AI/DeepSeek-V4-Flash-Vision-Exp-MXFP4": {
   "arch": "deepseekv4",
   "date": "2026-09-02",
@@ -368,6 +389,13 @@
   "date": "2026-09-02",
   "family": "Gemma",
   "file": "1bit-post-significant-titanfrm-gemma-4-e4b-it-uncensored-heretic.html",
+  "mode": "covered"
+ },
+ "covered:TracNetwork/mayhem-catalog-Qwen-Qwen3-8-Flash-Next-NVFP4": {
+  "arch": "qwen4exp",
+  "date": "2026-09-13",
+  "family": "Qwen",
+  "file": "1bit-post-significant-tracnetwork-mayhem-catalog-qwen-qwen3-8-flash-next-nvfp4.html",
   "mode": "covered"
  },
  "covered:Ttimms/Bible-Assistant-Qwen3.5-4B-v3.2": {
@@ -440,6 +468,13 @@
   "file": "1bit-post-significant-arefehrajabian-phi-finetune-reasoning-plus-16bit.html",
   "mode": "covered"
  },
+ "covered:bhushan1729/gemma3-1b-given-to-find-distilled": {
+  "arch": "gemma3",
+  "date": "2026-09-13",
+  "family": "Gemma",
+  "file": "1bit-post-significant-bhushan1729-gemma3-1b-given-to-find-distilled.html",
+  "mode": "covered"
+ },
  "covered:brennercruvinel/truw-rwkv7-2.9b-v3": {
   "arch": "rwkv",
   "date": "2026-09-02",
@@ -496,11 +531,25 @@
   "file": "1bit-post-significant-dharun2049-kaveri-stgrpo-0-5b.html",
   "mode": "covered"
  },
+ "covered:drowzeys/DeepSeek-V4.1-Flash-Abliterated-Cybersecurity-Unleashed": {
+  "arch": "deepseek",
+  "date": "2026-09-13",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-drowzeys-deepseek-v4-1-flash-abliterated-cybersecurity-unleashed.html",
+  "mode": "covered"
+ },
  "covered:dureduck/Olmo-3-7B-PostTraining8K-SFT-step-40": {
   "arch": "olmo3",
   "date": "2026-09-02",
   "family": "Olmo",
   "file": "1bit-post-significant-dureduck-olmo-3-7b-posttraining8k-sft-step-40.html",
+  "mode": "covered"
+ },
+ "covered:eemin/halogen-qwen3.8-flash-next-copy": {
+  "arch": "qwen",
+  "date": "2026-09-13",
+  "family": "Qwen",
+  "file": "1bit-post-significant-eemin-halogen-qwen3-8-flash-next-copy.html",
   "mode": "covered"
  },
  "covered:emese-tech/patak": {
@@ -517,6 +566,20 @@
   "file": "1bit-post-significant-forgeguard-ai-ornith-1-5-35b-a3b-nvfp4.html",
   "mode": "covered"
  },
+ "covered:frederic-ai/GLM-5.3-Flash-MLX-mixed-4_6bit": {
+  "arch": "glm5next",
+  "date": "2026-09-13",
+  "family": "Glm",
+  "file": "1bit-post-significant-frederic-ai-glm-5-3-flash-mlx-mixed-4-6bit.html",
+  "mode": "covered"
+ },
+ "covered:g-assismoraes/DeltaP2S-Gemma2-9B-SameFormula-Code-S13": {
+  "arch": "gemma2",
+  "date": "2026-09-13",
+  "family": "Gemma",
+  "file": "1bit-post-significant-g-assismoraes-deltap2s-gemma2-9b-sameformula-code-s13.html",
+  "mode": "covered"
+ },
  "covered:ganscs/Olmo7b-olmo-a100-new-20260908-CPT-merged-step-750": {
   "arch": "olmo3",
   "date": "2026-09-02",
@@ -529,6 +592,13 @@
   "date": "2026-09-02",
   "family": "Gemma",
   "file": "1bit-post-significant-hariharasudhan-en-indic-translate-26b.html",
+  "mode": "covered"
+ },
+ "covered:huihui-ai/Huihui-MiniCPM5-2B-abliterated": {
+  "arch": "llama",
+  "date": "2026-09-13",
+  "family": "Llama",
+  "file": "1bit-post-significant-huihui-ai-huihui-minicpm5-2b-abliterated.html",
   "mode": "covered"
  },
  "covered:icysunny/gemma4_e2b_reasoner_merged": {
@@ -622,11 +692,25 @@
   "file": "1bit-post-significant-mobilint-llama-3-2-1b-instruct-regulus-rb-usb.html",
   "mode": "covered"
  },
+ "covered:neopolita/Qwen3.6-23B-A3B-Niwaki-v2.2-2bit-mlx": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-13",
+  "family": "Qwen",
+  "file": "1bit-post-significant-neopolita-qwen3-6-23b-a3b-niwaki-v2-2-2bit-mlx.html",
+  "mode": "covered"
+ },
  "covered:neutrypl/neutry-functiongemma-270m-v2": {
   "arch": "gemma3",
   "date": "2026-09-02",
   "family": "Gemma",
   "file": "1bit-post-significant-neutrypl-neutry-functiongemma-270m-v2.html",
+  "mode": "covered"
+ },
+ "covered:ngqtrung/video-hopchain-8b": {
+  "arch": "qwen3vl",
+  "date": "2026-09-13",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ngqtrung-video-hopchain-8b.html",
   "mode": "covered"
  },
  "covered:noodcon/Safetensors.granite-4.0-Improved-Enhanced-Refined": {
@@ -641,6 +725,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-pgmharikrishnan-grug-35b-v2-mlx-4bit.html",
+  "mode": "covered"
+ },
+ "covered:ppsub/Qwen-PhishDetectAI-SMS-GRPO": {
+  "arch": "qwen2",
+  "date": "2026-09-13",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ppsub-qwen-phishdetectai-sms-grpo.html",
   "mode": "covered"
  },
  "covered:ram-lexsi/safetune-testrun-unlearn_rmu": {
@@ -683,6 +774,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-thuyduongjoe123-checkpoints-en-my-logit.html",
+  "mode": "covered"
+ },
+ "covered:vwdubb/gemma-4-31B-it-uncensored-heretic-FP8": {
+  "arch": "gemma4",
+  "date": "2026-09-13",
+  "family": "Gemma",
+  "file": "1bit-post-significant-vwdubb-gemma-4-31b-it-uncensored-heretic-fp8.html",
   "mode": "covered"
  },
  "covered:yamatazen/Himeyuri-Magnum-12B-HereticLoRA": {
