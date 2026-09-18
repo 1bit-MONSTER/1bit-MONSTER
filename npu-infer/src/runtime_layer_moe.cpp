@@ -399,15 +399,29 @@ bool MoERuntimeLayerEngine::logits_host(float* out, int vocab) {
         for (int lr = 0; lr < TR; lr++) {
             const long long v = tile_row * TR + lr;
             if (v >= (long long)vocab) continue;
-            float acc = 0.0f;
             const int8_t* vrow = values + (size_t)lr * TC;
-            for (int col = 0; col < TC; col++) {
-                uint16_t sb; memcpy(&sb, scales + ((size_t)(col / 32) * 32 + lr) * 2, 2);
-                float s = bf16_to_f32(sb);
-                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;  // as the reference dequant does
-                acc += hid[(size_t)(hbase + col)] * ((float)vrow[col] * s);
+            // 8 group scales (one per 32-col group), hoisted out of the col loop.
+            // The old code recomputed bf16_to_f32 + isfinite + fabs once PER COLUMN
+            // (256x per row) even though the scale only changes every 32 columns.
+            float gscale[TC / 32];
+            for (int g = 0; g < TC / 32; g++) {
+                uint16_t sb; memcpy(&sb, scales + (size_t)(g * 32 + lr) * 2, 2);
+                gscale[g] = bf16_to_f32(sb);
+                if (!std::isfinite(gscale[g]) || std::fabs(gscale[g]) > 100.0f) gscale[g] = 0.0f;
             }
-            out[v] = acc;
+            float acc = 0.0f;
+            for (int g = 0; g < TC / 32; g++) {
+                const int8_t* gv = vrow + (size_t)g * 32;
+                const float* gh = hid.data() + (size_t)hbase + (size_t)g * 32;
+                for (int c = 0; c < 32; c++)
+                    acc += gh[c] * ((float)gv[c] * gscale[g]);
+            }
+            // ACCUMULATE, not assign: each output row v is visited once per
+            // tile_col (n_tile_cols = H/256 times), each covering a 256-wide
+            // slice of the hidden dim. `out[v] = acc` kept only the LAST slice
+            // (tile_col = n_tile_cols-1) and silently dropped the other 7/8 of
+            // the hidden dot product, so the logits were finite but wrong.
+            out[v] += acc;
         }
     }
     return true;
