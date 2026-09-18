@@ -9,6 +9,26 @@ PYTHON="${PYTHON:-python3}"
 BIN=/tmp/onebit_tests; mkdir -p "$BIN"
 fail=0; total=0; skip=0
 
+# ── tripwire: every selfcheck in Testing/ must be invoked by name ──
+# Two selfchecks sat here invoked by nothing (hrx_backend_selfcheck.cpp,
+# lse_backend_selfcheck.cpp), and the HRX one had rotted: its own documented
+# compile line omitted src/hrx_inprocess.cpp, so it could not have linked. Nothing
+# noticed, because nothing ran it. This fails the moment another one appears —
+# either wire it into this script (or a workflow), or say above why it is manual.
+total=$((total+1))
+_orphans=""
+_corpus="$(cat Testing/run_all.sh .github/workflows/*.yml 2>/dev/null)"
+for _f in Testing/*_selfcheck.*; do
+    _b="$(basename "$_f")"
+    printf '%s' "$_corpus" | grep -q -- "$_b" || _orphans="$_orphans $_b"
+done
+if [ -n "$_orphans" ]; then
+    echo "✗ selfcheck wiring: nothing invokes:$_orphans"
+    fail=$((fail+1))
+else
+    echo "✓ selfcheck wiring (every Testing/*_selfcheck.* is invoked)"
+fi
+
 run() {  # run <name> <compile-args...> -- <run-args...>
     local name="$1"; shift
     local src=(); local runargs=()
@@ -69,6 +89,22 @@ run npu_keys  Testing/npu_key_contract_selfcheck.cpp src/q4nx_reader.cpp --
 # NPU path resolution: an override naming a path this machine does not have must
 # not be used (a stale NPU_XCLBIN_DIR in the shell silently broke every NPU run).
 run npu_paths Testing/npu_paths_selfcheck.cpp --
+
+# NPU fused-weight packing: transpose_pack's `in_f` is the ROW STRIDE of its source, so an
+# offset that names a row block has to be scaled by it. The GDN K and V blocks passed a row
+# count unscaled, so every row past 0 was read from a sliding window inside q's first rows —
+# invisible to every other check, because the packing runs inside a 4000-line function and a
+# wrong block still has the right shape (#2451). Source-level, no device needed.
+echo "== npu pack stride =="
+total=$((total+1))
+if pack_stride_out=$("$PYTHON" Testing/npu_pack_stride_selfcheck.py 2>&1); then
+    printf '%s\n' "$pack_stride_out" | sed 's/^/  /'
+    echo "✓ npu_pack_stride"
+else
+    echo "✗ npu_pack_stride"
+    printf '%s\n' "$pack_stride_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 
 # CLI dispatch coverage: tools/onebit.cpp's whole command set (chat, pull, list,
 # status, …) is compiled into the single ELF, but tools/onebin.cpp declared
@@ -173,6 +209,21 @@ if claims_out=$("$PYTHON" Testing/seo_claim_selfcheck.py 2>&1); then
 else
     echo "✗ seo_claims"
     printf '%s\n' "$claims_out" | tail -10 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+# The claim gate itself must be able to fail. validate_claims.py --check-readme
+# scanned README.md for five engine names; the figures moved to the wiki and the
+# README became a landing page, so the scan read zero rows and returned [] for
+# months while the page that inherited the numbers stamped a quarantined tok/s
+# figure "validated" (#2476). A zero-row scan is not an error, so nothing failed.
+# This injects a bad row into each claim page and requires the gate to catch it.
+total=$((total+1))
+if gate_out=$("$PYTHON" Testing/claims_gate_selfcheck.py 2>&1); then
+    echo "✓ claims_gate"
+    printf '%s\n' "$gate_out" | grep -E "^  note" | sed 's/^/  /'
+else
+    echo "✗ claims_gate"
+    printf '%s\n' "$gate_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
@@ -471,6 +522,32 @@ fi
 
 
 run rni-bf16 Testing/aie2p_bf16_rni_selfcheck.cpp --
+
+# ── HRX + LSE backend lifecycle (optional — need the fetched nlohmann include) ──
+# Both of these selfchecks have existed for a while and NOTHING invoked either of
+# them. That is how the HRX one's own documented compile line went stale unnoticed:
+# it omitted src/hrx_inprocess.cpp, where hrx::Inprocess now lives, so the check
+# would not have linked even if someone had wired it up. Both self-skip their live
+# half without HRX_*/LSE_* set, so the lifecycle half runs anywhere.
+for _spec in "hrx-backend|src/backend_hrx.cpp src/hrx_inprocess.cpp|Testing/hrx_backend_selfcheck.cpp" \
+             "lse-backend|src/backend_lse.cpp|Testing/lse_backend_selfcheck.cpp"; do
+    _name="${_spec%%|*}"; _rest="${_spec#*|}"; _srcs="${_rest%%|*}"; _chk="${_rest##*|}"
+    total=$((total+1))
+    if [ ! -f build/_deps/nlohmann_json-src/include/nlohmann/json.hpp ]; then
+        echo "  - $_name: nlohmann include absent, skipped (needs a configured build tree)"
+        skip=$((skip+1)); continue
+    fi
+    # Keep the compiler's own words, like run() above: a bare COMPILE FAILED names nothing.
+    if ! _log=$("$CXX" $FLAGS -Ibuild/_deps/nlohmann_json-src/include \
+                $_srcs "$_chk" -o "$BIN/$_name" 2>&1); then
+        echo "✗ $_name: COMPILE FAILED"
+        printf '%s\n' "$_log" | tail -4 | sed 's/^/    /'
+        fail=$((fail+1)); continue
+    fi
+    if "$BIN/$_name" >/dev/null 2>&1; then
+        echo "✓ $_name"
+    else echo "✗ $_name: CHECK FAILED"; fail=$((fail+1)); fi
+done
 
 echo "======================================"
 echo "$((total-fail-skip))/$total passed, $skip skipped"

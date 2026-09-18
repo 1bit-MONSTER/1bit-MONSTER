@@ -2029,6 +2029,12 @@ struct Bf16Ctx {
             int gdn_v_off = gdn_vh[l] * gdn_hd[l];
             int t = gdn_k_off + gdn_k_off + gdn_v_off;
             std::vector<float> w((size_t)H * t);
+            // transpose_pack reads src[o*in_f + i] with in_f == H, while gdn_k_off/gdn_v_off are
+            // ROW counts (they are also the out_f and the dst_offset of their own call). The source
+            // pointer therefore has to advance by rows*H, not by rows: without the * H the K and V
+            // blocks are read from a sliding window inside q's first rows, so only a head at row 0
+            // is right by accident. Q needs no offset (row 0). Regression guard:
+            // Testing/npu_pack_stride_selfcheck.py (#2451).
             transpose_pack(qkv_w, gdn_k_off, H, w.data(), t, 0);                     // Q
             transpose_pack(qkv_w + (size_t)gdn_k_off * H, gdn_k_off, H, w.data(), t, gdn_k_off);  // K
             transpose_pack(qkv_w + (size_t)gdn_v_off * H, gdn_v_off, H, w.data(), t, gdn_v_off);  // V

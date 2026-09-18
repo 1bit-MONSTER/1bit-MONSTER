@@ -42,7 +42,7 @@ weeks out of date the last time it was hand-maintained (see git history).
 | BitNet TQ2_0 (GGML native) | **420 tok/s** | ROCm HIP | ✅ validated, re-measured 2026-07-24 |
 | Q1_0 binary | **380 tok/s** | ROCm HIP | ✅ validated, re-measured 2026-07-24 |
 | TQ2 GEMV | **367 tok/s** | ROCm HIP | ✅ validated, re-measured 2026-07-24 |
-| GPU ternary (Vulkan) | **318 tok/s** | Vulkan ZINC | ✅ validated |
+| GPU ternary (Vulkan) | **318 tok/s** | Vulkan ZINC | ❓ unsourced — no reproducible source in this repo |
 | BitNet TQ1_0 (base-3 LUT) | **202 tok/s** | ROCm HIP | ✅ validated, re-measured 2026-07-24 |
 | Prefill INT8 WMMA (I8-APRE) | **43.2 TFLOPS** | INT8 WMMA | ✅ re-measured 2026-08-01 (was 39.4) |
 | IQ1_S dequant+GEMV | **45 tok/s** | ROCm HIP | ✅ validated — IQ1_M dequant also bit-exact vs llama.cpp reference (`Testing/iq1_selfcheck.cpp`); 50/56-byte block sizes fixed in reader |
@@ -121,7 +121,8 @@ This is a device-level number, not a model-inference tok/s figure.
 
 *All kernel-level numbers verified bit-exact on real Strix Halo hardware (gfx1151), median
 of 3 runs. Status legend: ✅ validated · ⚙️ optimized (kernel runs at this speed, engine
-integration in progress).*
+integration in progress) · ❓ unsourced (no reproducible source in this repo — the figure
+is not claimed as measured).*
 
 ---
 
