@@ -326,6 +326,17 @@ struct Hip1bpBackend : Backend {
             return model_->get_tensor_f32(n,v);
         };
         uint32_t q = gguf_ ? (uint32_t)0xFFFFFFFFu : model_->header().quant;
+        // Prism ML v5 packs (Q1_0_G128/PQ2_0_G128/PTQ1_0_G128) and, when folded, a Hadamard
+        // transform manifest. This backend does not yet dispatch the Prism tile GEMV /
+        // FWHT / GDN kernels (plan P3.5), so refuse explicitly rather than let the generic
+        // dequant produce plausible garbage (R15: never serve folded weights as plain).
+        if (!gguf_ && (q == ONEBP_Q1_0_G128 || q == ONEBP_PQ2_0_G128 || q == ONEBP_PTQ1_0_G128 ||
+                       model_->has_prism_transform())) {
+            fprintf(stderr, "[hip1bp] Prism ML pack (quant %u, folded=%d): the Prism HIP lane is not "
+                            "wired into this backend yet (plan P3.5) -- refusing.\n",
+                    q, (int)model_->has_prism_transform());
+            return false;
+        }
         // #1627: only quants the loader dequantizes (dequant_tile/dequant_tile_tq2)
         // or the packed path (TQ2NZ family) are supported here. TQ1/TQ2BS/I8/F16/F32
         // fall through to the Q4NX-layout dequant -> garbage weights -> NaN logits
