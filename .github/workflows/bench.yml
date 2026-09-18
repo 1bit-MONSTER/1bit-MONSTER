@@ -121,8 +121,35 @@ jobs:
           path: engine/npu/build-cmake/benchmark.log
           retention-days: 30
 
-      - name: Update BENCHMARKS.md timestamp
-        if: env.DRIVER_OK == 'true'
+      # This step used to `sed -i` a "Benchmarks run <now> — CI-verified" line into
+      # engine/npu/BENCHMARKS.md. It could not affect the repository, or even the
+      # workspace copy, and it reported success the whole time. Introduced in
+      # 200e4694a (2026-08-21) and never accompanied by a commit step:
+      #   1. `permissions: contents: read` (line 21) and no commit/push step, so a
+      #      modified tracked file is discarded with the runner workspace. The 8
+      #      workflows here that do write back all declare a write permission;
+      #      this one never did.
+      #   2. The pattern `^\*Benchmarks` matches no line in BENCHMARKS.md —
+      #      `git log -S '*Benchmarks run' -- engine/npu/BENCHMARKS.md` is empty,
+      #      so `sed -i` exited 0 having changed nothing.
+      #   3. `if: env.DRIVER_OK == 'true'` skipped it whenever the driver was
+      #      missing: a step recorded as a skip and read as a pass.
+      # The run summary is a record CI can actually write, so the timestamp goes
+      # there. A tracked-file stamp would need a write token and a commit step,
+      # which this repo deliberately does not give its PR-triggered workflows.
+      - name: Record the verification timestamp
+        if: always()
         run: |
-          NOW=$(date -u +"%Y-%m-%d %H:%M UTC")
-          sed -i "s/^\*Benchmarks run.*/*Benchmarks run $NOW — CI-verified./" engine/npu/BENCHMARKS.md
+          {
+            echo "### NPU benchmark — $(date -u +'%Y-%m-%d %H:%M UTC')"
+            log=engine/npu/build-cmake/benchmark.log
+            if [ -s "$log" ]; then
+              if grep -q "ms/tok" "$log"; then
+                echo "- measured: $(grep 'ms/tok' "$log" | tail -1)"
+              else
+                echo "- no ms/tok line in benchmark.log — this run produced no measurement"
+              fi
+            else
+              echo "- no benchmark.log — the engine never ran"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
