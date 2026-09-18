@@ -27,10 +27,13 @@ inline float gdn_expf(float x) {
 inline float gdn_silu(float x) { return x / (1.0f + gdn_expf(-x)); }
 }  // namespace
 
-extern "C" void prism_gdn_conv1d_packed(const float *__restrict in, float *__restrict out) {
+//  is deliberately NOT const: this kernel updates the rolling 3-tap state in place inside
+// the packed input buffer. Declaring it const and casting the store away is undefined behaviour,
+// which is the first thing to rule out when the device returns zeros while the host gate passes.
+extern "C" void prism_gdn_conv1d_packed(float *__restrict in, float *__restrict out) {
     const float *qkv   = in;
     const float *w     = in + GDN_CD;
-    float       *state = (float *)(in + GDN_CD + GDN_CD * 4);
+    float       *state = in + GDN_CD + GDN_CD * 4;
     for (int i = 0; i < GDN_CD; i++) {
         const float *wi = w + (long)i * 4;
         float *st = state + (long)i * 3;
