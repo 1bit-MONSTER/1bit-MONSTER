@@ -5073,6 +5073,9 @@ struct Bf16Ctx {
                     fprintf(stderr, "[unified] act handoff failed\n");
                     return 1;
                 }
+                // Diagnostic hook: dump the session's KV BO right after the handoff,
+                // the same logical point as NPU_KV_DUMP_PURE in the bridge.
+                if (const char* ku = getenv("NPU_KV_DUMP_UNIFIED")) npu_runlist_dump_kv(ku);
                 std::vector<float> lg(NV);
                 std::vector<int> uni_ids(ng, 0);
                 auto tgs = std::chrono::steady_clock::now();

@@ -89,6 +89,9 @@ public:
 
     /// Dump the act BO (first `n` bytes) to a file (validation helper).
     bool dump_act(const char* path, size_t n = 2048);
+    // Diagnostic: sync the kv BO (layer 0) back and write `n` bytes. Used by the
+    // bf16->runlist handoff comparison (NPU_KV_DUMP_*). Inert unless called.
+    bool dump_kv_bo(const char* path, size_t n = 33554432);
     /// Dump the logits BO to a file (validation helper).
     bool dump_logits(const char* path, int vocab);
 

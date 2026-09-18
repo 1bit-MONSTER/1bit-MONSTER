@@ -47,6 +47,11 @@ int npu_runlist_write_kv(int layer, int token_begin, int n_tokens,
                          const uint16_t* bf16_kv, int src_region_stride_u16);
 // Write the prefill's final hidden state (bf16, H) into the act BO.
 int npu_runlist_write_act(const uint16_t* bf16_hidden);
+
+// Diagnostic: write the session's layer-0 KV BO to `path` (default 32 MB).
+// Inert unless called; used to diff the bf16-prefill handoff against the host
+// prefill (see RESULTS-unified-decode-penalty-2026-09-18.md).
+extern "C" int npu_runlist_dump_kv(const char* path);
 // Embed a token into the act BO (for the decode loop's forward step).
 int npu_runlist_embed(int token);
 // Run the lm_head on the act BO and write logits to `logits` (NV floats).

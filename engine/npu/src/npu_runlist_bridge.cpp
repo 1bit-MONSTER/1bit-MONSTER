@@ -217,6 +217,11 @@ extern "C" int npu_runlist_write_kv(int layer, int token_begin, int n_tokens,
                                g_sess_kv_region_u16) ? 0 : 1;
 }
 
+extern "C" int npu_runlist_dump_kv(const char* path) {
+    if (!g_sess_rt || !path || !path[0]) return 1;
+    return g_sess_rt->dump_kv_bo(path, 33554432) ? 0 : 1;
+}
+
 extern "C" int npu_runlist_write_act(const uint16_t* bf16_hidden) {
     if (!g_sess_rt) return 1;
     return g_sess_rt->write_act(bf16_hidden) ? 0 : 1;
@@ -550,6 +555,10 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
     auto t1 = std::chrono::steady_clock::now();
     double prefill_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     printf("Prefill: %.0fms (%.0f ms/tok)\n\n", prefill_ms, prefill_ms / npt);
+    // Diagnostic hook: the SAME logical point as the unified handoff dump (KV BO
+    // after all npt prompt tokens, before any decode exec), so the two byte
+    // streams are comparable. Opt-in.
+    if (const char* kp = getenv("NPU_KV_DUMP_PURE")) rt.dump_kv_bo(kp, 33554432);
 
     // 6) greedy decode — bf16 argmax -> emit -> advance. The runlist build for
     //    the NEXT step is overlapped against the current device exec using the

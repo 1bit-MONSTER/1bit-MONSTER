@@ -130,9 +130,79 @@ must be handled or the diff will be read wrong:
   state. To make them comparable, add a one-line dump call right after the pure path's prefill
   loop (or use `RT_DUMP_POST` with the same alignment), rather than diffing `kv_ctx<N>.bin`.
 
+
+## MEASURED (2026-09-18): the KV handoff is topologically identical — the penalty is device state, plus a lost decode overlap
+
+Two env-gated dumps were added and used (inert by default):
+
+- `RuntimeLayerEngine::dump_kv_bo(path, n)` — syncs the session's `kv_bos_[0]` back and writes it.
+- `NPU_KV_DUMP_PURE=<path>` in `npu_runlist_decode` (dumps the **local** engine's BO — note
+  `g_sess_rt` is null on this path, so the bridge helper cannot be used here), and
+  `NPU_KV_DUMP_UNIFIED=<path>` in the unified path right after `npu_runlist_write_act`.
+
+Both arms ran the same 1024-id prompt, 0.6B, and dumped exactly the same logical point: the
+KV BO with all 1024 prompt tokens, before any decode exec. Result over the layer-0 32 MB BO
+(session region stride 8 MB, 1024 B per token; valid span 1 MB per region):
+
+| comparison | differing bytes |
+|---|---:|
+| same position, region 0 valid span | **47.8%** |
+| ±1-token shift (pure[0:] vs uni[1MB:]) | 81.6% (worse) |
+| identical 1024-byte token blocks | **0 / 1024** |
+| tail beyond the valid span | 0 |
+
+So the two streams are **aligned by token** (a shift makes it worse, not better), occupy the
+same offsets and the same span, and are equally populated (~1.046M non-zero bytes each); the
+differences are confined to low-order bits of the bf16 values, e.g. token 0 starts
+`pure 234,62 …` / `uni 230,62 …` (0x3EEA vs 0x3EE6) and `pure 165,189` / `uni 75,189`
+(0xBDA5 vs 0xBD4B). **The KV topology and layout are identical; only the values differ,
+slightly.**
+
+**Therefore the KV handoff content is NOT the cause of the exec-time penalty** — identical
+shape, offsets, span and key count cannot make the same kernels run 27% longer. What the
+numbers do decompose into is two effects:
+
+| | pure runlist | unified | delta |
+|---|---:|---:|---:|
+| device exec / token | 12.48 ms | 15.84 ms | **+3.36 ms** |
+| host build / token | ~1.5 ms | ~1.5 ms | 0 |
+| reported decode / token | **12.2 ms** | **17.1 ms** | +4.9 ms |
+
+1. **+3.36 ms of device exec** is a property of the *process's device state*, not the data:
+   the unified process keeps the entire bf16 GEMM context alive (per-layer `layerB` weight
+   BOs, `bA`/`bC`, the bf16mm device weight BOs from `bf16mm_dequant_dev` — hundreds of MB)
+   alongside the runlist session's 28 × 32 MB KV BOs. A different BO address map on this part
+   can change bank/channel utilisation for the same kernels. Next test: free the bf16 BOs
+   before entering the unified decode and re-measure the same 16-token window.
+2. **~+1.3–1.5 ms of lost overlap** comes from the code path, not the device. The pure
+   decode uses `build_runlist(slot)` / `execute_runlist(slot)` on alternating slots, so the
+   next token's host build overlaps the current token's device exec (12.2 reported against
+   12.48 exec — the build is hidden). The unified decode calls
+   `npu_runlist_forward(++ctx, …)` → `RuntimeLayerEngine::forward()`, which is:
+
+   ```cpp
+   if (!build_runlist(0, ctx_len)) return false;
+   if (!execute_runlist(0)) return false;
+   if (!wait_runlist(0)) return false;      // single slot, strictly serial
+   ```
+
+   so it pays build + exec. Making the unified decode use the double-buffered slots recovers
+   this ~1.3–1.5 ms/token; it does **not** close the gap on its own (≈15.9 ms/token → ≈63
+   tok/s, still under FLM's 75.25), which is why effect 1 is the priority.
+
+**Net:** the 3.3 ms/token is real and reproducible, the KV content is ruled out by
+measurement, the key count was already ruled out by reading the code, and the remaining
+mechanism is device-memory/BO residency — with a second, independently fixable ~1.4 ms/token
+of lost decode overlap on top. Two targets, both named, one of them a small code change.
+
 ## Status
 
-Criterion (c) remains unmet. What changed here is that its remaining decode shortfall is now
-a **named, ~3.3 ms/token device-side handoff cost with a measured beat-FLM target behind it**,
-rather than "native decode is a few percent slower". That is a bounded engineering target,
-not a mystery.
+Criterion (c) remains unmet. Its decode shortfall is now decomposed and bounded: **+3.36
+ms/token of device exec from the unified process's device state (mechanism: BO
+residency/address map — KV content ruled out by measurement), plus ~1.4 ms/token of lost
+build/exec overlap from using the single-slot `forward()` instead of the double-buffered
+slots.** The pure-runlist decode at the same context is 80 tok/s against FLM's 75.25, so the
+target behind these two fixes is real.
+
+Instrumentation landed with this doc: `RuntimeLayerEngine::dump_kv_bo`, `NPU_KV_DUMP_PURE`
+and `NPU_KV_DUMP_UNIFIED` (all inert unless the env vars are set).

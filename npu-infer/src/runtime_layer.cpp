@@ -927,6 +927,18 @@ bool RuntimeLayerEngine::dump_act(const char* path, size_t n) {
     return true;
 }
 
+bool RuntimeLayerEngine::dump_kv_bo(const char* path, size_t n) {
+    if (!path || !path[0] || kv_bos_.empty() || !kv_bos_[0]) return false;
+    FILE* f = fopen(path, "wb");
+    if (!f) return false;
+    kv_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, n, 0);
+    fwrite(kv_bos_[0]->map(), 1, n, f);
+    fclose(f);
+    fprintf(stderr, "[rt] dumped kv_bos_[0] (%zu bytes) -> %s\n", n, path);
+    return true;
+}
+
+
 bool RuntimeLayerEngine::dump_logits(const char* path, int vocab) {
     bo_logits_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
     FILE* f = fopen(path, "wb");
