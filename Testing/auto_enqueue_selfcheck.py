@@ -14,8 +14,14 @@ Why this exists, measured 2026-09-18:
   * A retarget arrives as `pull_request: edited`. Without that trigger, a stacked
     PR whose base merges becomes a main-based PR that nothing ever enqueues.
 
-Five properties are checked. Each is also checked against a mutated copy of the
-file, because a check that cannot fail is not a check:
+Six properties are checked. Each is also checked against a mutated copy of the
+file, because a check that cannot fail is not a check. Each mutation removes the
+signal its matcher claims to test, located BY CONTENT: the first version deleted
+the first `::warning::` line and relied on it being the stacked-base one, so the
+guard added in the conflict-skip change (a second warning, earlier in the file)
+silently moved the mutation onto the wrong line and the control stopped
+controlling anything - it passed while deleting a warning the matcher never
+looked at.
 
   1. `edited` is among the trigger types.
   2. exactly one `gh pr merge` invocation, and it names a method explicitly.
@@ -30,6 +36,10 @@ file, because a check that cannot fail is not a check:
      is present but unreachable passes every check that only asks whether its text
      is there - which is what 4 did until #2548's run 35297583998 died at the
      merge call with the warning never printed.
+  6. a PR whose head conflicts with the default branch is skipped rather than
+     enqueued: the queue builds an entry before it can discover the conflict, and
+     under grouping_strategy ALLGREEN one ejected entry costs every PR it was
+     grouped with a rebuild cycle.
 
 Comments are stripped before matching: a `gh pr merge` spelled out in the step's
 own explanation is not an invocation. That is the same mistake
@@ -101,8 +111,26 @@ def has_outcome_readback(text: str) -> bool:
 
 
 def names_stacked_base(text: str) -> bool:
+    """The warning, on the line that emits it, names the non-default base.
+
+    It is not enough for `default_branch` and `::warning::` to appear anywhere in
+    the file: the `if [ "$base" != ... default_branch ]` test above it supplies
+    the first token, and any other warning supplies the second, so the guard this
+    claims to check could be deleted and the matcher would still pass."""
     body = code(text)
-    return bool(re.search(r"default_branch", body) and re.search(r"::warning::", body))
+    return bool(re.search(r'(?m)^\s*echo "::warning::[^"]*not the default branch', body))
+
+
+def refuses_conflicts(text: str) -> bool:
+    """The conflict skip: read `mergeable`, act on CONFLICTING, and say which
+    conflict in a warning. Reading mergeability and then enqueuing anyway would
+    satisfy a matcher that only looked for the word."""
+    body = code(text)
+    return bool(
+        re.search(r"--json mergeable", body)
+        and re.search(r'"CONFLICTING"', body)
+        and re.search(r'(?m)^\s*echo "::warning::[^"]*conflicts with', body)
+    )
 
 
 def merge_failure_is_tolerated(text: str) -> bool:
@@ -144,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     check(names_stacked_base(text), "a non-default base is reported as a warning naming it")
     check(merge_failure_is_tolerated(text),
           "a failing `gh pr merge` cannot abort the step before the readback")
+    check(refuses_conflicts(text), "a conflicting PR is skipped rather than enqueued")
 
     # ---- controls: each matcher must be able to fail ---------------------------
     mutations = [
@@ -158,11 +187,17 @@ def main(argv: list[str] | None = None) -> int:
                       "(.autoMergeRequest != null)"),
          has_outcome_readback),
         ("stacked-base warning deleted",
-         re.sub(r'(?m)^\s*echo "::warning::.*$\n', "", text, count=1),
+         re.sub(r'(?m)^\s*echo "::warning::[^\n]*not the default branch[^\n]*$\n', "", text),
          names_stacked_base),
         ("merge call allowed to abort the step",
          re.sub(r'(?m)^(\s*)if ! (gh pr merge\b)', r"\1if \2", text),
          merge_failure_is_tolerated),
+        ("conflict warning deleted",
+         re.sub(r'(?m)^\s*echo "::warning::[^\n]*conflicts with[^\n]*$\n', "", text),
+         refuses_conflicts),
+        ("mergeable read dropped from the conflict guard",
+         re.sub(r'--json mergeable', "--json state", text),
+         refuses_conflicts),
     ]
     for label, mutated, probe in mutations:
         check(mutated != text, f"control setup: '{label}' changes the file")

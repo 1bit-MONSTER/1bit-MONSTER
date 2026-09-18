@@ -111,6 +111,31 @@ jobs:
           # never printed. The failure is not swallowed: it is reported, and the
           # readback judges it, still failing hard on the default branch.
           base=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json baseRefName --jq .baseRefName)
+
+          # A PR whose head already conflicts with main cannot merge: the queue builds
+          # it, the speculative merge fails, and the entry is ejected — which under
+          # grouping_strategy ALLGREEN costs the whole batch a rebuild cycle (the
+          # required C++ job is 9-21 min per branch). GitHub knows this in advance, so
+          # do not spend the cycle: skip it and say why. Measured on 2026-09-18: of 25
+          # queued entries, 2 conflicted with main, and a session's audits found five
+          # such entries; each would have ejected. (issue #2546)
+          #
+          # `mergeable` is UNKNOWN until GitHub computes it, so poll briefly — and treat
+          # a persistent UNKNOWN as "proceed", because an unenqueued green PR is worse
+          # than a wasted cycle. A later push re-runs this job, so a PR that gets fixed
+          # is never stranded. This exits BEFORE the enqueue verification below, because
+          # on this path "not enqueued" is the intended outcome, not a failure.
+          mergeable=""
+          for _ in 1 2 3 4 5 6; do
+            mergeable=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json mergeable --jq .mergeable)
+            [ "$mergeable" != "UNKNOWN" ] && break
+            sleep 10
+          done
+          if [ "$mergeable" = "CONFLICTING" ]; then
+            echo "::warning::#$PR conflicts with ${{ github.event.repository.default_branch }} — not enqueued: the merge queue would build it only to eject it, costing the batch a rebuild cycle. Push a rebase and this job runs again."
+            exit 0
+          fi
+
           if ! gh pr merge "$PR" --squash --auto --repo "$GITHUB_REPOSITORY" 2>&1; then
             echo "::notice::gh pr merge --squash --auto exited non-zero for base '$base'; the readback below decides whether that is a stacked PR or a real failure."
           fi
