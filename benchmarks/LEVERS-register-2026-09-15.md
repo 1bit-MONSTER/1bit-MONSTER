@@ -801,9 +801,41 @@ worktree and measures a stale binary.
   This applies to any generated-kernel route, not just the family adapter.
 - **Corrected family >1024 status:** the `AttnCtx` adapter now drives the generated
   kernel in a real prefill deterministically, but Nanbeige is still **not** at
-  parity. With determinism restored, the in-situ `NPU_ATTN_DIFF` localises the gap
-  to the **AttnCtx Q/K/V contract** vs the engine's `attn_omp` (max |npu-host| =
-  0.15-0.82 against head outputs scaled ~0.15-0.32, with `npu[0][0] ==
-  host[0][0]` exactly), i.e. the pre-RoPE/scale/int8 convention — not the kernel
-  and not a race. Bench gate remains NPU==EMU 8.575258e-02 (the kernel matches its
+  parity, and the cause is now DECISIVE rather than suspected. `NPU_ATTN_EMU_DIFF`
+  shows the NPU and the AttnCtx's **own host EMU** agree to ~1e-4 while **both**
+  diverge from the engine's float `attn_omp` by 0.2-1.2 max / 0.01-0.044 mean
+  (L0 control 2.1e-4). So the kernel is faithful and the gap is the **int8
+  attention contract**: quantising the prefill's Q/K/V (max|q| = 26.75 -> int8
+  step ~0.21) into int8 Q, int8 K, int8 A2 and int8 V with a GLOBAL sq/sk costs
+  0.01-0.044 mean on the attention output, compounding with depth. The bench's
+  smaller 1.2e-1 figure is just its smaller synthetic dynamic range. Ruled out
+  along the way: pre-RoPE convention (`attn_omp` has no RoPE; both paths get the
+  same post-RoPE bytes) and score-range saturation (measured spans only 4-11).
+  Parity therefore needs a **wider generated kernel** (bf16 Q/KV, or a wider A2) —
+  the same dtype change the beyond-8192 route needs (int8 KV there vs bf16 in the
+  dense path). Bench gate remains NPU==EMU 8.575258e-02 (the kernel matches its
   *own* EMU).
+
+## 6.2 Cross-lane: Prism/Bonsai packings vs the NPU lane's gguf tooling (2026-09-16)
+
+From @agent-dddf9e's Prism decode work (lane `feat/prism-bonsai-27b`, worktree
+`1bit-MONSTER-dddf9e`), two facts the NPU lane should not have to rediscover:
+
+- **PQ2_0 is byte-identical to our existing `TQ2_0_g128`**, and **Q1_0 to `Q1_0_g128`** —
+  only `PTQ1_0` (1.75 bpw dense trits) is a genuinely new packing, and its element order is
+  explicitly non-positional (16 B chunk: byte `j` carries element `t*16+j`; then 8 B at
+  `80+t*8+(j-16)`; then 2 B at `120+t*2+h`), so a TQ1-style sequential decode misaligns
+  every weight. Their evidence: `tests/prism/{oracle,roundtrip,vendor}_prism_codec.py`.
+- **Stock `gguf-py` cannot open these GGUFs at all** — type ids **142/143** raise
+  `ValueError`. That matters here because the NPU lane's converters import it:
+  `tools/convert_qwen36_moe_q4nx.py` (`GGUFReader`, `quantize`), `tools/gguf_to_onnx.py`,
+  and the Zaya converters all `from gguf import ...`. They would fail the same way if
+  pointed at a Prism/Bonsai pack; `gguf_header.py` in that worktree is the workaround.
+- Their GDN geometry is confirmed from the file as **nv=48, nk=16, hd=hk=128,
+  CONV_DIM=10240, REP=3** (state 48·128·128 = 786432), which is exactly the
+  generalisation `engine/npu/src/gdn_host_recurrence.h` needs (it is hard-coded to
+  REP=2 / 524288 and is referenced by nothing in the build).
+
+No NPU action follows from this: the engine consumes `q4nx`, and Prism/Bonsai is not one
+of the goal's un-routed families. It is recorded so the gguf-py wall is a known fact
+rather than a surprise.
