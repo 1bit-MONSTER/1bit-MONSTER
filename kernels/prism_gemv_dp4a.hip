@@ -98,28 +98,59 @@ __device__ __forceinline__ float dot_pq2_128(const uint8_t* blk, const int8_t* q
 }
 
 // PTQ1_0 block (128 elems, 28 B: [24 B qs][2 B qh][fp16 d]) x 4 q8_1 chunks -> float.
-// Extracted from the fork's HIP branch of vec_dot_ptq1_0_q8_1: the base-3 trit chain is
-// scalar (the trit order does not fit dp4a), but against int8 activations it measures
-// 122.3 GB/s vs 92.7 for our float tile kernel.
+// dp4a per-block path, extracted from the fork's vec_dot_ptq1_0_q8_1_multi (its non-scalar path).
+// The 24-byte qs holds base-3 trits five per byte; four bytes are widened into 16-bit lanes
+// (__byte_perm) so the multiply-by-three cannot carry across bytes, and the carry of each lane
+// is the next trit. Four trits then feed ONE dp4a against the int8 activations. The fork's
+// __vsub4 (per-byte subtract) is emulated with a no-borrow SWAR decrement because the digit
+// bytes are 0..2, i.e. below 0x80.
+//   measured vs the scalar HIP branch: ffn_gate 122.3 -> 159.0, ffn_down -> 264.5,
+//   output.weight -> 194.5 GB/s, corr 0.999996 against the f64 CPU dot.
+__device__ __forceinline__ int trit_dec(uint32_t q) {
+    return (int)(((q | 0x80808080u) - 0x01010101u) ^ 0x80808080u);
+}
+
 __device__ __forceinline__ float dot_ptq1_128(const uint8_t* bq, const int8_t* q8, const __half* ds) {
     int sumi[4] = {0, 0, 0, 0};
 #pragma unroll
-    for (int m = 0; m < 16; ++m) {
-        uint32_t v = bq[m];
+    for (int g = 0; g < 4; ++g) {
+        const uint32_t packed = *reinterpret_cast<const uint32_t*>(bq + 4 * g);
+        uint32_t v_lo = __byte_perm(packed, 0, 0x4140);
+        uint32_t v_hi = __byte_perm(packed, 0, 0x4342);
 #pragma unroll
-        for (int t = 0; t < 5; ++t) { const uint32_t w = v * 3u; const int q = (int)(w >> 8) - 1; v = w & 0xFFu; const int e = t * 16 + m; sumi[e >> 5] += q * (int)q8[e]; }
+        for (int t = 0; t < 5; ++t) {
+            const uint32_t w_lo = v_lo * 3u, w_hi = v_hi * 3u;
+            v_lo = w_lo & 0x00FF00FFu;
+            v_hi = w_hi & 0x00FF00FFu;
+            const int q = trit_dec(__byte_perm(w_lo, w_hi, 0x7531));
+            const int e = t * 16 + 4 * g;
+            sumi[e >> 5] = prism_dp4a(q, *reinterpret_cast<const int*>(q8 + (e >> 5) * 32 + ((e & 31) & ~3)), sumi[e >> 5]);
+        }
     }
 #pragma unroll
-    for (int m = 0; m < 8; ++m) {
-        uint32_t v = bq[16 + m];
+    for (int g = 0; g < 2; ++g) {
+        const uint32_t packed = *reinterpret_cast<const uint32_t*>(bq + 16 + 4 * g);
+        uint32_t v_lo = __byte_perm(packed, 0, 0x4140);
+        uint32_t v_hi = __byte_perm(packed, 0, 0x4342);
 #pragma unroll
-        for (int t = 0; t < 5; ++t) { const uint32_t w = v * 3u; const int q = (int)(w >> 8) - 1; v = w & 0xFFu; const int e = 80 + t * 8 + m; sumi[e >> 5] += q * (int)q8[e]; }
+        for (int t = 0; t < 5; ++t) {
+            const uint32_t w_lo = v_lo * 3u, w_hi = v_hi * 3u;
+            v_lo = w_lo & 0x00FF00FFu;
+            v_hi = w_hi & 0x00FF00FFu;
+            const int q = trit_dec(__byte_perm(w_lo, w_hi, 0x7531));
+            const int e = 80 + t * 8 + 4 * g;
+            sumi[e >> 5] = prism_dp4a(q, *reinterpret_cast<const int*>(q8 + (e >> 5) * 32 + ((e & 31) & ~3)), sumi[e >> 5]);
+        }
     }
+    uint32_t v = (uint32_t)bq[24] | ((uint32_t)bq[25] << 16);
 #pragma unroll
-    for (int h = 0; h < 2; ++h) {
-        uint32_t v = bq[24 + h];
-#pragma unroll
-        for (int t = 0; t < 4; ++t) { const uint32_t w = v * 3u; const int q = (int)(w >> 8) - 1; v = w & 0xFFu; const int e = 120 + t * 2 + h; sumi[e >> 5] += q * (int)q8[e]; }
+    for (int t = 0; t < 4; t += 2) {
+        const uint32_t w0 = v * 3u;
+        v = w0 & 0x00FF00FFu;
+        const uint32_t w1 = v * 3u;
+        v = w1 & 0x00FF00FFu;
+        const int q = trit_dec(__byte_perm(w0, w1, 0x7531));
+        sumi[3] = prism_dp4a(q, *reinterpret_cast<const int*>(q8 + 3 * 32 + (6 + t / 2) * 4), sumi[3]);
     }
     float acc = 0.f;
 #pragma unroll
