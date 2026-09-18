@@ -262,10 +262,26 @@ jobs:
           # formatting failure would read as a green step. Assigned in a command
           # substitution with `|| rc=$?` so `set -e` does not abort before the cap.
           rc=0
-          out=$(find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' | \
-            grep -v build/ | grep -v _deps/ | grep -v '.git/' | \
-            xargs clang-format --dry-run --Werror 2>&1) || rc=$?
+          # Scope: the exclusions the sibling lint job now declares
+          # (`ignore_paths: build _deps third_party`). Without them this step lints
+          # third_party/, which is 62,694 of the 236,340 diagnostics on this tree -
+          # 27% of the output it asks a reader to interpret.
+          # `packaging/` is deliberately NOT excluded: #2491 established it is
+          # first-party (packaging/binary/server.cpp), not vendored, and removed it
+          # from the other job for exactly that reason.
+          # -print0/-0: a path containing a space used to split into two arguments.
+          find . \( -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' \) -print0 \
+            | grep -zvE '/(build|_deps|third_party|\.git)/' > /tmp/clang-format.files
+          considered=$(tr -cd '\0' < /tmp/clang-format.files | wc -c)
+          out=$(xargs -0 clang-format --dry-run --Werror < /tmp/clang-format.files 2>&1) || rc=$?
           printf '%s\n' "$out" | head -20
+          # A count, so this informational step is worth reading: #2486's decision is
+          # between gating the diff and reformatting the tree, and the size of the
+          # second is this number.
+          diags=$(printf '%s\n' "$out" | grep -cE '^[^:]+:[0-9]+:[0-9]+: (warning|error):' || true)
+          files=$(printf '%s\n' "$out" | grep -oE '^[^:]+:[0-9]+:[0-9]+:' | cut -d: -f1 | sort -u | wc -l)
+          echo "clang-format: $diags diagnostic(s) in $files of $considered file(s) - $(clang-format --version)"
+          echo "::notice::clang-format: $diags diagnostics in $files of $considered files (informational; see #2486)"
           exit "$rc"
 
   version:
