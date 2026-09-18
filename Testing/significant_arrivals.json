@@ -13,6 +13,27 @@
   "family": "Deepseek",
   "model": "Chinook416/caracat-pro"
  },
+ "deepseekocr": {
+  "arch": "deepseekocr",
+  "covered": true,
+  "date": "2026-09-18",
+  "family": "Deepseek",
+  "model": "AIArchiveInfo/DeepSeek-OCR"
+ },
+ "deepseekv3": {
+  "arch": "deepseekv3",
+  "covered": true,
+  "date": "2026-09-18",
+  "family": "Deepseek",
+  "model": "AIArchiveInfo/academic-ds-9B"
+ },
+ "deepseekv32": {
+  "arch": "deepseekv32",
+  "covered": true,
+  "date": "2026-09-18",
+  "family": "Deepseek",
+  "model": "AIArchiveInfo/DeepSeek-V3.2-Exp"
+ },
  "deepseekv4": {
   "arch": "deepseekv4",
   "covered": true,
@@ -53,14 +74,14 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "neutrypl/neutry-functiongemma-270m-v2"
+  "model": "godsofheaven/functiongemma-270m-it-simple-tool-calling"
  },
  "gemma4": {
   "arch": "gemma4",
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "hariharasudhan/en-indic-translate-26b"
+  "model": "phukanpragyan/gemma-4-e2b-assamese-sft-v1"
  },
  "gemma4unified": {
   "arch": "gemma4unified",
@@ -118,12 +139,19 @@
   "family": "Qwen",
   "model": "Prannesshkva/ISOM-Qwen2.5-Coder-1.5B-Instruct"
  },
+ "lfm2titans": {
+  "arch": "lfm2titans",
+  "covered": false,
+  "date": "2026-09-18",
+  "family": "lfm2titans",
+  "model": "win10/Lfm2-MaleCNS-Titans-VL-3B-V2-HashHop"
+ },
  "llama": {
   "arch": "llama",
   "covered": true,
   "date": "2026-09-05",
   "family": "Llama",
-  "model": "Raghav-Singhal/1pp-1.7b-ua-seed42-sft"
+  "model": "lwa201/Llama-xLAM-2-8b-fc-r-dpo-prune"
  },
  "llama3forcausallm_polysurgery": {
   "arch": "llama3forcausallm_polysurgery",
@@ -151,7 +179,7 @@
   "covered": true,
   "date": "2026-09-10",
   "family": "Mistral",
-  "model": "Aurigene-AI/BioMistral-7B"
+  "model": "Jeesup/svd-safety-mistral_remove30_swapgapiter_b010"
  },
  "mobilintllama": {
   "arch": "mobilintllama",
@@ -159,6 +187,13 @@
   "date": "2026-09-09",
   "family": "Llama",
   "model": "mobilint/Llama-3.2-1B-Instruct-regulus-rb-usb"
+ },
+ "mobilintqwen3vl": {
+  "arch": "mobilintqwen3vl",
+  "covered": false,
+  "date": "2026-09-18",
+  "family": "Qwen",
+  "model": "mobilint/Qwen3-VL-2B-Instruct-Batch16"
  },
  "ncpolmo3": {
   "arch": "ncpolmo3",
@@ -207,7 +242,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO"
+  "model": "sashavoitovych2001/qwen2.5-3b-holmes-no-robots-full-20260916"
  },
  "qwen2_5_vl": {
   "arch": "qwen2_5_vl",
@@ -235,7 +270,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "thuyduongjoe123/checkpoints_en_my_logit"
+  "model": "willamazon1/qwen3-8b-tmax-aenv-v39b-iter139"
  },
  "qwen3-vl": {
   "arch": "qwen3-vl",
@@ -249,14 +284,21 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "YueLinHu/GAC-Qwen3.5-4B"
+  "model": "willamazon1/Qwen3.5-9B-smith-r1v1-reportonly"
  },
  "qwen3_5moe": {
   "arch": "qwen3_5moe",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "mlx-community/BigBang-v1-MLX-oQ4e"
+  "model": "roskosmos19/Dolphin-35B-A3B-preview"
+ },
+ "qwen3moe": {
+  "arch": "qwen3moe",
+  "covered": true,
+  "date": "2026-09-18",
+  "family": "Qwen",
+  "model": "AIArchiveInfo/Baichuan-M3-235B"
  },
  "qwen3next": {
   "arch": "qwen3next",
@@ -277,7 +319,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i"
+  "model": "yomie4343/Qwen3.8-Flash-Next-Uncensored-MLX-Serve-mixed-3-8bit"
  },
  "rwkv": {
   "arch": "rwkv",
@@ -292,5 +334,12 @@
   "date": "2026-09-05",
   "family": "Smollm",
   "model": "Healshsj/smollm3-3b-claude-fable5"
+ },
+ "unlimitedocr": {
+  "arch": "unlimitedocr",
+  "covered": false,
+  "date": "2026-09-18",
+  "family": "unlimitedocr",
+  "model": "nesoai/Unlimited-OCR"
  }
 }
