@@ -1,3 +1,14 @@
+<!-- gate-facts
+dispatch_4tok=20729
+dispatch_1tok=16106
+tokens_differenced=3
+copy_4tok=5610
+copy_1tok=4356
+dispatches_per_token=(dispatch_4tok - dispatch_1tok) / tokens_differenced
+copy_per_token=(copy_4tok - copy_1tok) / tokens_differenced
+copy_share_pct=100 * (copy_4tok - copy_1tok) / (dispatch_4tok - dispatch_1tok)
+-->
+
 # Prism ML Bonsai 27B — results of record (lane `feat/prism-bonsai-27b`)
 
 Every numeric claim in this file carries the P6 honesty tag
@@ -222,8 +233,8 @@ difference, not from any individual dispatch.
 
 | measurement | value | tag |
 |---|---|---|
-| dispatches per token | 1541 ((20729 - 16106) / 3) | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3 --kernel-trace, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
-| of which buffer copies | 418 dispatches = 27% of launch traffic (0.37 ms) [CORRECTED: an earlier figure of 1452 / 94% was a mis-division - the peer's, and I recorded it without checking that the 1452 was itself differenced] | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| dispatches per token | 1541 ((20729 - 16106) / 3) | <!-- derive: dispatches_per_token --> `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3 --kernel-trace, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| of which buffer copies | 418 dispatches = 27% of launch traffic (0.37 ms) [CORRECTED: an earlier figure of 1452 / 94% was a mis-division - the peer's, and I recorded it without checking that the 1452 was itself differenced] | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` | <!-- derive: copy_per_token copy_share_pct -->
 | activation-quant kernel per token | ~257 dispatches, 0.25 ms = under 1% of decode | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
 | GEMV total per token | 21.2 ms (dp4a<18> 6.27 + multi4 14.95) | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
 | cross-instrument check: profile vs the skip-GEMV split | 21.2 vs 21.1 ms - two independent instruments agreeing within 0.1 ms | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3 vs PRISM_SKIP_GEMV \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |

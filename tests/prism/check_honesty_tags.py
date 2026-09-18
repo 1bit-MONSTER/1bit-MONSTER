@@ -162,6 +162,17 @@ def self_test(fails, counts, doc_checked):
         fails.append(f"self-test: a correctly tagged fixture must pass (checked={gc}, failures={gf})")
     if bc != 2 or len(bf) != 2:
         fails.append(f"self-test: untagged fixtures must be flagged (checked={bc}, flagged={len(bf)})")
+    fx = ["<!-- gate-facts\na=10\nb=4\nc=(a - b)\n-->", "| row | 5 | <!-- derive: c -->"]
+    bad_facts = load_facts("\n".join(fx))
+    bfails = []
+    check_derivations([fx[1]], bad_facts, bfails)
+    if not bfails:
+        fails.append("self-test: a wrong derived value must be flagged (derivation check not firing)")
+    gx = ["<!-- gate-facts\na=10\nb=4\nc=(a - b)\n-->", "| row | 6 | <!-- derive: c -->"]
+    gfails = []
+    check_derivations([gx[1]], load_facts("\n".join(gx)), gfails)
+    if gfails:
+        fails.append("self-test: a correct derived value must pass the derivation check")
     if doc_checked < DOC_FLOOR:
         fails.append(
             f"self-test: results of record scanned only {doc_checked} claims (<{DOC_FLOOR}) — the "
@@ -175,6 +186,67 @@ def self_test(fails, counts, doc_checked):
                 f"matching, and a silent under-check reads as PASS"
             )
     return 0 if not fails else 1
+
+
+FACTS_RE = re.compile(r"<!--\s*gate-facts(.*?)-->", re.S)
+DERIVE_RE = re.compile(r"<!--\s*derive:\s*([a-z_0-9 ]+?)\s*-->")
+
+
+def load_facts(text):
+    """Machine-readable operands for derived numbers, so a derived figure can be reproduced.
+
+    Blunt but sufficient: values and expressions confined to names defined in the same block plus
+    arithmetic. A name may reference an earlier name.
+    """
+    m = FACTS_RE.search(text)
+    if not m:
+        return {}
+    env = {}
+    for raw in m.group(1).strip().split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        k, _, v = line.partition("=")
+        k, v = k.strip(), v.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", k):
+            continue
+        if not re.fullmatch(r"[0-9A-Za-z_\s+*/().-]+", v):
+            raise SystemExit(f"gate-facts: refused to evaluate {k} = {v}")
+        try:
+            env[k] = eval(v, {"__builtins__": {}}, env)  # noqa: S307 - restricted namespace
+        except Exception as exc:
+            raise SystemExit(f"gate-facts: cannot evaluate {k} = {v}: {exc}")
+    return env
+
+
+def check_derivations(lines, facts, fails):
+    """A row marked `<!-- derive: name -->` must contain that fact's value among its numbers.
+
+    Motivating failure, which this exact rule would have caught: I recorded a corrected figure after
+    checking that it divided correctly into its denominator (1452 of 1541) but never that the
+    numerator was itself a difference. Internal consistency passed, the input was wrong, and a peer
+    had to withdraw the premise before I noticed. Checking the ratio is not checking the provenance.
+    """
+    checked = 0
+    for i, line in enumerate(lines, 1):
+        names = DERIVE_RE.findall(line)
+        if not names:
+            continue
+        nums = [float(x) for x in re.findall(r"(?<![\w.])(\d+(?:\.\d+)?)", DERIVE_RE.sub("", line))]
+        for name in " ".join(names).split():
+            if name not in facts:
+                fails.append(f"{i}: derive marker '{name}' has no matching gate-fact")
+                continue
+            checked += 1
+            val = float(facts[name])
+            # a row may quote a fractional fact rounded to an integer (27.125 -> "27%"), so the
+            # tolerance is half a unit; a genuinely wrong figure (418 -> 1452) is length-scale away.
+            if not any(abs(n - val) <= 0.5 for n in nums):
+                fails.append(
+                    f"{i}: derived {name} = {round(val, 3)} does not appear in its row "
+                    f"(numbers there: {nums[:6]}) - provenance not reproducible from the operands"
+                )
+    return checked
 
 
 def main():
@@ -198,11 +270,14 @@ def main():
         if hi < 200.0:
             fails.append(f"{i}: strixhalo-quiet triad is only {lo}-{hi} GB/s (<200) — not quiet")
 
+    facts = load_facts(DOC.read_text())
+    derived = check_derivations(lines, facts, fails)
     scoped_checked, counts = check_scoped(DOC.resolve().parents[2], fails)
     checked += scoped_checked
     st = self_test(fails, counts, len(lines) and checked - scoped_checked)
 
     print(f"honesty tags: {checked} numeric claims checked, "
+          f"{derived} derivation(s) reproduced, "
           f"{len(quiet_triads)} quiet triad line(s), {len(fails)} violation(s); "
           f"self-test {'ok' if st == 0 else 'FAILED'} (detector fires, tagged fixture passes, coverage floors)")
     for f in fails:
