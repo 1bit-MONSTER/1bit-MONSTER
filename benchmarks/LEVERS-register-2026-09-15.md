@@ -1025,3 +1025,53 @@ paths — `git restore --staged <paths>` (index only, never the worktree) — an
 `git diff --cached --name-status | wc -l` returning **0**. That is cheap and it removes the
 precondition. Done here after `74785052d`; counts went 1 → 0 with the worktree intact
 (both `SUPERSEDED 2026-09-18` and `6.5 Measurement conditions` still present on disk).
+
+## 6.7 Measurement condition #4: a foreign holder on /dev/accel/accel0 (2026-09-18)
+
+6.5 lists three conditions. This is the fourth, and it is the one that made 6.5's own
+warnings look insufficient: **the engine takes `/tmp/1bit-npu-device.lock`, but other tools
+do not**, so a foreign process can hold `accel0` for its whole lifetime and silently inflate
+every number taken beside it.
+
+**Demonstrated, not inferred.** On 2026-09-18 two long-lived processes held `accel0`:
+
+```
+PID    ELAPSED  %CPU  CMD                 (binary /tmp/attrib, 291744 B, compiled 14:53)
+90145    51:44  98.2  /tmp/attrib
+98853    36:43  97.6  /tmp/attrib
+```
+
+With them resident, three consecutive identical 8k native prefills gave:
+
+```
+4121 ms (0.503 ms/tok) | 17971 ms (2.194 ms/tok) | 13551 ms (1.654 ms/tok)
+```
+
+i.e. **3.3x and 4.4x inflation** on the same command, same binary, same prompt. The engine's
+own reported breakdown shows the device terms ballooning (GEMM 523 → 3643 ms, conv+other
+5525 → 19974 ms), which is what a second hw-context on the array looks like from inside.
+
+**Consequences for the register's other entries:**
+
+- 6.5's "accuracy runs must be SERIAL" is necessary but not sufficient — serialisation among
+  *our* engines does not exclude a foreign holder.
+- The withdrawn decode-penalty entry attributed its cross-window 15.5 → 12.5 ms exec shift to
+  **BO allocation state**. That mechanism is now less likely than this one: a foreign holder
+  is a simpler explanation of the same shape, and it is the only one demonstrated. The entry's
+  *conclusion* (no reproducible penalty) stands; its *mechanism* should be read as
+  unidentified, most likely foreign device contention
+  (`RESULTS-unified-decode-penalty-2026-09-18.md`, `RESULTS-8k-contention-source-2026-09-18.md`).
+- `RESULTS-8k-campaign-variance-2026-09-18.md`'s 20.0 s outlier and the wide spreads in
+  `RESULTS-8k-prefill-2026-09-18.md` are this mechanism, not an engine property; the 8k rows
+  in that document are single-run and now carry a CORRECTION banner.
+
+**Rule (the instrument):** `benchmarks/c8k_guarded.sh` — per run it records every PID with
+`accel0` open **before and after** (excluding the persistent `flm serve`), records
+`/tmp/runner.log` growth, **discards** any run with a foreign holder, and prints medians over
+the accepted runs only. Native runs use `ng=1` at 8k because the second decode forward needs
+`ctx=8194` against the baked `MAX_L=8192` per-ctx ELF window. Any campaign on this box should
+use it, and any number taken without it inherits an unknown contamination probability.
+
+**Not done:** the `/tmp/attrib` processes were not touched (another lane's work, and I4's
+rule). The room was told; the guard makes the contamination visible in the output rather than
+in a post-hoc explanation.
