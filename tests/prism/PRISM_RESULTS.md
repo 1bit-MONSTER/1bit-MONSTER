@@ -78,21 +78,30 @@ effective rate already matches the tile GEMV's own `93 GB/s `[3-packs\|verbatim\
 so the remaining headroom is exactly the distance between the tile GEMV's fraction of
 triad and the fraction the gate implies (both tagged above, not restated here).
 
-**Pattern cap, not decode (peer sweep by @agent-1141bd, 2026-09-18).** A no-decode dummy with identical
-full-byte loads reached `93.6 GB/s `[3-packs\|verbatim\|HIP tile pattern, no-decode dummy\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`
-against the real kernel's `80.2 GB/s `[3-packs\|verbatim\|HIP prism_gemv_tile.hip\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`
-— the tile kernel is memory-pattern-limited, not decode-limited, so decoding accounts for only the
-difference between those two rows `[3-packs\|verbatim\|derived\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`.
-That pattern caps the packs at `Q1_0 24.6 / PTQ1_0 15.7 / PQ2_0 13.1 tok/s `[3-packs\|verbatim\|derived: dummy cap / pack size\|strixhalo-unknown\|-\|-\|2026-09-18]`,
-all below the gates, and the cap is `47% of triad `[3-packs\|verbatim\|derived\|strixhalo-unknown\|-\|-\|2026-09-18]` against the ~79% the gate needs
-`[P3-gate-target\|3-packs\|spec\|n/a\|-\|-\|2026-09-18]`: **the gate is unreachable with this decomposition whatever the
-decoder does.** The decision number is that pair, not a tok/s. A same-window triad was requested from
-the peer so these rows can move from `strixhalo-unknown` to `strixhalo-quiet`.
+**CORRECTION (2026-09-18 13:20) - the "pattern wall" that stood here is RETRACTED.** It rested on a
+no-decode dummy at `93.6 GB/s `[3-packs\|verbatim\|HIP tile pattern, no-decode dummy\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]` being an upper
+bound on the byte-load pattern. It was not: after a hand-rolled 10-op fp16 decode was replaced by
+`__half2float` at commit bc3f2927e, the *real* kernel measures `133.5 GB/s `[Bonsai-27B-Q1_0\|Q1_0\|HIP prism_gemv_tile.hip\|strixhalo-unknown\|-\|synthetic x, corr 1.000000000\|2026-09-18]` - above the
+dummy's supposed cap. **A no-decode dummy is not a ceiling**: with almost no work per byte its loop is
+latency/issue-bound and can run *slower* than a kernel doing more ALU per byte. Lesson recorded: a proxy
+is not a bound merely because it is simpler. The "unreachable whatever the decoder does" claim was mine
+(6b6b86076) and is withdrawn here rather than deleted.
 
-Sweep of seven variants, all corr `1.000000 `[3-packs\|verbatim\|HIP sweep by @agent-1141bd\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]` on `blk.0.ffn_gate` 17408x5120:
-tile4 `80-93 GB/s `[3-packs\|verbatim\|HIP sweep by @agent-1141bd\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]` (best), tile8 `78 `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`,
-per-block LDS `74 `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`, 1024-element LDS `68 `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`, conflict-free strided `42 `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`,
-row4 `24-45 GB/s `[3-packs\|verbatim\|HIP sweep\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]` — the tile kernel stands.
+**Current state after the fix.** GEMV on `blk.0.ffn_gate` at `133.5 GB/s `[Bonsai-27B-Q1_0\|Q1_0\|HIP prism_gemv_tile.hip\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`
+= 66% of the 201 GB/s triad `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|-\|-\|2026-09-18]`; end-to-end backend decode
+`Q1_0 24 / PTQ1_0 19 / PQ2_0 19 tok/s `[3-packs\|verbatim\|HIP bench_hip_1bp\|strixhalo-busy\|32\|capital-of-France\|2026-09-18]`
+in the peer's quietest window (load 5.7, not triad-verified, so `strixhalo-busy` and **relative only** -
+a same-window triad is still requested). Effective aggregate is therefore
+`91.2 / 113.0 / 136.2 GB/s `[3-packs\|verbatim\|derived: tok/s x pack size\|strixhalo-busy\|32\|capital-of-France\|2026-09-18]` against the
+`159.6 / 160.7 / 157.7 GB/s `[3-packs\|verbatim\|derived: gate x pack size\|strixhalo-unknown\|-\|-\|2026-09-18]` the gates imply: **NOT MET, gap 1.75x / 1.42x / 1.16x**
+`[3-packs\|verbatim\|derived\|strixhalo-busy\|32\|capital-of-France\|2026-09-18]`. PQ2_0 is at 86% of its gate, Q1_0 at 57%
+`[3-packs\|verbatim\|derived\|strixhalo-busy\|32\|capital-of-France\|2026-09-18]`.
+
+**What this changes:** the binding constraint is no longer the weight pattern but the aggregate streaming
+rate plus non-GEMV ALU (GDN, attention, FWHT, launch overhead) - the peer's per-tensor projection from
+133.5 GB/s is ~35 tok/s for Q1_0 `[Bonsai-27B-Q1_0\|Q1_0\|projected from GEMV BW\|strixhalo-unknown\|-\|-\|2026-09-18]`, above the fork's 28.8
+baseline `[Bonsai-27B-Q1_0\|Q1_0\|Prism llama.cpp fork + Vulkan\|strixhalo-unknown\|32\|-\|2026-09-18]` and 1.2x short of its gate
+`[P3-gate-target\|Q1_0\|spec\|n/a\|-\|-\|2026-09-18]`. The seven-variant sweep below still stands.
 
 **Operator decision this exposes.** The gate as written asks for near-peak streaming through a 64-layer
 hybrid that also carries GDN state and attention, so it sits at the edge of what this box can do *even
