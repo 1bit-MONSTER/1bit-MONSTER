@@ -284,6 +284,33 @@ non-GEMV kernel entirely does not close it either. So the honest target is a GEM
 third off the non-GEMV budget - the peer's plan to start with `gdn_recurrence` is the right first step, but it is
 a first step and not the whole distance.
 
+### Non-GEMV chase, first step: gdn_recurrence (measured-neutral, win NOT claimed) and a shape penalty that merges the two chases
+
+| measurement | value | tag |
+|---|---|---|
+| gdn_recurrence per token, measured | 3.11 ms - the largest non-GEMV kernel | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| its memory bound | 3.1 MB of fp32 state per layer x 48 layers = 148.8 MB/token, ~0.71 ms at the box triad | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| share of that bound it achieves | 23% | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| threads, before -> split attempt | 6144 -> 12288 (48 blocks x 128 -> 256 threads, kk split with an LDS combine, per-element fp32 order unchanged) | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP prism_gdn_recurrence_kernel \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| split attempt, correctness | fork oracle 5/5 and compare_gen 11/11 on all three packs, suite GDN gates pass | `[3-packs \| verbatim \| HIP GDN vs CPU floor + fork oracle \| strixhalo-quiet \| 11 \| capital-of-France \| 2026-09-18]` |
+| split attempt, performance | **NEUTRAL**: Q1_0 30.2 ms / 33 tok/s, PTQ1_0 42.1 / 24, PQ2_0 42.3 / 24 against pre-split 29.6-31.5, 42.1-43.5, 42.2 - inside the noise band, so the win is **not claimed** | `[3-packs \| verbatim \| HIP forward, split vs pre-split GDN \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| shape penalty, same kernel, both packs | ffn_gate-shaped 17408x5120 runs at 0.69x (Q1_0: 232.9 against 335.6 GB/s) and 0.60x (PTQ1_0: 159.0 against 264.5) of the ffn_down-shaped rate | `[2-packs \| Q1_0+PTQ1_0 \| HIP dp4a dot, per tensor \| strixhalo-quiet \| - \| synthetic x \| 2026-09-18]` |
+
+**The GDN split is measured-neutral and is therefore not recorded as a win.** Correctness is green and the
+per-element arithmetic is bit-identical by construction, but the aggregate moved inside the noise band, so the
+honest state is "attempted, not shown to help". The peer's next step is the right one and is the method this
+lane adopted after the false-regression incident: build split and pre-split side by side, alternate them within
+one session, and time the kernel in isolation so it is compared against itself rather than inferred from the
+aggregate. They also pre-registered the outcome they will accept: if the isolated A/B is neutral too, the kernel
+is recorded as **compute-bound rather than latency-bound** - a different statement from the one an hour ago, and
+the one that survives.
+
+**A shape penalty, not two separate chases.** The table row above shows the same deficit on both packs: tensors
+shaped like the GEMV gate (many rows, shallow reduction) run well below tensors shaped like the down projection.
+So the Q1_0 GEMV chase and the PTQ1_0 dot chase are the same chase - the many-rows-shallow-reduction shape - and
+that merges the two targets into one. It also refines the two-chase frame above: the GEMV half is not "get the
+dot uniformly faster", it is "fix the shallow-reduction shape", which is where the next gain most plausibly lives.
+
 **One part of this round is still an estimate, and is recorded as an estimate.** The lost-to-dispatch figure is
 inferred from an assumed per-dispatch cost, and the sum of the measured terms leaves a remainder of about that
 size - suggestive, not proof. The direct measurement is cheap: per-token wall time minus the sum of per-token
