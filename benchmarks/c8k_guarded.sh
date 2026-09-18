@@ -58,7 +58,21 @@ foreign_holders_detail() {
 }
 
 load1()  { cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0; }
-topcpu() { ps -eo pcpu=,comm= --sort=-pcpu 2>/dev/null | head -1 | tr -s ' '; }
+# Top CPU consumer as "pcpu comm pid parent", so a foreign hog can be attributed to the
+# lane that owns it (2026-09-18: `pf` -> tests/prism/check_oracle_agreement.py ->
+# tests/prism/run_prism_tests.sh, cwd ~/1bit-MONSTER-dddf9e).
+topcpu() {
+    local line pid ppid pcmd
+    line="$(ps -eo pcpu=,comm=,pid= --sort=-pcpu 2>/dev/null | head -1)"
+    pid="$(printf '%s' "$line" | awk '{print $3}')"
+    if [ -n "$pid" ]; then
+        ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+        pcmd="$(ps -o cmd= -p "$ppid" 2>/dev/null | cut -c1-60)"
+        printf '%s parent=%s:%s' "$(printf '%s' "$line" | awk '{print $1, $2, "pid="$3}')" "${ppid:-?}" "${pcmd:-?}"
+    else
+        printf '%s' "$line"
+    fi
+}
 runner_lines() { wc -l < /tmp/runner.log 2>/dev/null || echo 0; }
 # Load ceiling calibrated on 2026-09-18 (0.6B 8k native, device clean):
 #   load 16.83 -> 4078 ms(0.498)  |  20.89 -> 7268 ms(0.887)  |  23.23 -> 11238 ms(1.372)

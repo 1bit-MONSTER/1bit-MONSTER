@@ -164,3 +164,31 @@ phantom "holders"). It now emits one `pid:cmd` per line.
 foreign `accel0` job. Two attempts today (15:35 and 15:45 ADT) were rejected wholesale —
 loads 26.7 → 59.3, then 38.8 → 41.5 with `pf` at ~3000% CPU — so 0.6B is the only model with a
 guard-accepted 8k figure (parity, 0.97x median).
+
+## The second contaminant is attributed too: the Prism lane's own test suite
+
+The `pf` hog that kept the load at 26–48 and inflated every 8k campaign attempt is not a
+mystery process. `c8k_guarded.sh` now prints the top consumer's pid **and its parent**, which
+identifies it in one line:
+
+```
+topcpu=2367 pf pid=301752 parent=301751:python3 /home/bcloud/1bit-MONSTER-dddf9e/tests/prism/check_oracle_agreement.py …
+```
+
+Full chain, from `/proc`:
+
+```
+294542  /bin/bash ./tests/prism/run_prism_tests.sh
+294543  python3 /home/bcloud/1bit-MONSTER-dddf9e/tests/prism/check_oracle_agreement.py /tmp/tmp.ukJdcbVkTy/p…
+294544  /tmp/tmp.ukJdcbVkTy/pf /home/bcloud/models/prism/1bp/Ternary-Bonsai-27B-PQ2_0.1bp 760 6511 314 9338 369
+        exe=/tmp/tmp.ukJdcbVkTy/pf   cwd=/home/bcloud/1bit-MONSTER-dddf9e
+```
+
+So both contaminants of this session came from the same lane's tooling — `/tmp/attrib` (their
+attribution harness) and now `pf` (their oracle-agreement test's forward pass) — and neither
+takes the device lock or any CPU-slot convention. The lane has been told; this is a scheduling
+fact for the box, not a defect in the engine.
+
+The guard's `topcpu=` field now carries `parent=<ppid>:<cmd>` for exactly this reason: a bare
+`pf` at 2600% CPU is unattributable from the output, and "which lane is doing this" is the first
+question any reader of a rejected run will ask.
