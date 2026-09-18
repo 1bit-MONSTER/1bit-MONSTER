@@ -256,6 +256,20 @@ else
     printf '%s\n' "$gate_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# The claims workflow's own trigger: two of its three gates are content SCANNERS (index.html's
+# rendered text for quarantined numbers, the badge JSONs against a re-run of the badge logic),
+# and none of those files were in its pull_request.paths — so a PR editing exactly what the
+# gate exists to catch never ran it. Same class as #2507 for bench.yml's compiled inputs.
+echo "== claims workflow trigger coverage =="
+total=$((total+1))
+if wf_cov_out=$("$PYTHON" Testing/validate_claims_trigger_selfcheck.py 2>&1); then
+    printf '%s\n' "$wf_cov_out" | grep -E '^(OK|validate)' | sed 's/^/  /'
+    echo "✓ claims_trigger_coverage"
+else
+    echo "✗ claims_trigger_coverage"
+    printf '%s\n' "$wf_cov_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))

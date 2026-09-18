@@ -20,10 +20,28 @@ on:
         description: "Runs per benchmark (median is used)"
         default: "3"
   pull_request:
+    # The files the checks BELOW read or scan - not a guess at what looks related.
+    # Two of the three gates are content scanners, and their inputs were missing here, so a PR
+    # editing a file they scan did not run them (#2525, same class as #2507 for bench.yml):
+    #   benchmarks/latest.json      the published table + _verify.commands (coverage + drift)
+    #   site/numbers.json           the generated payload index.html fetches at runtime
+    #   site/index.html             rendered text scanned for quarantined claims (#185/#190)
+    #   site/benchmarks.json        the source the badge logic is re-run against
+    #   site/badge_*.json           the badges that regeneration is compared against
+    #   README.md                   the `--check-readme` target (issues #185, #190)
+    #   docs/wiki/performance.md    where those numbers now live, and what the target becomes
+    #                               once the check stops reading a landing page (#2476)
+    #   engine/fusion/**            what the re-measurement driver builds against
     paths:
       - "benchmarks/latest.json"
       - "site/numbers.json"
+      - "site/index.html"
+      - "site/benchmarks.json"
+      - "site/*-badge.json"
+      - "README.md"
+      - "docs/wiki/performance.md"
       - "engine/fusion/**"
+      - ".github/workflows/validate-claims.yml"
 
 permissions:
   contents: read
