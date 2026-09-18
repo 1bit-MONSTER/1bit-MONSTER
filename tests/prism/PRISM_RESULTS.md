@@ -343,6 +343,28 @@ reflects L2 residency rather than raw DRAM behaviour, and the pattern bound is *
 full-model pass. What is claimed is narrower and checkable: dp4a is far from the bound for cache-resident shapes and
 at the bound for the cached-out one, and the gap is decode work.
 
+## 4g. Pack size is three numbers, and each row must name its basis (resolved 16:56)
+
+| figure | value for Q1_0 | what it is | tag |
+|---|---|---|---|
+| GEMV weights only | 3.603 GB | the 497 matvec tensors the forward actually dots, summed by a dedicated harness | `[Bonsai-27B-Q1_0 \| Q1_0 \| bench_gemv_sum harness \| cpu-host \| - \| - \| 2026-09-18]` |
+| payload | 3.78 GB | every tensor memcmp'd against the source GGUF - authoritative for the pack's contents (the figure this lane's container gate produces) | `[Bonsai-27B-Q1_0 \| Q1_0 \| 1BP v5 verifier \| cpu-host \| - \| - \| 2026-09-18]` |
+| file on disk | 4.04 GB (4036301797 bytes) | the container adds the transform extension entries and the tensor table, so the 1BP file is larger than both the payload and the source GGUF | `[Bonsai-27B-Q1_0 \| Q1_0 \| filesystem \| cpu-host \| - \| - \| 2026-09-18]` |
+
+**The three reconcile, and the reconciliation is the explanation rather than a rounding excuse.** The embedding
+table (vocab x hidden at the same packing) is a *gather*, not a matvec, so it is absent from the GEMV-weights figure
+and present in the payload: adding it to the GEMV total reproduces the payload figure to within a couple of
+megabytes out of nearly four gigabytes. That is a check on both numbers, not a preference between them.
+
+**Rule adopted, and it is the structural fix for this class:** every effective-GB/s row names which of the three it
+uses. Whole-pack effective rates use the payload figure; anything quoting the GEMV-weights total says "GEMV weights
+only"; anything about I/O or disk quotes the file size.
+
+**Consequence for the floor arithmetic, recorded because it tightens a live number:** the GEMV-only floor and the
+whole-pack floor differ by under a millisecond, so the "floor plus current non-GEMV clears the gate" arithmetic gets
+very slightly tighter, and the conclusion - Q1_0 is limited by the GEMV reaching its memory bound - does not change.
+Gate fractions are size-independent and were never affected.
+
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 
 The box was clean-rebooted to clear the peer lanes, and the backend decoded 32 tokens per pack in the
@@ -351,7 +373,7 @@ window, so the box is tagged `strixhalo-unknown`, **not** `strixhalo-quiet`.
 
 | pack | decoded (32 tokens) | gate | tag |
 |---|---|---|---|
-| Bonsai-27B-Q1_0 3.80 GB | 24 tok/s | >=42 tok/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP bench_hip_1bp \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| Bonsai-27B-Q1_0 3.78 GB payload | 24 tok/s | >=42 tok/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP bench_hip_1bp \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | Ternary-Bonsai-2-27B-PTQ1_0 5.95 GB | 19 tok/s | >=27 tok/s | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| HIP bench_hip_1bp \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | Ternary-Bonsai-27B-PQ2_0 7.17 GB | 19 tok/s | >=22 tok/s | `[Ternary-Bonsai-27B-PQ2_0 \| PQ2_0 \| HIP bench_hip_1bp \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 
@@ -413,7 +435,7 @@ deliverable constraint is unchanged.
 
 | pack | decoded 32 tokens | gate | status | tag |
 |---|---|---|---|---|
-| Bonsai-27B-Q1_0 3.80 GB | 34 tok/s (29.8 ms/tok) | >=42 tok/s | 81% of gate | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a forward \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| Bonsai-27B-Q1_0 3.78 GB payload | 34 tok/s (29.8 ms/tok) | >=42 tok/s | 81% of gate | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a forward \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | Ternary-Bonsai-2-27B-PTQ1_0 5.95 GB | 17 tok/s (58.0 ms/tok) | >=27 tok/s | 63% of gate | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| HIP dp4a forward \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | Ternary-Bonsai-27B-PQ2_0 7.17 GB | 23 tok/s (43.8 ms/tok) | >=22 tok/s | **MET (105%)** | `[Ternary-Bonsai-27B-PQ2_0 \| PQ2_0 \| HIP dp4a forward \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | same-window correctness on all three packs | fork oracle 5/5 (2614 314 279 369 11751 / 220 ... / 2614 ...) and CPU-vs-device greedy 11/11 | - | this is what carried the MET | `[3-packs \| verbatim \| HIP forward vs CPU floor + fork oracle \| strixhalo-quiet \| 11 \| capital-of-France \| 2026-09-18]` |
