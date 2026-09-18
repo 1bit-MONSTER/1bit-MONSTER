@@ -47,6 +47,9 @@ g++ -O3 -fopenmp -std=c++17 -I "$REPO/include" -I "$REPO/src" \
 g++ -O2 -std=c++17 -I "$REPO/include" -I "$REPO/src" \
     "$REPO/tests/prism/test_prism_failclosed.cpp" "$REPO/src/onebp_model.cpp" \
     -o "$TMP/fc" || exit 1
+g++ -O2 -std=c++17 -I "$REPO/include" -I "$REPO/src" -I "$REPO/engine/npu/include" \
+    "$REPO/tests/prism/test_prism_npu_pack.cpp" "$REPO/engine/npu/src/prism_npu_bridge.cpp" \
+    "$REPO/src/onebp_model.cpp" -o "$TMP/pnpu" || exit 1
 
 # Optional GPU parity tool: built only when hipcc is present (needs the device).
 PGEMV=""
@@ -185,6 +188,7 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
         python3 "$REPO/tests/prism/check_oracle_agreement.py" "$TMP/pf" "$bp" "$base"
     exp=0; [ "$base" = "Ternary-Bonsai-2-27B-PTQ1_0" ] && exp=1
     run "$base: fail-closed transform flag (R15)" "$TMP/fc" "$bp" "$exp"
+    run "$base: Prism->INT8 NPU packer (P4.1)" "$TMP/pnpu" "$bp" blk.0.ffn_gate.weight
     if [ -n "$PFHIP" ]; then
       run "$base: DEVICE 64-layer forward vs fork oracle (P3.3)" \
         python3 "$REPO/tests/prism/check_oracle_agreement.py" "$PFHIP" "$bp" "$base"
