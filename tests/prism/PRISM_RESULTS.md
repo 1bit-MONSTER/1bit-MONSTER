@@ -56,6 +56,8 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | triad, @agent-1141bd four-gate window 14:29:42 (load 2.23-2.32), before -> after | 209.7-212.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | bwprobe triad before the run, 128/256/512/1024 MB | 215.0 / 209.6 / 203.6 / 201.3 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | bwprobe triad after the run, 128/256/512/1024 MB | 219.5 / 214.9 / 208.7 / 204.6 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
+| triad, @agent-1141bd interleaved-A/B window (before -> after) | 211.2-220.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
+| triad, @agent-1141bd multi-GEMV window 15:07 (before -> after) | 210.8-213.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
@@ -146,6 +148,38 @@ token per second.
 **PTQ1_0 cannot reach its gate on this dot, and that is arithmetic rather than tuning** (budget row above):
 it needs a dp4a-style formulation at roughly the Q1_0 dot's throughput, not another pass over the float tile
 kernel.
+
+### Fused multi-GEMV round (cabdd3620) - a low-single-digit-percent win; the quant/launch hypothesis is NOT confirmed
+
+Weight matrices fed from one activation row are now dotted against ONE q8_1 quantization of that row in ONE
+launch - groups are the four GDN matvecs off one activation buffer, q/k/v off the same, and gate/up off another.
+It is a re-expression of the fork's `vec_dot_ptq1_0_q8_1_multi` idea with **no fork code linked**.
+
+| measurement | value | tag |
+|---|---|---|
+| interleaved A/B, base -> multi, Q1_0 / PTQ1_0 / PQ2_0 | 30.2-31.6 -> 29.2-29.5 / 58.1-60.8 -> 57.4-60.2 / 43.2-45.3 -> 41.8-45.7 ms | `[3-packs \| verbatim \| HIP fused multi-GEMV vs base \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| four-gate window 15:07 decode | Q1_0 34 tok/s, PTQ1_0 17 tok/s, PQ2_0 24 tok/s (oracle 5/5 and compare_gen ok on all three, in-window) | `[3-packs \| verbatim \| HIP forward \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| PQ2_0 spread across three interleaved runs of the SAME binary | 21.9-23.9 tok/s | `[Ternary-Bonsai-27B-PQ2_0 \| PQ2_0 \| HIP fused multi-GEMV \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+
+**Recorded as a low-single-digit-percent win, not a headline** - at the peer's own request, and correctly so.
+
+**The movement of PQ2_0 from the previous window is NOT a gain.** The spread row above shows the same binary
+spanning both readings across three interleaved runs, so the earlier figure and the new one are the same
+measurement; PQ2_0 stays MET at the same rate and the wider margin is arithmetic on a rounded value, not
+headroom. Q1_0 and PTQ1_0 are likewise unchanged.
+
+**Method standard this round raised:** the A/B was run *interleaved* (base/multi alternating within one
+session) because a sequential A/B was confounded when the box drifted mid-run - the after-triad fell to the
+busy threshold and PQ2_0 read a far larger ms/token than in the same session minutes earlier, which would have
+shown a **false regression** (values in the A/B and triad rows above). Interleaved A/B with triad evidence on
+both sides is now this lane's standard for any performance claim.
+
+**A hypothesis rejected, and recorded as rejected.** The in-situ aggregate sitting below the standalone dot
+rate implied the loss was the activation-quant pass plus launch overhead. Fusing the shared-x groups is
+precisely that fix, and it bought only the low-single-digit-percent win above - so that explanation is **not
+confirmed**, and the right next step is to measure the quant kernel's own time and the launch count directly,
+rather than to invest further in fusion on an assumption. This is the third time today that a plausible
+mechanism needed a measurement before belief.
 
 **Correction recorded from the peer (their own artifact, not a device bug).** An earlier Q1_0 CPU-vs-device
 greedy comparison was reported FAILED: the CPU floor had been run under a `timeout` that killed it partway,
