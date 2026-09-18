@@ -62,6 +62,29 @@ __global__ void add_kernel(float* __restrict__ dst, const float* __restrict__ sr
     if (i < n) dst[i] += src[i];
 }
 
+// g = silu(g) * u  (FFN gate/up combine)
+__global__ void silu_mul_kernel(float* __restrict__ g, const float* __restrict__ u, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) g[i] = (g[i] / (1.0f + __expf(-g[i]))) * u[i];
+}
+
+// Dense f32 GEMV: some tensors in the folded pack (ssm_alpha/ssm_beta) are stored as
+// F16 tiles, not Prism block quanta, so they need a plain f32 matvec after up-conversion.
+__global__ void gemv_dense_kernel(const float* __restrict__ W, const float* __restrict__ x,
+                                  float* __restrict__ y, int rows, int cols) {
+    const int r = blockIdx.x;
+    float acc = 0.0f;
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) acc += W[(size_t)r * cols + c] * x[c];
+    __shared__ float s[256];
+    s[threadIdx.x] = acc;
+    __syncthreads();
+    for (int st = blockDim.x >> 1; st > 0; st >>= 1) {
+        if (threadIdx.x < st) s[threadIdx.x] += s[threadIdx.x + st];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[r] = s[0];
+}
+
 }  // namespace
 
 extern "C" int prism_l2norm_heads_f32(float* x, int n_heads, int hd, void* stream) {
@@ -94,6 +117,24 @@ extern "C" int prism_add_f32(float* dst, const float* src, int n, void* stream) 
     const int threads = 256, blocks = (n + threads - 1) / threads;
     hipLaunchKernelGGL((add_kernel), dim3(blocks), dim3(threads), 0, (hipStream_t)stream,
                        dst, src, n);
+    HIP_CHECK(hipGetLastError());
+    return 0;
+}
+
+extern "C" int prism_silu_mul_f32(float* g, const float* u, int n, void* stream) {
+    if (!g || !u || n <= 0) return 1;
+    const int threads = 256, blocks = (n + threads - 1) / threads;
+    hipLaunchKernelGGL((silu_mul_kernel), dim3(blocks), dim3(threads), 0, (hipStream_t)stream,
+                       g, u, n);
+    HIP_CHECK(hipGetLastError());
+    return 0;
+}
+
+extern "C" int prism_gemv_dense_f32(const float* W, const float* x, float* y, int rows, int cols,
+                                    void* stream) {
+    if (!W || !x || !y || rows <= 0 || cols <= 0) return 1;
+    hipLaunchKernelGGL((gemv_dense_kernel), dim3(rows), dim3(256), 0, (hipStream_t)stream,
+                       W, x, y, rows, cols);
     HIP_CHECK(hipGetLastError());
     return 0;
 }

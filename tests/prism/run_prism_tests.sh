@@ -118,6 +118,19 @@ if [ -x "$HIPCC" ]; then
   fi
 fi
 
+# Optional P3.3 gate: whole device GDN layer-0 driver (needs hipcc + the device).
+PGDNL=""
+if [ -x "$HIPCC" ]; then
+  if "$HIPCC" --offload-arch=gfx1151 -O3 -std=c++17 -I "$REPO/include" -I "$REPO/src" \
+      "$REPO/tests/prism/test_prism_gdn_layer_hip.hip" "$REPO/kernels/prism_hadamard_fwht.hip" \
+      "$REPO/kernels/prism_gemv.hip" "$REPO/kernels/prism_gdn.hip" "$REPO/kernels/prism_ops.hip" \
+      "$REPO/src/onebp_model.cpp" -o "$TMP/pgdnl" >/dev/null 2>&1; then
+    PGDNL="$TMP/pgdnl"
+  else
+    echo "  (hipcc present but the layer-0 device driver failed to build — skipping)"
+  fi
+fi
+
 echo "== container / codec gates (no model file needed) =="
 run "1BP v5 transform blob + Prism geometry" "$TMP/t5"
 run "Prism codec round-trip (synthetic)" python3 "$REPO/tests/prism/roundtrip_prism_codec.py"
@@ -170,6 +183,10 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
   if [ -f "$bp" ] && [ "$base" = "Ternary-Bonsai-2-27B-PTQ1_0" ]; then
     run "$base: layer-0 GDN block vs numpy reference" bash -c \
       "\"$TMP/l0\" \"$bp\" 1000 > \"$TMP/l0_cpp.txt\" && python3 \"$REPO/tests/prism/dump_prism_layer0.py\" \"$bp\" 1000 > \"$TMP/l0_py.txt\" && python3 \"$REPO/tests/prism/compare_prism_layer0.py\" \"$TMP/l0_cpp.txt\" \"$TMP/l0_py.txt\""
+    if [ -n "$PGDNL" ]; then
+      run "$base: layer-0 DEVICE driver vs CPU reference" bash -c \
+        "\"$PGDNL\" \"$bp\" 1000 > \"$TMP/drv.txt\" 2>&1 && python3 \"$REPO/tests/prism/compare_prism_layer0.py\" \"$TMP/drv.txt\" \"$TMP/l0_cpp.txt\""
+    fi
   fi
   if [ -f "$bp" ]; then
     run "$base: converted .1bp is a byte-exact repack" \
