@@ -162,19 +162,22 @@ struct M {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 3) { std::fprintf(stderr, "usage: %s <model.1bp> <tok0> [tok1 ...] [--topk]\n", argv[0]); return 2; }
+    if (argc < 3) { std::fprintf(stderr, "usage: %s <model.1bp> <tok0> [tok1 ...] [--topk] [--predict N] [--max-pos N]\n", argv[0]); return 2; }
     bool topk = false;
     int predict = 0;
+    int max_pos = 512;
     std::vector<int> toks;
     for (int i = 2; i < argc; i++) {
         if (!std::strcmp(argv[i], "--topk")) { topk = true; continue; }
         if (!std::strcmp(argv[i], "--predict") && i + 1 < argc) { predict = std::atoi(argv[++i]); continue; }
+        if (!std::strcmp(argv[i], "--max-pos") && i + 1 < argc) { max_pos = std::atoi(argv[++i]); continue; }
         toks.push_back(std::atoi(argv[i]));
     }
     if (toks.empty()) return 2;
 
     M mm;
     if (!mm.load(argv[1])) return 1;
+    mm.max_pos = max_pos;   // P3.4: per-layer KV/conv/rec state is sized from this
     const int H = mm.H, NL = mm.NL, NH = mm.NH, NKV = mm.NKV, HD = mm.HD, NF = mm.NF, V = mm.V;
     const int NK = mm.NK, NV = mm.NV, HK = mm.HK, HV = mm.HV, KD = mm.KD, VD = mm.VD, CD = mm.CD;
 
