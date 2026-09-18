@@ -197,6 +197,14 @@ so I left it alone and killed nothing else. Rule adopted, and it is the process-
 keeps repeating: **on a shared box, kill exact pids you have attributed - never a pattern you have not checked.**
 "Verify the instrument before believing the reading" applies to `pkill` as much as to a timer.
 
+**Confirmed by the owner, and the framing is the part worth keeping:** the five overlapping suite invocations were
+the kernel owner's repeated-suite race checking after the GDN retraction plus a validation run, all synchronous and all
+exited, and this lane is now fully paused. The lesson recorded in the owner's own words: the per-run CPU cap did not
+help because nothing serialised launches, so several invocations each politely capping their threads still multiply the
+load - **"our runs were individually well-behaved" was true and irrelevant.** The mechanism was concurrency, not any
+single run's design, and that is now the third distinct mechanism this lane has had to fix rather than a fourth
+variation of one.
+
 **Peer finding recorded, because it says which rows this lane's noise actually blurs:** their load sensitivity is
 model-dependent - a 4B prefill moved only slightly at high load because most of its time is device attention, while a
 0.6B prefill was dominated by host work - so **small-model prefill numbers are the ones a host-saturating neighbour
@@ -446,6 +454,20 @@ hope, and it is the sixth mechanism today to be settled by measurement rather th
 toolchain (`clang++ --target=aie2p-none-unknown-elf`) under `/tmp/gdnobj/`, verified present here - and `build_all.sh`
 drove a real xclbin out of it, with the repository's tracked xclbin set verified untouched (R17's lesson applied
 without being asked). The GDN kernel itself remains, and the plan already calls it the genuinely new part.
+
+## 4j. P4.2 substance - GDN as AIE kernels with a host math gate (59bc2529f)
+
+| measurement | value | tag |
+|---|---|---|
+| commit contents | three files: the GDN AIE kernel, a host-side reference check, and a generator/IRON design | `[n/a \| P4.2 \| engine/npu/kernels + generators \| cpu-host \| - \| - \| 2026-09-18]` |
+| host math gate | conv1d + silu relative RMSE 3.839e-06; state and delta step exactly 0.0 | `[n/a \| P4.2 GDN host gate \| Peano-built AIE design vs host reference \| cpu-host \| - \| - \| 2026-09-18]` |
+| xclbin | a real xclbin built into a temporary path, with the repository's tracked xclbin set verified untouched | `[n/a \| P4.2 \| build_all.sh \| cpu-host \| - \| - \| 2026-09-18]` |
+
+**This is P4.2 moving from "toolchain works" to "the kernel exists and is checked against a host reference."** The gate
+is the right shape for this lane: an AIE design measured against an independent host implementation, with an exact
+result on the recurrence state and delta and a small residual on the convolution. The files live under `engine/npu/`,
+the namespace its holder released earlier today, so they do not collide with this lane's one remaining file there. The
+recurrence is the part the plan calls genuinely new, and it is now written and gated rather than scheduled.
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 
