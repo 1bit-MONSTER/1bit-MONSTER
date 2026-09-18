@@ -347,7 +347,23 @@ int tokenize_and_print(const unsigned char *input, int input_len) {
             pos += slen;
             continue;
         }
-        int mid, mlen = find_longest_match(input + pos, input_len - pos, &mid);
+        // A BPE token is allowed to span the START of a special token, and when it
+        // does the special is destroyed and can never match. Measured: the Qwen3
+        // vocab contains `=<` (id 38698), so the ChatML text `2 + 2 =<|im_end|>`
+        // tokenised the `=<` as one token, ate the `<` that opens <|im_end|>, and
+        // emitted 38698,96136,76,6213,91,29 -- the literal characters `|im_end|>`
+        // -- instead of the single special id 151645. The model then sees the
+        // markup as text. `text<|im_end|>` was fine; `=<|im_end|>` was not.
+        //
+        // Fix: before the BPE match, find the nearest special that starts LATER in
+        // the buffer and cap the match so it cannot reach it. Unbounded when no
+        // further special starts ahead, which is the common case.
+        int limit = input_len - pos;
+        for (int k = 1; k < limit; k++) {
+            int s2;
+            if (match_special(input + pos + k, input_len - pos - k, &s2) > 0) { limit = k; break; }
+        }
+        int mid, mlen = find_longest_match(input + pos, limit, &mid);
         if (mlen > 0) {
             if (!first) std::printf(",");
             std::printf("%d", mid);
