@@ -237,7 +237,9 @@ smaller, code-path finding: the unified decode uses `RuntimeLayerEngine::forward
 (single-slot `build → execute → wait`), so it does not hide the ~1.0–1.5 ms/token host build
 the way `npu_runlist_decode`'s alternating slots do. That is worth ~1.0–1.5 ms/token, is
 reproducible in the numbers above (12.5 ms exec vs 13.9–14.0 ms/tok), and is the only
-remaining decode optimisation named here.
+remaining decode optimisation named here — **now fixed**: the unified decode was routed
+through the alternating slots and measures 78–80 tok/s at 1k against 72 serial
+(`RESULTS-unified-decode-overlap-2026-09-18.md`).
 
 ## Status
 

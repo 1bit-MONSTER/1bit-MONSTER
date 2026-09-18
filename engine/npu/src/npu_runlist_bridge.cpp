@@ -329,6 +329,28 @@ static void load_eos_ids(const char* model_path) {
     }
 }
 
+extern "C" int npu_runlist_apply_rope(int ctx_len, int slot) {
+    if (!g_sess_rt) return 1;
+    g_sess_rt->apply_rope(ctx_len, slot);
+    return 0;
+}
+extern "C" int npu_runlist_build(int slot, int ctx_len) {
+    if (!g_sess_rt) return 1;
+    return g_sess_rt->build_runlist(slot, ctx_len) ? 0 : 1;
+}
+extern "C" int npu_runlist_execute(int slot) {
+    if (!g_sess_rt) return 1;
+    return g_sess_rt->execute_runlist(slot) ? 0 : 1;
+}
+extern "C" int npu_runlist_wait(int slot) {
+    if (!g_sess_rt) return 1;
+    return g_sess_rt->wait_runlist(slot) ? 0 : 1;
+}
+extern "C" int npu_runlist_get_logits(float* logits, int vocab) {
+    if (!g_sess_rt) return 1;
+    return g_sess_rt->get_logits(logits, vocab) ? 0 : 1;
+}
+
 extern "C" int npu_runlist_forward(int ctx_len, float* logits, int vocab) {
     if (!g_sess_rt) return 1;
     if (!g_sess_rt->forward(ctx_len)) return 1;

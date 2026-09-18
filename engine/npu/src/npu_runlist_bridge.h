@@ -59,6 +59,17 @@ int npu_runlist_lmhead(float* logits, int vocab);
 // One decode forward at context length `ctx_len` (1-based), then lm_head into
 // `logits`.
 int npu_runlist_forward(int ctx_len, float* logits, int vocab);
+
+// Alternating-slot decode API, mirroring the schedule npu_runlist_decode uses:
+// build the NEXT token's runlist and write its RoPE table while the CURRENT
+// token executes on device, so the ~1.0-1.5 ms/token host build is hidden.
+// Call order per step: build(slot,ctx) -> apply_rope(ctx,slot) -> wait(other)
+// -> get_logits -> embed(tok) -> execute(slot).
+int npu_runlist_apply_rope(int ctx_len, int slot);
+int npu_runlist_build(int slot, int ctx_len);
+int npu_runlist_execute(int slot);
+int npu_runlist_wait(int slot);
+int npu_runlist_get_logits(float* logits, int vocab);
 // Free the session (engine exit path).
 void npu_runlist_session_free(void);
 

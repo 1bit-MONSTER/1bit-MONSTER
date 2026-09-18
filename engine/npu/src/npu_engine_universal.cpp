@@ -5090,15 +5090,8 @@ struct Bf16Ctx {
                 std::vector<int> uni_ids(ng, 0);
                 auto tgs = std::chrono::steady_clock::now();
                 int ctx = sp;   // tokens already in KV (prefill length)
-                for (int i = 0; i < ng; i++) {
-                    int rc;
-                    if (i == 0) {
-                        rc = npu_runlist_lmhead(lg.data(), NV);
-                    } else {
-                        rc = npu_runlist_embed(uni_ids[i - 1]);
-                        if (rc == 0) rc = npu_runlist_forward(++ctx, lg.data(), NV);
-                    }
-                    if (rc != 0) { fprintf(stderr, "[unified] decode step %d failed\n", i); return 1; }
+                // Report/dump/argmax shared by both schedules below.
+                auto unified_step = [&](int i) {
                     if (i == 0 && getenv("NPU_DUMP_LOGITS")) {
                         FILE* fl = fopen("/tmp/unified_logits.txt", "wb");
                         if (fl) { for (int n = 0; n < NV; n++) fprintf(fl, "%d %.6g\n", n, lg[n]); fclose(fl); }
@@ -5122,6 +5115,58 @@ struct Bf16Ctx {
                                 i + 1, best, (double)lg[best], b2,
                                 b2 >= 0 ? (double)lg[b2] : 0.0,
                                 b2 >= 0 ? (double)(lg[best] - lg[b2]) : 0.0);
+                    }
+                    return best;
+                };
+                if (getenv("NPU_UNIFIED_SERIAL")) {
+                    for (int i = 0; i < ng; i++) {
+                        int rc;
+                        if (i == 0) {
+                            rc = npu_runlist_lmhead(lg.data(), NV);
+                        } else {
+                            rc = npu_runlist_embed(uni_ids[i - 1]);
+                            if (rc == 0) rc = npu_runlist_forward(++ctx, lg.data(), NV);
+                        }
+                        if (rc != 0) { fprintf(stderr, "[unified] decode step %d failed\n", i); return 1; }
+                        unified_step(i);
+                    }
+                } else {
+                    // Alternating slots (the schedule npu_runlist_decode uses): build the
+                    // next token's runlist and write its RoPE table while the current
+                    // token executes, hiding the host build. NPU_UNIFIED_SERIAL=1 keeps
+                    // the old single-slot forward() path for A/B.
+                    if (npu_runlist_lmhead(lg.data(), NV) != 0) {
+                        fprintf(stderr, "[unified] decode step 0 failed\n"); return 1;
+                    }
+                    int best = unified_step(0);
+                    int sa = 0, sb = 1;
+                    if (ng > 1) {
+                        const int c1 = ctx + 1;
+                        if (npu_runlist_apply_rope(c1, sb) || npu_runlist_build(sb, c1) ||
+                            npu_runlist_embed(best) || npu_runlist_execute(sb)) {
+                            fprintf(stderr, "[unified] decode forward ctx=%d failed\n", c1); return 1;
+                        }
+                        ctx = c1;
+                    }
+                    for (int i = 1; i < ng; i++) {
+                        const int next_ctx = ctx + 1;
+                        if (i + 1 < ng) {
+                            if (npu_runlist_build(sa, next_ctx) ||
+                                npu_runlist_apply_rope(next_ctx, sa)) {
+                                fprintf(stderr, "[unified] build ctx=%d failed\n", next_ctx); return 1;
+                            }
+                        }
+                        if (npu_runlist_wait(sb) || npu_runlist_get_logits(lg.data(), NV)) {
+                            fprintf(stderr, "[unified] wait ctx=%d failed\n", ctx); return 1;
+                        }
+                        best = unified_step(i);
+                        if (i + 1 < ng) {
+                            if (npu_runlist_embed(best) || npu_runlist_execute(sa)) {
+                                fprintf(stderr, "[unified] execute ctx=%d failed\n", next_ctx); return 1;
+                            }
+                            ctx = next_ctx;
+                        }
+                        const int t = sa; sa = sb; sb = t;
                     }
                 }
                 auto tge = std::chrono::steady_clock::now();
