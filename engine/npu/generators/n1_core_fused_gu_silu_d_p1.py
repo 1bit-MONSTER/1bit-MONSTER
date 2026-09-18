@@ -219,7 +219,15 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                             # wait for the 12.4 MB/launch weight stream).
                             bt = shim_dma_single_bd_task(
                                 B_s[c], B_gu,
-                                offset=(ki * (N_GU // n) + n_tile) * (k * n),
+                                # nt-major, matching pack_tile_chunk's tbase
+                                # ((nt * n_k + ki) * (k*n)) and the working fused
+                                # design (n1_core_fused_gu_silu_d.py: offset=
+                                # n_tile*(K//k)*(k*n)). It was
+                                # (ki*(N_GU//n)+n_tile), ki-major — the transpose
+                                # fed every GU tile from the wrong slot, so C1/h2
+                                # were wrong while the C2gate (emulating from the
+                                # NPU's own h2) still read byte-identical (issue #2600).
+                                offset=(n_tile * n_k + ki) * (k * n),
                                 sizes=[1, 1, 1, k * n],
                                 strides=[1, 1, 1, 1], issue_token=True)
                             dma_start_task(bt); bt_list.append(bt)
