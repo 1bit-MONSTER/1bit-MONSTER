@@ -151,6 +151,21 @@ else
     printf '%s\n' "$bundle_out" | tail -6 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# The daily numbers pipeline: tools/sync_numbers.py read site/benchmarks.html
+# unconditionally, the 2026-08-22 redesign (#1780) deleted that page, and
+# packaging/services/daily-benchmark-validate.sh runs the writer under `set -e` — so
+# the daily re-measure died at the step before its commit and published nothing, and
+# no selfcheck exercised the writer at all. These cases drive the real script against
+# synthetic trees: absent pages (the defect), anchored pages (the path that must keep
+# working), anchorless pages (today's real state), plus the driver's git-add paths.
+total=$((total+1))
+if sync_numbers_out=$("$PYTHON" Testing/sync_numbers_selfcheck.py 2>&1); then
+    echo "✓ sync_numbers"
+else
+    echo "✗ sync_numbers"
+    printf '%s\n' "$sync_numbers_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 run iq1       Testing/iq1_selfcheck.cpp --
 
 # Padded-vocab embedding gate: some 1BP artifacts declare the checkpoint's padded
