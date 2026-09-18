@@ -214,6 +214,44 @@ The Q1_0 and PQ2_0 readings taken in that same run are therefore drift-depressed
 values remain the previous window block's - so this round's claim is PTQ1_0's, not a Q1_0 or PQ2_0 movement. The peer stated this
 before I could find it, which is the standard this lane is holding to.
 
+### Corrected mechanism (rocprofv3, 2026-09-18) - the quant story is DEAD, the dispatch count is real
+
+Method: two profiles **differenced** rather than read singly, because a single profile is dominated by model load
+and state init (one token read 16106 dispatches against 20729 for four). All figures below come from the
+difference, not from any individual dispatch.
+
+| measurement | value | tag |
+|---|---|---|
+| dispatches per token | 1541 ((20729 - 16106) / 3) | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3 --kernel-trace, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| of which buffer copies | 1452 dispatches, 0.37 ms total = 94% of all dispatches | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| activation-quant kernel per token | ~257 dispatches, 0.25 ms = under 1% of decode | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| GEMV total per token | 21.2 ms (dp4a<18> 6.27 + multi4 14.95) | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| cross-instrument check: profile vs the skip-GEMV split | 21.2 vs 21.1 ms - two independent instruments agreeing within 0.1 ms | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3 vs PRISM_SKIP_GEMV \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| other per-token kernels | gdn_recurrence 3.11, rmsnorm 1.16, all others under 0.2 each | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| ideal GEMV at the per-tensor standalone rates | ~15 ms against the 21.2 ms observed | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from the rows above \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| attribution of the fusion win | ~256 dispatches removed = 0.26-0.77 ms, matching the measured 0.3-0.6 ms | `[3-packs \| verbatim \| derived \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| instrument caveat | dispatch durations overlap in this container (the multi4 total exceeds wall time), so only counts and difference-of-totals were used | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3 \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+
+**The quant story is dead.** The activation-quant pass is under one percent of the decode (row above), so it
+cannot explain the in-situ-versus-standalone GEMV gap that motivated it. The peer's earlier framing that named it
+is recorded as wrong, because they killed it themselves with a measurement rather than a defence - the third
+mechanism today to die of data instead of argument.
+
+**The dispatch count is real, and the fusion arithmetic now closes** (rows above): removing a few hundred
+dispatches predicts the measured one-to-two percent almost exactly, which is a better result than either number
+alone. Worth noting what those dispatches mostly are, though: the overwhelming majority are buffer copies, so the
+cheapest next win may be to stop making them rather than to optimise any kernel.
+
+**The dominant remaining term is the GEMV aggregate inside the layer loop** (rows above): it runs well below the
+per-tensor standalone rate, and the gap is neither quant nor dispatch. The peer suspects memory-system
+interaction between the GEMVs and the non-GEMV kernels and explicitly declines to assert it - the same standard
+that has now retired three mechanisms, applied to their own.
+
+**One part of this round is still an estimate, and is recorded as an estimate.** The lost-to-dispatch figure is
+inferred from an assumed per-dispatch cost, and the sum of the measured terms leaves a remainder of about that
+size - suggestive, not proof. The direct measurement is cheap: per-token wall time minus the sum of per-token
+kernel durations from the same differenced profile measures launch overhead instead of assuming it.
+
 **Pre-registered next step, with its own falsification condition.** Rather than another fusion, the peer is
 measuring in-situ the two quantities the quant/launch story never had: the activation-quant kernel's own time
 and the launch count per token. Their stated condition, recorded here so it cannot be quietly dropped: if the
