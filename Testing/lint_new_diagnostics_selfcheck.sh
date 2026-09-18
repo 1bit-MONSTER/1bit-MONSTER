@@ -114,7 +114,7 @@ gate "$c5" >/dev/null; rcF=$?
 # halves read as "not present at head", so the file would be skipped and a new violation
 # would pass. The first version of this predicate had that bug; this case is why.
 printf 'BADFMT\n' > "$TMP/repo/src/with space.cpp"
-c7=$(step "path with a space")
+step "path with a space" >/dev/null   # commits the fixture; the gate's base stays $c6
 outH=$(gate "$c6"); rcH=$?
 [ "$rcH" -ne 0 ] && ok "H a spaced path is linted (fails on +1)" "exit $rcH" || bad "H a spaced path is linted (fails on +1)" "exit 0 — it was skipped"
 case "$outH" in *"with space.cpp"*) ok "H names the spaced path" "listed";; *) bad "H names the spaced path" "absent from the output";; esac
