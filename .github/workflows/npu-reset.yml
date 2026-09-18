@@ -25,6 +25,40 @@ jobs:
           sudo modprobe amdxdna
           sleep 3
           dmesg | tail -10
+      - name: Record the driver parameters the reload picked up
+        # The reload above re-reads /etc/modprobe.d. A box without the entry that
+        # carries `timeout_in_sec=15` comes back at the driver default (2 s) without
+        # saying so — the condition benchmarks/RESULTS-ert-rootcause-and-repair-2026-09-16.md
+        # attributes the 83-dump ERT teardown to — and the benchmark below then
+        # measures a different environment than the published numbers were taken in
+        # (#2556). Until now this workflow reset the NPU and recorded nothing about
+        # what it reset it to.
+        # Reported, not enforced: this is also the recovery path for a hung NPU, and
+        # blocking recovery on a config file would be the worse failure. MODPROBE_D
+        # is overridable so both branches can be exercised.
+        env:
+          MODPROBE_D: /etc/modprobe.d
+        run: |
+          set -uo pipefail
+          params=/sys/module/amdxdna/parameters
+          td=$(cat "$params/timeout_in_sec" 2>/dev/null || echo '?')
+          cl=$(cat "$params/context_limit" 2>/dev/null || echo '?')
+          src=$(grep -rls 'timeout_in_sec' "$MODPROBE_D" 2>/dev/null | tr '\n' ' ')
+          echo "driver after reload: kernel=$(uname -r) timeout_in_sec=$td context_limit=$cl"
+          echo "modprobe.d carrying timeout_in_sec: ${src:-<none>}"
+          {
+            echo "### NPU driver after reset"
+            echo ""
+            echo "| parameter | value |"
+            echo "| --- | --- |"
+            echo "| kernel | \`$(uname -r)\` |"
+            echo "| timeout_in_sec | \`$td\` |"
+            echo "| context_limit | \`$cl\` |"
+            echo "| modprobe.d source | \`${src:-none}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$src" ]; then
+            echo "::warning::nothing under $MODPROBE_D sets timeout_in_sec: this reload used the driver default (2 s), so numbers from this run are not like-for-like against the results annotated timeout_in_sec=15 (#2556)"
+          fi
       - name: Build engine
         run: |
           source env.sh
