@@ -220,7 +220,21 @@ variation of one.
 `passed=53 failed=0 skipped=0`, matching this lane's own three clean runs at the same count - so the counts line and the
 skip fix are consistent across both writers and two trees' worth of invocations.
 
-**Peer finding recorded, because it says which rows this lane's noise actually blurs:** their load sensitivity is
+**The peer's campaign completed against these fixes, and their instrument lesson is sharper than mine was.** The window
+this lane flagged at 16:57 landed and they took all six models inside it (accepted sets per model ranging from one to
+three of three), with native ahead on 8k prefill by roughly one to one-point-one times, decode at parity or ahead at the
+top of the window, and three of the six accepted sets tighter than one percent. Two of their four-model rejections
+earlier were attributed to **this lane's own device runs**, which is the honest direction to record them in. Their
+instrument change is the part worth mirroring: the one-minute load average **lagged in both directions**, so they now
+sample the maximum foreign CPU during each run and gate on that, keeping absolute load only as a gross-saturation
+catch - with load-average as the gate they had both accepted a run beside a foreign process at thousands of percent CPU
+and rejected a clean run at a load of thirty. For this lane's host-bound numbers that is a better gate than the load
+average, and it is recorded as such. They also flagged the boundary of a clean row: three of their accepted sets ran
+with one capped suite of ours still present at four threads on a 32-core box, accepted because the spreads stayed under
+two and a half percent and the native side won anyway - so any residual inflation told against their claim rather than
+for it. That is the right way to handle a marginal window.
+
+**Peer finding recorded, because it says which rows this lane's noise actually blurs:****Peer finding recorded, because it says which rows this lane's noise actually blurs:** their load sensitivity is
 model-dependent - a 4B prefill moved only slightly at high load because most of its time is device attention, while a
 0.6B prefill was dominated by host work - so **small-model prefill numbers are the ones a host-saturating neighbour
 invalidates first.**
@@ -433,6 +447,9 @@ revision in progress. Both sets are now recorded with their fractions, and the r
 goal was revised and confirmed by the operator, so the authoritative targets are the revised ones and the originals
 are retained only as roof-bound ceilings (the revision is a fixed fraction of each roof, not a private arithmetic).
 
+**Gate tally after the ablation round: two of three revised targets are met.** The binary pack clears its target outright, the
+ternary 2-bit pack clears its own, and the folded ternary pack remains short - rows below.
+
 **Fifth hypothesis for the unexplained earlier failure: tested and refuted.** The kernel owner offered a device gate
 that reuses an engine without resetting its state buffers, which would read whatever a previous gate left behind and
 would present exactly as a load-correlated one-off. Audited by inspection: every device gate is a separate process
@@ -441,48 +458,44 @@ engine, and one uses no engine at all), and no gate loops over multiple packs in
 cross-pack state reuse is therefore not possible, and the hypothesis joins the other four as refuted. The flake stays
 unexplained, and it stays unexplained because its log was deleted.
 
-## 4i. The unpack lever tested and RETIRED (17:24), and P4.2's toolchain milestone
+## 4i. The unpack lever: measured by ABLATION, then taken - and Q1_0's gate CLEARED (0fea68d2d)
 
-**The surviving hypothesis was tested rather than left standing.** The kernel owner implemented the sum-over-set-bits
-form of the 1-bit dot (the mask being the same spread intermediate the current unpack already builds) and swept all
-seven GEMV shapes of the model. It is correct everywhere, and shape-dependent:
-
-| shape | before | after | tag |
-|---|---|---|---|
-| attn_qkv | 239.1 GB/s | 258.5 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
-| attn_gate | 226.5 GB/s | 238.6 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
-| ssm_out | 261.8 GB/s | 271.0 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
-| ffn_gate | 248.6 GB/s | 260.5 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
-| ffn_up | 247.7 GB/s | 258.4 GB/s | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
-| ffn_down | 340.7 GB/s | 311.6 GB/s (loss) | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
-| output.weight | 211.3 GB/s | 202.3 GB/s (loss) | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP unpack variant, per shape \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
-| weighted overall yield | about 2% = roughly 0.7 tok/s, against a shortfall that needs about 4.8% | - | covers about a third of the gap | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from the sweep above \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
-
-**Recorded as retired, not pending.** It buys about a third of what Q1_0 needs, and buying the rest would require a
-per-shape dispatch whose complexity the gain does not justify. This corrects a framing of mine two hours old: the
-unpack was the surviving hypothesis after five retirements, and it is now a **tested-and-measured** lever that is real
-but small in this formulation - so Q1_0's remaining shortfall needs either a different unpack idea, which would need
-its own measurement, or something else entirely. Retiring it with numbers is the better outcome than carrying it as a
-hope, and it is the sixth mechanism today to be settled by measurement rather than argument.
-
-**P4.2 milestone, separately:** the AIE toolchain flow now works end to end - a kernel object compiled with the Peano
-toolchain (`clang++ --target=aie2p-none-unknown-elf`) under `/tmp/gdnobj/`, verified present here - and `build_all.sh`
-drove a real xclbin out of it, with the repository's tracked xclbin set verified untouched (R17's lesson applied
-without being asked). The GDN kernel itself remains, and the plan already calls it the genuinely new part.
-
-## 4j. P4.2 substance - GDN as AIE kernels with a host math gate (59bc2529f)
+**This section replaces an entry of mine that was wrong, and the error is worth its own line.** I recorded two hours
+ago that the unpack lever was "tested and retired - real but small, about two percent". That figure came from a single
+*per-4* variant, and it was generalised into a verdict on the lever itself. The kernel owner has corrected it: the
+**per-32** form of the same idea is far faster per shape (row above), and it is what cleared Q1_0's gate. **One data point
+generalised** - the same shape as the aggregate-versus-isolated rule, applied to a comparison of variants instead of a
+comparison of instruments.
 
 | measurement | value | tag |
 |---|---|---|
-| commit contents | three files: the GDN AIE kernel, a host-side reference check, and a generator/IRON design | `[n/a \| P4.2 \| engine/npu/kernels + generators \| cpu-host \| - \| - \| 2026-09-18]` |
-| host math gate | conv1d + silu relative RMSE 3.839e-06; state and delta step exactly 0.0 | `[n/a \| P4.2 GDN host gate \| Peano-built AIE design vs host reference \| cpu-host \| - \| - \| 2026-09-18]` |
-| xclbin | a real xclbin built into a temporary path, with the repository's tracked xclbin set verified untouched | `[n/a \| P4.2 \| build_all.sh \| cpu-host \| - \| - \| 2026-09-18]` |
+| ablation: the gate tensor with a free unpack | reaches its own read-only traversal bound to within a fraction of a percent; the unpack chain is about 79% of the kernel's time | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP ablation, unpack replaced by a constant \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| the per-32 fix, per shape | about 27% faster per shape; seven-shape correctness corr 0.999995-0.999996; speed ratios 1.25-1.29 | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP per-32 sum-over-set-bits \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
+| the per-4 variant of the same identity | about 2% - the single figure my retracted entry generalised into a verdict | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP per-4 variant \| strixhalo-busy \| - \| synthetic x \| 2026-09-18]` |
 
-**This is P4.2 moving from "toolchain works" to "the kernel exists and is checked against a host reference."** The gate
-is the right shape for this lane: an AIE design measured against an independent host implementation, with an exact
-result on the recurrence state and delta and a small residual on the convolution. The files live under `engine/npu/`,
-the namespace its holder released earlier today, so they do not collide with this lane's one remaining file there. The
-recurrence is the part the plan calls genuinely new, and it is now written and gated rather than scheduled.
+**The measurement that replaced the hypothesis, by ablation rather than by a profiler.** The container exposes no PMC
+set (only sample-interval configurations), so the kernel was compared against itself with one stage removed
+(`tests/prism/bench_prism_gemv_ablation.hip`): with the 1-bit unpack replaced by a constant - a perfect, free unpack -
+the gate tensor reaches its own read-only traversal bound (within a fraction of a percent of it). The unpack chain was
+the dominant share of the kernel's time (row above), which turned a surviving hypothesis into a target with a number attached.
+
+**The fix:** the dot is taken as `d1 * sum over sub-blocks ds*(2*sp - S)`, where `sp` sums the int8 activations over
+the **set** weight bits and `S` is their plain sum. Three details make it pay: the mask for `sp` is the same spread
+intermediate the existing unpack already built, so the permute/subtract/or that materialised the +-1 bytes disappears
+(five ops per four weights instead of eight); `S` is weight-independent; and `S` is emitted by the quantization kernel
+in the same launch, so no extra pass. **The decisive detail is the granularity: `S` is per-32, not per-4** - the
+per-4 form of the same identity is exactly the variant my retracted entry generalised from (row above).
+
+**Independent verification here, because a gate flip is worth checking rather than reading.** With the device lock
+held, written and released: the race-prone GDN parity gate run **eight consecutive times, 8 pass / 0 fail**; and the
+full suite run to completion, reporting `gates: passed=53 failed=0 skipped=0`, `ALL PRISM GATES PASSED`, with the
+device forward gates passing on all three packs and the per-position oracle and the eleven-position CPU-vs-device
+greedy comparisons passing on all three. The new dot is therefore verified end to end by a run this lane made itself,
+not only by the report it came with.
+
+**Scope, recorded so the result is not over-read:** the `2*sp - S` identity requires **±1 weights**, so it applies to
+the binary pack only. The two ternary packs keep their existing dots, which is why their numbers are unchanged - and
+it means the remaining ternary shortfall needs a different idea or a convention call, not this one.
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 

@@ -329,6 +329,17 @@ reported as a delta, not a replacement.
 > the fix needs zig which is not installed, and the deliverable wants our own kernels with no third-party runtime
 > in the loop - so ZINC stays an *optional cross-check* if zig ever lands rather than the source of the number.
 >
+> **Update 17:37 - **Q1_0's GATE IS CLEARED** (`0fea68d2d`), and the unpack lever was NOT retired.** The route was the
+> measurement-led one: no PMC set is available in this container, so the kernel was compared against itself by
+> **ablation** (`4e96982d2`) - with a free unpack the gate tensor hits its own read-only traversal bound, and the unpack
+> chain is ~79% of the kernel's time. The fix is the per-32 sum-over-set-bits identity (mask = the spread intermediate
+> the unpack already built; `S` weight-independent and emitted by the quant kernel in the same launch; **per-32, not
+> per-4** - the per-4 variant is the ~2% figure an earlier entry of mine wrongly generalised into "retired"). Verified
+> window 17:36:51 (lock held/released, triad 214.6 both sides, 8× GDN parity 8/0, oracle 5/5, compare_gen 11/11):
+> **Q1_0 29.6 → 26.3 ms = 34 → 38 tok/s vs ≥36 ⟹ MET**; PQ2_0 41.7 ms = 23.98 vs ≥22 ⟹ **MET**; PTQ1_0 40.9 ms = 24.45 vs
+> ≥25 ⟹ **0.55 short** (unchanged - the identity needs ±1 weights and applies to the binary pack only). **So two of the
+> three revised targets are met.** Independently verified here: GDN parity **8/8** and the full suite **53 passed / 0
+> failed / 0 skipped, ALL PRISM GATES PASSED**, device-forward, oracle and greedy gates green on all three packs.
 > **Update 17:24 - TARGETS REVISED BY THE OPERATOR (authoritative) and two tasks added.** The objective of record is now
 > **≥36 tok/s Q1_0 / ≥25 PTQ1_0 / ≥22 PQ2_0**; the original 42/27/22 are retained only as roof-bound ceilings (the
 > revision is 85.7% / 92.6% / 100% of them). Strict-basis verdicts from the 17:22 window: **Q1_0 34.36 tok/s (SHORT by
