@@ -839,3 +839,51 @@ From @agent-dddf9e's Prism decode work (lane `feat/prism-bonsai-27b`, worktree
 No NPU action follows from this: the engine consumes `q4nx`, and Prism/Bonsai is not one
 of the goal's un-routed families. It is recorded so the gguf-py wall is a known fact
 rather than a surprise.
+
+## 6.3 Engine-build traps and the xclbin provenance gate (recorded 2026-09-16)
+
+Two traps from @agent-2f3c1b's zaya split-D work (#2307 / PR #2597) that bit this lane
+too, plus the correction they forced here.
+
+**(i) `build_npu.sh` is stale-object-friendly and has no `set -e`.** It recompiles a TU
+only when the `.cpp` is newer than the `.o` — so a **header-only** edit can silently do
+nothing — and it ends in a trailing `ls`, so a failed compile can still exit 0. Verify
+with a marker in the binary, never the build's rc:
+`grep -a NPU_ATTN_CTX engine/npu/build/npu_engine_nanbeige4_1_3b`.
+Audited this lane's own header-only work against that rule: the markers ARE present
+(`NPU_ATTN_CTX`×3, `ACTX-DBG`×2, `ACTX-EMU`×1, `EARLY init`×1), so the AttnCtx
+N-split/DBG/EMU-variant measurements in `RESULTS-family-attn-ctx-adapter-2026-09-16.md`
+do reflect the patched header rather than a stale object.
+
+**(ii) The xclbin set is manifest-gated.** On `origin/main` there is
+`engine/npu/xclbins/PROVENANCE.json`, `engine/npu/tests/check_xclbin_provenance.py`,
+`.github/workflows/xclbin-provenance.yml` and `Testing/xclbin_provenance_gate_selfcheck.sh`.
+If you add or change a tracked xclbin you must regenerate the manifest **in the same
+commit** or "Xclbin set matches its manifest" fails CI:
+
+```
+python3 engine/npu/tests/check_xclbin_provenance.py --write-manifest \
+  --toolchain "<aiecc mlir-aie 1.3.4 (install_tmp, LLVM 23.0.0) + llvm-aie/Peano 21.0.0.2026080301+c9c5ecb7, target aie2p-none-unknown-elf>" \
+  --script-revision "<generating script revision>"
+```
+
+**(iii) Correction to `RESULTS-yardstick-defaultpath-2026-09-16.md`.** That doc's "Tiles
+now in the tree" table is wrong as written. The `final_bf16_*` tiles this lane built
+(1.7B ×4, 8B ×4, Llama ×4, plus the cols=4 `O`/`D` and `GU` for the H=2560 pair) were
+committed in `bd93fc040` and then **deleted from the branch by another lane's collateral
+commit `a81662ab8`** (a doc commit whose message is about a re-measurement and whose stat
+carries eleven `Bin … -> 0 bytes` lines for these tiles). They now exist only as untracked
+files in the worktree. They are therefore **not** a deliverable of this lane and should
+not be relied on as present; they are **rebuildable** with the command the doc already
+gives:
+
+```
+cd engine/npu/generators
+bash build_bf16_xclbins.sh QKV:2048:4096 O:2048:2048 GU:2048:12288 D:6144:2048      # 1.7B
+bash build_bf16_xclbins.sh QKV:4096:6144 O:4096:4096 G:4096:12288 U:4096:12288 D:12288:4096     # 8B
+bash build_bf16_xclbins.sh G:4096:14336 U:4096:14336 D:14336:4096                    # Llama (QKV/O shared with 8B)
+bash build_bf16_xclbins.sh O:4096:2560:4 D:9728:2560:4                               # 4B/VL-4B (cols=4; QKV + GU still needed)
+```
+
+Re-committing them would require (ii)'s manifest regeneration in the same commit, which is
+the reason not to treat them as tracked artifacts here.
