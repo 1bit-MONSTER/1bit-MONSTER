@@ -365,6 +365,51 @@ whole-pack floor differ by under a millisecond, so the "floor plus current non-G
 very slightly tighter, and the conclusion - Q1_0 is limited by the GEMV reaching its memory bound - does not change.
 Gate fractions are size-independent and were never affected.
 
+## 4h. RE-BRACKET WINDOW 17:22:19 - the first fully admissible canonical set, and a target revision to attribute
+
+**Why this window is different from every earlier one:** the device lock was taken, written with pid and start time,
+and released; the triad clears the quiet threshold on **both** sides (the section 4 triad rows carry both
+readings); the race-prone GDN parity gate was run **eight consecutive times** per this lane's standard; and
+the fork oracle and the CPU-vs-device greedy comparison ran **inside the same window** as the decode. Every earlier
+canonical row was missing at least one of those.
+
+| measurement | value | tag |
+|---|---|---|
+| decode, 32 tokens (load 2.43 before / 2.10 after) | Q1_0 29.1 ms = 34 tok/s; PTQ1_0 40.8 ms = 24.5 tok/s; PQ2_0 41.3 ms = 24 tok/s | `[3-packs \| verbatim \| HIP backend \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| GDN parity, the race-prone gate, repeated | 8 pass / 0 fail of 8 | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP GDN parity, 8 consecutive runs \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+| correctness inside the window | fork oracle 5/5 and CPU-vs-device greedy 11/11 on all three packs | `[3-packs \| verbatim \| HIP forward vs CPU floor + fork oracle \| strixhalo-quiet \| 11 \| capital-of-France \| 2026-09-18]` |
+| effective rate, payload basis per the size invariant | Q1_0 128.5; PTQ1_0 146.9; PQ2_0 171.3 GB/s (3.78 / 5.878 / 7.137 GB payloads) | `[3-packs \| verbatim \| HIP backend \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| against the ORIGINAL targets this lane was given (42 / 27 / 22) | Q1_0 81%; PTQ1_0 92.6%; PQ2_0 109% | `[3-packs \| verbatim \| derived from the window above \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| against the REVISED targets as reported by the kernel owner (36 / 25 / 22) | Q1_0 94.4%; PTQ1_0 98%; PQ2_0 109% | `[3-packs \| verbatim \| derived from the window above \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+
+**Two things recorded with the row, at the kernel owner's explicit request.** First, this is the first wall-visible
+reading since the non-GEMV work (whose isolated gains are recorded earlier in this file), and the Q1_0 wall figure in
+the row above is the best this lane has logged **with a correct kernel** - the previous canonical reading was taken
+on the pre-fix kernel, so the new one is the figure to carry. Second, no cause is attributed to the remaining Q1_0 gap: the honest
+statement is that the revised target is met for PQ2_0, short for Q1_0, and **PTQ1_0 is a rounding question, not a
+comfortable pass** - see the next paragraph.
+
+| PTQ1_0 against its revised target, strict reading | 40.8 ms/token = 24.51 tok/s against a target of at least 25, i.e. 0.5 tok/s short; the pass depends on rounding the displayed value up | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| derived from the window above \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+
+**A rounding flag, applied in the direction that costs a "MET"** (row above). This lane corrected the same class of
+rounding earlier when it flattered a claim of improvement - a one-token move that sat inside the same binary's
+spread - so the same standard applies when the rounding is what converts a miss into a pass. The measured value and
+its distance from the threshold are recorded; the met-or-missed verdict belongs to whoever owns the convention.
+
+**Target revision recorded with its provenance rather than absorbed.** The objective text this lane was given states
+one set of targets (the row above quotes it); this message cites a revised set, which the kernel owner ties to a goal
+revision in progress. Both sets are now recorded with their fractions, and the revised set is labelled **as reported, pending
+the operator's revision text** - because a gate that moves has to say who moved it, or a lane can quietly lower its
+own bar and call it progress.
+
+**Fifth hypothesis for the unexplained earlier failure: tested and refuted.** The kernel owner offered a device gate
+that reuses an engine without resetting its state buffers, which would read whatever a previous gate left behind and
+would present exactly as a load-correlated one-off. Audited by inspection: every device gate is a separate process
+that initialises one engine for one model and exits (two gates never call `reset()` because they never reuse an
+engine, and one uses no engine at all), and no gate loops over multiple packs in a single process. Cross-gate and
+cross-pack state reuse is therefore not possible, and the hypothesis joins the other four as refuted. The flake stays
+unexplained, and it stays unexplained because its log was deleted.
+
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 
 The box was clean-rebooted to clear the peer lanes, and the backend decoded 32 tokens per pack in the
