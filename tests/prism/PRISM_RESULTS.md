@@ -76,6 +76,7 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | bandwidth direction, same window (load 14): read-only 1024 MB | 210.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe direction test\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | bandwidth direction, same window: write-only 1024 MB | 193.8 GB/s | `[n/a\|probe\|HIP hip_bw_probe direction test\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | bandwidth direction, same window: triad 128/256 MB | 207.9 / 202.9 GB/s | `[n/a\|probe\|HIP hip_bw_probe direction test\|strixhalo-busy\|- \| - \| 2026-09-18]` |
+| triad, prism-lane probe 16:57:27 with the device lock held for its duration, 128/256/512/1024 MB | 205.3-216.6 GB/s; 1-minute load 2.24 before and 2.22 after; the only device holder during was the production FLM server | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | contaminant profile: Prism attribution harness, two processes | 98% CPU each, 43 minutes of CPU, zero device I/O, held the NPU device | `[Prism-lane\|leaked probe\|/tmp/attrib\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 
