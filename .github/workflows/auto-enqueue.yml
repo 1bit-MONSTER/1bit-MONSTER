@@ -100,9 +100,32 @@ jobs:
           # the exact failure mode this workflow exists to prevent. Hence the
           # verification below: an exit code is not evidence that the queue will
           # take the PR.
+          #
+          # The call is also not allowed to ABORT the step. `set -e` would kill
+          # the step before the readback, and the readback is the only thing that
+          # can tell a stacked PR apart from a real failure. Measured on #2548's
+          # run 35297583998: on a base whose ruleset does not apply, this exits 1
+          # with "GraphQL: Pull request Protected branch rules not configured for
+          # this branch (enablePullRequestAutoMerge)", so the step died here and
+          # the stacked-base warning below was unreachable — present in the file,
+          # never printed. The failure is not swallowed: it is reported, and the
+          # readback judges it, still failing hard on the default branch.
           base=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json baseRefName --jq .baseRefName)
-          gh pr merge "$PR" --squash --auto --repo "$GITHUB_REPOSITORY"
-          if [ "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json autoMergeRequest --jq '.autoMergeRequest != null')" != "true" ]; then
+          if ! gh pr merge "$PR" --squash --auto --repo "$GITHUB_REPOSITORY" 2>&1; then
+            echo "::notice::gh pr merge --squash --auto exited non-zero for base '$base'; the readback below decides whether that is a stacked PR or a real failure."
+          fi
+          # Two signals count as enqueued, and only one of them survives: GitHub
+          # CLEARS the auto-merge request once the PR is in the merge queue, so a
+          # PR that was already green when this job ran has autoMergeRequest null
+          # and is queued anyway. Measured on #2529 after it was enqueued this way:
+          # mergeQueueEntry { state QUEUED, position 31 }, autoMergeRequest null.
+          # Reading only autoMergeRequest would fail exactly the PRs this job just
+          # enqueued.
+          enqueued=$(gh api graphql \
+            -f query='query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){mergeQueueEntry{state} autoMergeRequest{enabledAt}}}}' \
+            -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F n="$PR" \
+            --jq '.data.repository.pullRequest | ((.mergeQueueEntry != null) or (.autoMergeRequest != null))')
+          if [ "$enqueued" != "true" ]; then
             # Auto-merge into a base other than the default branch is not
             # documented as supported, and the one stacked PR this workflow has
             # seen was merged by hand. Report that case as such instead of
@@ -110,10 +133,10 @@ jobs:
             # failure for the default branch, where a null means the enqueue
             # really did not happen.
             if [ "$base" != "${{ github.event.repository.default_branch }}" ]; then
-              echo "::warning::auto-merge was not enabled on #$PR: its base is '$base', not the default branch. A stacked PR merges with its base branch; this PR will be enqueued by the 'edited' run that its retarget to main triggers."
+              echo "::warning::#$PR was not enqueued: its base is '$base', not the default branch. A stacked PR merges with its base branch; this PR will be enqueued by the 'edited' run that its retarget to main triggers."
               exit 0
             fi
-            echo "::error::auto-merge was not enabled on #$PR (base $base) - the merge queue will not pick it up"
+            echo "::error::#$PR was not enqueued: no auto-merge request and no merge queue entry (base $base)"
             exit 1
           fi
-          echo "auto-merge enabled on #$PR (base $base) - the queue will take it once its checks pass"
+          echo "#$PR is enqueued (base $base) - auto-merge request or merge queue entry confirmed"
