@@ -3,10 +3,15 @@
 set -euo pipefail
 
 PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
-AIECC=/home/bcloud/mlir-aie/build_tmp/bin/aiecc
+AIECC=/home/bcloud/mlir-aie/install_tmp/bin/aiecc
 PEANO=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
-AIETOOLS=/home/bcloud/mlir-aie/build_tmp
-KERNEL_O="$(cd "$(dirname "$0")/../.." && pwd)/engine/npu/generators/mm_32x64x128.o"
+AIETOOLS=/home/bcloud/mlir-aie/install_tmp
+# Same directory as this script. The previous expression appended engine/npu/generators
+# a SECOND time (dirname "$0"/../.. is already <repo>/engine), yielding
+# <repo>/engine/engine/npu/generators/mm_32x64x128.o - a path that never exists. The cp
+# below then failed behind `|| true`, and aiecc died with "could not copy ... No such
+# file or directory". See check_aie_dialect.sh for the related dialect-pairing trap.
+KERNEL_O="$(cd "$(dirname "$0")" && pwd)/mm_32x64x128.o"
 # The microkernel .o is gitignored and was missing from clones. Rebuild it with
 # the peano clang (no xchesscc needed) — verified 2026-08-15:
 #   P=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
@@ -17,6 +22,22 @@ KERNEL_O="$(cd "$(dirname "$0")/../.." && pwd)/engine/npu/generators/mm_32x64x12
 #       -I <mlir_aie>/include/aie_kernels/aie2p \
 #       -c <repo>/engine/npu/generators/mm_kernel_reference.cc -o mm_32x64x128.o
 # (aie_clang++'s wrapper is broken — hardcoded /aietools paths.)
+
+# Generator and parser MUST come from the same mlir-aie root. A mismatch fails with
+# a bare `loc("design.mlir":1059:45): error: expected ')'` that reads like a generator
+# bug: install_tmp's bindings emit the pre-#3306 positional aie.dma_bd form and
+# install_tmp/bin/aiecc parses it, while build_tmp/bin/aiecc only parses the post-#3306
+# operand form. See engine/npu/generators/check_aie_dialect.sh (and build_xclbins.sh:19,
+# which names the known-good root). This script previously hardcoded build_tmp/bin/aiecc
+# together with install_tmp's PYTHONPATH - a mismatched pair, so every build failed.
+if [ ! -x "$AIECC" ]; then
+    echo "  aiecc not executable at $AIECC" >&2; exit 1
+fi
+if [ "$(dirname "$(dirname "$AIECC")")" != "$AIETOOLS" ]; then
+    echo "  AIECC ($AIECC) and AIETOOLS ($AIETOOLS) are different roots." >&2
+    echo "  The generating bindings and the parsing aiecc must match." >&2
+    exit 1
+fi
 
 export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
 
@@ -86,7 +107,12 @@ build_one() {
         return 1
     fi
     
-    cp "$KERNEL_O" "$workdir/mm_32x64x128.o" 2>/dev/null || true
+    if [ ! -f "$KERNEL_O" ]; then
+        echo "  ❌ FAILED: kernel object not found at $KERNEL_O" >&2
+        echo "     it is gitignored; rebuild it with the peano clang recipe in the header." >&2
+        rm -rf "$workdir"; return 1
+    fi
+    cp "$KERNEL_O" "$workdir/mm_32x64x128.o"
     
     cd "$workdir"
     $AIECC --peano="$PEANO" --aietools="$AIETOOLS" \
@@ -99,8 +125,9 @@ build_one() {
     cd "$GENERATOR_DIR"
     rm -rf "$workdir"
     
-    if [ -f "$xclbin" ]; then
-        local size; size=$(stat -c%s "$xclbin" 2>/dev/null)
+    if [ -f "$xclbin" ] && [ "$(head -c8 "$xclbin" 2>/dev/null)" = "xclbin2" ] \
+       && [ "$(stat -Lc%s "$xclbin" 2>/dev/null || echo 0)" -gt 4096 ]; then
+        local size; size=$(stat -Lc%s "$xclbin" 2>/dev/null)
         # Dimension-keyed copies: the engine falls back to
         # final_i8_<op>_K<K>_N<N>.xclbin when no tag-keyed file exists (#1481),
         # so any model with identical GEMM shapes loads without a rebuild.
