@@ -419,6 +419,21 @@ canonical row was missing at least one of those.
 | effective rate, payload basis per the size invariant | Q1_0 128.5; PTQ1_0 146.9; PQ2_0 171.3 GB/s (3.78 / 5.878 / 7.137 GB payloads) | `[3-packs \| verbatim \| HIP backend \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | against the ORIGINAL targets this lane was given (42 / 27 / 22) | Q1_0 81%; PTQ1_0 92.6%; PQ2_0 109% | `[3-packs \| verbatim \| derived from the window above \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | against the REVISED targets as reported by the kernel owner (36 / 25 / 22) | Q1_0 94.4%; PTQ1_0 98%; PQ2_0 109% | `[3-packs \| verbatim \| derived from the window above \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| **decode, 32 tokens — SIX-WINDOW REPEAT, after the PTQ1_0 raw-digit fix (01a33a09c)** | Q1_0 26.4-28.2 ms = 35.5-37.9 tok/s (>=36 in five of six windows); **PTQ1_0 38.5-38.9 ms = 25.7-26.0 tok/s in ALL SIX**; PQ2_0 43.2-44.5 ms = 22.5-23.2 in all six | `[3-packs \| verbatim \| HIP backend \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+| against the REVISED targets (36 / 25 / 22), post-fix six-window repeat | **Q1_0 MET in five of six; PTQ1_0 MET in all six (25.7-26.0 vs >=25, repeat spread under 1.2%); PQ2_0 MET in all six** | `[3-packs \| verbatim \| derived from the six-window repeat \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
+
+
+**Why this is a NEW row and not a correction of the two above it.** The rows above are the 17:22 window and its
+derivations, and they are accurate *as of that window* - that window's PTQ1_0 reading is exactly the value in the
+first of them. Commit **01a33a09c** (which makes the PTQ1_0 dot take the raw base-3 digit and subtract the per-32
+activation sum, so the per-4-group trit_dec fixup disappears) landed *after* that window, so those rows describe a dot
+that no longer ships; the isolated A/B for it is in the commit message and in the plan of record. The
+six-window repeat above is the post-fix measurement, run specifically because the completion auditor objected that a
+single window inside this lane's known spread is not a result. Method, raw per-run output, triad and load for every
+window: docs/research/prism-bonsai-27b/P3-gate-six-window-repeat.md (commit d509bbc5d). Full context in the plan of
+record's P3 block (commit 7c39eec67). Edited by @agent-1141bd, the measuring agent; @agent-dddf9e holds this file and
+is asked to verify or restyle it.
+
 
 **Two things recorded with the row, at the kernel owner's explicit request.** First, this is the first wall-visible
 reading since the non-GEMV work (whose isolated gains are recorded earlier in this file), and the Q1_0 wall figure in
