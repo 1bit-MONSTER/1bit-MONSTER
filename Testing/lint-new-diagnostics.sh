@@ -39,11 +39,18 @@ if [ -z "$BASE" ] || ! git rev-parse --verify -q "$BASE^{commit}" >/dev/null; th
 fi
 
 # Same selection the lint job makes: these extensions, minus the vendored/build trees.
+# The git side is NUL-delimited and read into an array: the lint job's own comment records
+# that a path containing a space used to split into two arguments, and a split here would
+# not fail — both halves would be "not present at head" and the file would be skipped in
+# silence, which is the failure this whole predicate exists to avoid.
+changed=()
 if [ -n "${FILES:-}" ]; then
-    files="$FILES"
+    read -r -a changed <<< "$FILES"  # documented override; space-separated, for the self-check
 else
-    files="$(git diff --name-only --diff-filter=d "$BASE" -- '*.cpp' '*.h' '*.hip' '*.hpp' 2>/dev/null \
-             | grep -vE '/(build|_deps|third_party|\.git)/' || true)"
+    while IFS= read -r -d '' f; do
+        changed+=("$f")
+    done < <(git diff -z --name-only --diff-filter=d "$BASE" -- '*.cpp' '*.h' '*.hip' '*.hpp' 2>/dev/null \
+             | grep -zvE '/(build|_deps|third_party|\.git)/' || true)
 fi
 
 count() { # count <path> -> diagnostics on stdout
@@ -54,7 +61,7 @@ count() { # count <path> -> diagnostics on stdout
 
 tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
 checked=0; worse=0; total_head=0
-for f in $files; do
+for f in "${changed[@]}"; do
     [ -e "$f" ] || { echo "  skip (not present at head): $f"; continue; }
     head_n="$(count "$f")"
     base_n=0

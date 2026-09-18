@@ -109,5 +109,15 @@ gate "$c5" >/dev/null; rcF=$?
 ( cd "$TMP/repo" && CLANG_FORMAT="$TMP/bin/does-not-exist" bash Testing/lint-new-diagnostics.sh "$c6" >/dev/null 2>&1 ); rcG=$?
 [ "$rcG" -eq 2 ] && ok "G a missing clang-format is exit 2" "exit 2" || bad "G a missing clang-format is exit 2" "exit $rcG"
 
-if [ "$fail" -eq 0 ]; then echo "OK: no-new-diagnostics predicate (6 cases + 2 controls + env seam)"; fi
+# H: a path containing a SPACE must be compared, not split and skipped. The lint job's own
+# comment records that this bit it once (-print0/-0), and a split here fails silently: both
+# halves read as "not present at head", so the file would be skipped and a new violation
+# would pass. The first version of this predicate had that bug; this case is why.
+printf 'BADFMT\n' > "$TMP/repo/src/with space.cpp"
+c7=$(step "path with a space")
+outH=$(gate "$c6"); rcH=$?
+[ "$rcH" -ne 0 ] && ok "H a spaced path is linted (fails on +1)" "exit $rcH" || bad "H a spaced path is linted (fails on +1)" "exit 0 — it was skipped"
+case "$outH" in *"with space.cpp"*) ok "H names the spaced path" "listed";; *) bad "H names the spaced path" "absent from the output";; esac
+
+if [ "$fail" -eq 0 ]; then echo "OK: no-new-diagnostics predicate (7 cases + 2 controls + env seam)"; fi
 exit "$fail"
