@@ -65,9 +65,9 @@ __global__ void prism_gdn_recurrence_kernel(const float* __restrict__ q,   // [N
                                             int NK, int NV, int HK, int HV) {
     const int vh = blockIdx.x;
     const int t  = threadIdx.x;
-    if (vh >= NV || t >= 2 * HV) return;
+    if (vh >= NV || t >= 4 * HV) return;
     const int hv = t & (HV - 1);          // HV is 128 here, so this is exact
-    const int kc = t >> 7;                // 0 or 1: which half of the kk range
+    const int kc = t >> 7;                // 0..3: which quarter of the kk range
     const int kh = vh % NK;                               // grouped
     float* s = state + (size_t)vh * HK * HV;
     const float* kp = k + (size_t)kh * HK;
@@ -79,10 +79,10 @@ __global__ void prism_gdn_recurrence_kernel(const float* __restrict__ q,   // [N
     // across two thread groups doubles the resident threads per head and the two kk halves
     // are independent for both the reduction and the elementwise update. The per-thread
     // traversal order is unchanged, so the fp32 arithmetic per element is bit-identical.
-    const int half = HK >> 1;
+    const int half = HK >> 2;
     const int k0   = kc * half;
 
-    __shared__ float red[256];
+    __shared__ float red[512];
     float mem = 0.0f;
     for (int kk = k0; kk < k0 + half; kk++) {
         const size_t idx = (size_t)kk * HV + hv;
@@ -91,7 +91,7 @@ __global__ void prism_gdn_recurrence_kernel(const float* __restrict__ q,   // [N
     }
     red[t] = mem;
     __syncthreads();
-    mem = red[hv] + red[hv + HV];
+    mem = (red[hv] + red[hv + HV]) + (red[hv + 2 * HV] + red[hv + 3 * HV]);
     const float delta = (v[(size_t)vh * HV + hv] - mem) * beta[vh];
     __syncthreads();
 
@@ -103,7 +103,7 @@ __global__ void prism_gdn_recurrence_kernel(const float* __restrict__ q,   // [N
     }
     red[t] = c;
     __syncthreads();
-    c = red[hv] + red[hv + HV];
+    c = (red[hv] + red[hv + HV]) + (red[hv + 2 * HV] + red[hv + 3 * HV]);
     c /= sqrtf((float)HK);
 
     // Gated RMSNorm across the HV dims of this head.
@@ -154,8 +154,8 @@ extern "C" int prism_gdn_recurrence_f32(const float* q, const float* k, const fl
                                         int NK, int NV, int HK, int HV, void* stream) {
     if (!q || !k || !v || !g || !beta || !nw || !z || !state || !core) return 1;
     if (NK <= 0 || NV <= 0 || HK <= 0 || HV <= 0 || HV > 128) return 1;
-    if ((HK & 1) || (HV & (HV - 1))) return 1;   // the split needs an even HK and HV=128
-    hipLaunchKernelGGL((prism_gdn_recurrence_kernel), dim3(NV), dim3(2 * HV), 0,
+    if ((HK & 3) || (HV & (HV - 1))) return 1;   // the split needs HK % 4 == 0 and HV=128
+    hipLaunchKernelGGL((prism_gdn_recurrence_kernel), dim3(NV), dim3(4 * HV), 0,
                        (hipStream_t)stream, q, k, v, g, beta, nw, z, state, core, NK, NV, HK, HV);
     HIP_CHECK(hipGetLastError());
     return 0;
