@@ -52,15 +52,45 @@ of the bf16 default path**. The attention term does grow here too (360 → 5740 
 tokens, ~45% of the prefill at both ends), but the per-token cost stays flat because the GEMM
 term grows proportionally (171 → 1075 ms).
 
-Two honest caveats on this row:
+## FLM references for the same contexts, and the resulting verdict
 
-- **No FLM reference is taken for 4B at these contexts**, so this is coverage of the native
-  path, not a parity claim. FLM's numbers need `npu_ab.sh --ctx-k k` (it drives an `flm serve`
-  with `context_length_k`); `flm bench` does not exist in this build. The doc's criterion (c)
-  table therefore gains a *measured* row for 4B with its gate, and still no verdict.
+`flm bench` does not exist in this build, so FLM's on-box numbers come from the yardstick's
+own server path with the native lane skipped:
+
+```
+bash ~/npu-ab/npu_ab.sh --model qwen3_4b --flm-tag qwen3:4b --engine .../npu_engine_qwen3_4b \
+  --q4nx ~/.config/flm/models/Qwen3-4B-NPU2/model.q4nx \
+  --tokenizer ~/.config/flm/models/Qwen3-4B-NPU2/tokenizer.json \
+  --prompt /tmp/p_<ctx>.txt --ctx-k <k> --decode-tokens 8 --reps 1 --skip-native
+```
+
+| ctx | lane | prefill t/s | TTFT | decode t/s | correctness gate |
+|---:|---|---:|---:|---:|---|
+| 1k | native bf16 | **653** | **1.568 s** | **20.0** | bf16 == runlist stream ([576 3840 315 24231]) |
+| 1k | FLM on-box (FLM v1.0.4) | 495.95 | 1.979 s | 18.51 | FLM-TEXT-OK |
+| 8k | native bf16 | **636** | **12.875 s** | **13.9** | run completed, rc=0 |
+| 8k | FLM on-box | 570.16 | 13.610 s | 13.54 | FLM-TEXT-OK |
+
+**Qwen3-4B's bf16 default path meets the criterion-(c) shape at both measured contexts:
+prefill 1.32x / 1.12x FLM, TTFT faster by 0.41 s / 0.74 s, decode 1.08x / 1.03x.** This is the
+second model after Qwen3-0.6B for which no criterion-(c) clause is refused, and the first in
+the H=2560 family.
+
+Caveats, stated because they bound what this row claims:
+
+- **Input equality here is weaker than I1.** Both arms consumed the same source passage and
+  the same token count (1024 / 8192), but FLM went through `npu_ab.sh`'s own tokenizer
+  (`prompt_tokens=37759 -> ctx_tokens=8192`) while the native arm consumed `/tmp/p_<ctx>.txt`
+  ids directly. The byte-identity assertion I1 covers the oracle scoreboard, not this pair; a
+  strict single-stream comparison would need FLM to accept the id file.
+- `npu_ab.sh` warns that the production `flm serve qwen3.6-moe:35b-a3b` was already running
+  (1 pre-existing process), so the FLM leg is not on a pristine box. The native leg is
+  unaffected (it is a different process and the same warning applied to every previously
+  recorded FLM reference in this lane).
 - **The 8k prompt prefilled 8185 tokens, not 8192** (`=== Prefill 8185 [bf16] ===`, no
   warning). 8192 was requested and the file holds exactly 8192 ids; the 7-token shortfall is
-  recorded as observed, unexplained.
+  recorded as observed, unexplained. It makes the native 8k row *slightly* favourable
+  (7 tokens less prefill work) and does not change the 1.12x margin's direction.
 
 ## The correctness gate (same bytes, same invocation)
 
@@ -81,12 +111,13 @@ runlist prefill at 1024 tokens is 59475 ms / 58 ms per prompt token — 38x the 
 |---|---|---|---|
 | Qwen3-0.6B | yes, 1.01–1.34x @1k–8k | faster 1k–4k, −2% @8k | yes |
 | Qwen3-1.7B | yes, 1.03–1.34x | faster 1k–4k, −2% @8k | no, 0.64–0.98x |
-| Qwen3-4B | **measured, no FLM reference** (653/636 t/s, flat) | — | — |
+| Qwen3-4B | **yes**, 1.32x @1k / 1.12x @8k | **faster** by 0.41 s @1k, 0.74 s @8k | **yes**, 1.08x / 1.03x |
 | Qwen3-8B | yes @1k 4.09x, no @8k 0.71x | 3.9x faster @1k, slower @8k | yes |
 | Llama-3.1-8B | yes @1k 3.89x, no @8k 0.62x | 3.8x faster @1k, slower @8k | — |
 | Qwen3-VL-4B | shares 4B's tile set; not measured here | — | — |
 
-Criterion (c) as written remains **unmet** — the blockers are now two honest, named
-measurements rather than a "blocked" cell: (i) the 4B family needs its FLM references before
-any verdict, and (ii) 8B/Llama still invert by 8k. This document removes the shape blocker
-from that list.
+Criterion (c) as written remains **unmet**, but this document removes two of its three
+blockers: the H=2560 shape blocker is refuted, and 4B now has a gated verdict — all three
+metrics at or above FLM at both measured contexts. What is left is the one real remaining
+problem: **8B and Llama invert by 8k on prefill/TTFT** (0.71x and 0.62x) while their decode
+stays ahead, and Qwen3-VL-4B is unmeasured though it shares 4B's tile set and shape.
