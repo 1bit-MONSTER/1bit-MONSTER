@@ -94,6 +94,18 @@ declare -a N_TTFT=() F_TTFT=() F_PREFILL=()
 for i in $(seq 1 "$RUNS"); do
     # Settle: wait for any transient holder to release the device before measuring.
     for _w in $(seq 1 20); do [ -z "$(foreign_holders)" ] && break; sleep 1; done
+    # C8K_WAIT_QUIET=1: wait for BOTH axes to be clear before sampling, instead of measuring
+    # into a rising load and discarding. In a contended environment the right protocol is
+    # "wait for the window, then take one sample" -- 2026-09-18: 5/5 1.7B runs were rejected
+    # because the load went 18 -> 48 inside the campaign while the Prism test suite ran.
+    # Bounded by C8K_WAIT_MAX (default 600 s); on timeout the run proceeds and is flagged.
+    if [ -n "${C8K_WAIT_QUIET:-}" ]; then
+        for _q in $(seq 1 "${C8K_WAIT_MAX:-600}"); do
+            [ -n "$(foreign_holders)" ] && { sleep 1; continue; }
+            awk -v a="$(load1)" -v b="$MAX_LOAD" 'BEGIN{exit !(a<b)}' && break
+            sleep 1
+        done
+    fi
     pre_f="$(foreign_holders | tr '\n' ';')"; pre_r="$(runner_lines)"; pre_l="$(load1)"
 
     raw="$LOGDIR/native-$i.log"

@@ -52,3 +52,25 @@ averaged into a result.
 - A six-model 8k campaign needs a window where the host is quiet (no `pf`, no parallel
   compiles) *and* no other lane is on `accel0`. Both were present throughout this attempt; the
   guard's value is that it says so per run instead of leaving it to be inferred later.
+
+## Addendum: 1.7B measured with a wait-for-quiet protocol (2/3 accepted)
+
+The first 1.7B attempt was rejected 5/5 because the load rose 18 → 48 *inside* the campaign.
+In a contended environment the right protocol is "wait for the window, then take one sample",
+so `c8k_guarded.sh` gained `C8K_WAIT_QUIET=1` (bounded by `C8K_WAIT_MAX`, default 600 s): before
+each run it polls until both axes are clear, then measures immediately.
+
+| run | status | native | FLM prefill | per-run ratio | load |
+|---:|---|---:|---:|---:|---|
+| 1 | ACCEPT | 0.853 ms/tok (1172 t/s) | 1274.76 t/s | 0.92x | 17.18 → 14.84 |
+| 2 | SUSPECT (load rose 9.75 → 22.01) | 2.090 (478) | 1165.06 | 0.41x | — |
+| 3 | ACCEPT | 0.717 (1395) | 1087.33 | **1.28x** | 16.98 → 17.55 |
+
+Medians over accepted runs: native **0.785 ms/prompt-token (1274 t/s)**, FLM **1181 t/s** →
+**1.08x**, with per-run ratios 0.92x and 1.28x. **1.7B at 8k is parity** — inside the same
+±35% noise floor measured for 0.6B, and consistent with the earlier load-uncontrolled runs
+(5.56–7.16 s native vs 5.65–6.51 s FLM).
+
+No quiet-window protocol can fix a *host-side* fairness problem, only mitigate it: run 2 was
+still caught by the load-rise check because a `pf` instance started mid-run. The device-side
+holder was clear in all three runs; what moved the numbers was CPU.
