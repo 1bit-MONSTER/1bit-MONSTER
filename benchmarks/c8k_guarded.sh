@@ -16,6 +16,7 @@
 #
 # Env knobs: C8K_MAX_LOAD (default 18)  C8K_MAX_LOAD_DELTA (default 4)
 #            C8K_IGNORE_PREEXISTING=1   run even if a holder is present before the campaign
+#            C8K_MAX_FOREIGN_CPU (default 400)  max %CPU of a foreign process sampled DURING a run
 #
 # Native is ng=1 on purpose: at 8k the SECOND decode forward needs ctx=8194, which fails
 # against the baked MAX_L=8192 per-ctx ELF window, so only prefill/TTFT is a valid 8k row.
@@ -76,7 +77,7 @@ topcpu() {
 runner_lines() { wc -l < /tmp/runner.log 2>/dev/null || echo 0; }
 # Load ceiling calibrated on 2026-09-18 (0.6B 8k native, device clean):
 #   load 16.83 -> 4078 ms(0.498)  |  20.89 -> 7268 ms(0.887)  |  23.23 -> 11238 ms(1.372)
-MAX_LOAD="${C8K_MAX_LOAD:-18}"; MAX_DL="${C8K_MAX_LOAD_DELTA:-4}"
+MAX_LOAD="${C8K_MAX_LOAD:-40}"; MAX_DL="${C8K_MAX_LOAD_DELTA:-4}"
 
 # ---- pre-flight: a holder already present BEFORE the campaign --------------------------
 if [ -n "$(foreign_holders)" ] && [ -z "${C8K_IGNORE_PREEXISTING:-}" ]; then
@@ -109,8 +110,22 @@ for i in $(seq 1 "$RUNS"); do
     pre_f="$(foreign_holders | tr '\n' ';')"; pre_r="$(runner_lines)"; pre_l="$(load1)"
 
     raw="$LOGDIR/native-$i.log"
+    # Sample FOREIGN CPU during the run. The 1-min load average LAGS by ~1 minute, so a `pf`
+    # that starts just before a run is invisible to the pre-check -- measured 2026-09-18: a
+    # 4B run was ACCEPTED at load 13.75 while `pf` was at 3131% CPU, and two earlier "accepted"
+    # 0.6B runs at topcpu 2920/2629 were 18-30% slower than the low-foreign-CPU one. The
+    # sampler excludes this lane's own engine and its ELF generator by name.
+    ( for _s in $(seq 1 40); do
+          ps -eo pcpu=,comm= --sort=-pcpu 2>/dev/null \
+            | awk '$2 !~ /npu_engine|gen_layer_elfs/ && $1+0 > m {m=$1+0; c=$2} END{if (m>0) print m, c}'
+          sleep 2
+      done ) > "$LOGDIR/foreign-cpu-$i.txt" 2>/dev/null &
+    _sampler=$!
     timeout 900 env "$@" NPU_PREFILL_BF16=1 NPU_BF16=1 NPU_GREEDY=1 NPU_PREFILL_MAX=8192 \
         NPU_PROMPT_MAX=8192 "$E" "$D/model.q4nx" 1 "$PROMPT" > "$raw" 2>&1
+    kill "$_sampler" 2>/dev/null; wait "$_sampler" 2>/dev/null
+    _mf="$(awk '{if ($1+0>m) {m=$1+0; c=$2}} END{printf "%d %s", m, c}' "$LOGDIR/foreign-cpu-$i.txt" 2>/dev/null)"
+    max_fcpu="${_mf%% *}"; max_fcmd="${_mf#* }"
     np_line="$(grep -aE 'Prefill:' "$raw" | tail -1)"
     post_f="$(foreign_holders | tr '\n' ';')"; post_r="$(runner_lines)"; post_l="$(load1)"
 
@@ -126,20 +141,30 @@ for i in $(seq 1 "$RUNS"); do
     if [ "$status" = ACCEPT ]; then
         [ "$pre_r" != "$post_r" ] && status="SUSPECT(ci $pre_r->$post_r)"
     fi
+    # The absolute load AVERAGE is advisory, not a gate: it lags ~1 min in both directions.
+    # Measured both ways on 2026-09-18: a 4B run ACCEPTED at load 13.75 had `pf` at 3131%
+    # during it, and a 0.6B run REJECTED at load 30.23 had only 38% foreign CPU and came in at
+    # 4090 ms (0.499 ms/tok), i.e. a fully clean measurement. What matters is the foreign CPU
+    # DURING the run (sampled above), so the absolute ceiling is a gross-saturation catch only
+    # (default 40) and the primary CPU criterion is C8K_MAX_FOREIGN_CPU (default 400%).
     if [ "$status" = ACCEPT ]; then
         awk -v a="$pre_l" -v b="$MAX_LOAD" 'BEGIN{exit !(a>b)}' \
-            && status="SUSPECT(pre-load=$pre_l>$MAX_LOAD)"
+            && status="SUSPECT(gross load $pre_l>$MAX_LOAD)"
     fi
     if [ "$status" = ACCEPT ]; then
         awk -v a="$pre_l" -v b="$post_l" -v d="$MAX_DL" 'BEGIN{exit !((b-a)>d)}' \
             && status="SUSPECT(load rose $pre_l->$post_l)"
+    fi
+    if [ "$status" = ACCEPT ]; then
+        awk -v a="${max_fcpu:-0}" -v b="${C8K_MAX_FOREIGN_CPU:-400}" 'BEGIN{exit !(a>b)}' \
+            && status="SUSPECT(foreign cpu ${max_fcpu}% ${max_fcmd})"
     fi
 
     np_t="$(printf '%s' "$np_line" | sed -n 's/.*(\([0-9.]*\) ms\/tok).*/\1/p')"
     np_ms="$(printf '%s' "$np_line" | sed -n 's/Prefill: \([0-9]*\)ms.*/\1/p')"
     f_t="$(printf '%s' "$f_line" | sed -n 's/.*ttft=\([0-9.]*\)s.*/\1/p')"
     f_p="$(printf '%s' "$f_line" | sed -n 's/.*prefill=\([0-9.]*\)t\/s.*/\1/p')"
-    echo "run $i [$status] native ${np_ms:-?}ms (${np_t:-?} ms/tok) | FLM ttft ${f_t:-?}s prefill ${f_p:-?}t/s | load ${pre_l}->${post_l} topcpu=$(topcpu)"
+    echo "run $i [$status] native ${np_ms:-?}ms (${np_t:-?} ms/tok) | FLM ttft ${f_t:-?}s prefill ${f_p:-?}t/s | load ${pre_l}->${post_l} foreign=${max_fcpu:-?}%:${max_fcmd:-?}"
     if [ "$status" = ACCEPT ]; then
         n_ok=$((n_ok+1))
         [ -n "$np_t" ] && N_TTFT+=("$np_t")
