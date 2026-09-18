@@ -97,6 +97,7 @@ struct AttnCtx {
     int kv_seq = -1;
     float kv_sk = 1.0f;
     std::vector<float> kv_sv;
+    const float* emu_vo = nullptr;   // NPU_ATTN_EMU_FLOAT_V: float V for the EMU variant
 
     bool init(xrt::device& d, const char* xp, const char* ip,
               int nq_, int nkv_, int hd_) {
@@ -250,6 +251,9 @@ struct AttnCtx {
         int32_t c1flat[4 * 1024];
         const int32_t* c1p[4] = { c1flat, c1flat + 1024, c1flat + 2048, c1flat + 3072 };
         std::vector<int8_t> a2((size_t)8 * MAX_SEQ);   // sized by the baked N
+        const bool F_A2 = getenv("NPU_ATTN_EMU_FLOAT_A2") && atoi(getenv("NPU_ATTN_EMU_FLOAT_A2")) == 1;
+        std::vector<float> pf;
+        if (F_A2) pf.assign((size_t)MAX_SEQ, 0.0f);
         for (int h = 0; h < nq; h++) {
             const int kv = h / gqa;
             const int8_t* qh = Qm + (size_t)h * K_FRAME;
@@ -287,12 +291,60 @@ struct AttnCtx {
                 const float* pg = (const float*)(Qm + (size_t)PARAM_ROW * K_FRAME
                                                   + (size_t)g * 64);
                 attn_softmax_contract(c1p, pg, a2.data() + (size_t)g * 512);
+                if (F_A2) {
+                    // Replicate the contract's math in FLOAT (same score indexing,
+                    // same scale) so the only difference from the int8 path is the
+                    // A2 quantisation itself.
+                    const int mseq = (int)pg[2];
+                    int sg = (int)pg[1]; if (sg < 0) sg = 0; if (sg > mseq) sg = mseq;
+                    float mx2 = -1e30f;
+                    for (int t = 0; t < sg; t++) {
+                        const int32_t* ct = c1p[t >> 7];
+                        const unsigned cc = ((t & 127) / 8) * 64 + ((t & 127) % 8);
+                        float x = (float)ct[cc] * pg[0];
+                        if (x > mx2) mx2 = x;
+                    }
+                    if (mx2 == -1e30f) mx2 = 0.0f;
+                    float sw = 0.0f;
+                    for (int t = 0; t < sg; t++) {
+                        const int32_t* ct = c1p[t >> 7];
+                        const unsigned cc = ((t & 127) / 8) * 64 + ((t & 127) % 8);
+                        float w = expf((float)ct[cc] * pg[0] - mx2);
+                        pf[(size_t)g * 512 + t] = w; sw += w;
+                    }
+                    for (int t = 0; t < sg; t++)
+                        pf[(size_t)g * 512 + t] = sw > 0 ? (pf[(size_t)g * 512 + t] / sw) : 0.0f;
+                }
             }
             const float* svh = &sv[(size_t)kv * hd];
             float z = 0;
             for (int t = 0; t < seq; t++) z += (float)a2[t] / 127.0f;
             if (!(z > 0)) z = 1.0f;
             float* oh = ao + (size_t)h * hd;
+            if (F_A2 && hd == 128) {
+                for (int d = 0; d < hd; d++) {
+                    float acc = 0;
+                    const int i1 = d / 8, i3 = d % 8;
+                    for (int ki = 0; ki < N / 64; ki++)
+                        for (int i0 = 0; i0 < 8; i0++)
+                            for (int i2 = 0; i2 < 8; i2++) {
+                                const int t = ki * 64 + i0 * 8 + i2;
+                                const int8_t* d8 = Vm + (size_t)kv * N * K
+                                                 + (size_t)ki * 8192
+                                                 + (size_t)i0 * 1024 + i1 * 64 + i2 * 8;
+                                acc += pf[t] * (float)d8[i3];
+                            }
+                    oh[d] = acc * svh[d];   // sv is already max|V_d|/127: V_float = Vm*sv
+                }
+            } else if (getenv("NPU_ATTN_EMU_FLOAT_V") && atoi(getenv("NPU_ATTN_EMU_FLOAT_V")) == 1
+                       && emu_vo && hd == 128) {
+                for (int d = 0; d < hd; d++) {
+                    float acc = 0;
+                    for (int t = 0; t < seq; t++)
+                        acc += (float)a2[t] * emu_vo[(size_t)t * kd + (size_t)kv * hd + d];
+                    oh[d] = acc / 127.0f / z;
+                }
+            } else
             for (int d = 0; d < hd; d++) {
                 int32_t c2 = 0;
                 // unpack the V chunk interleave: pos = ki·8192+i0·1024+i1·64+
@@ -352,6 +404,37 @@ struct AttnCtx {
         }
         const float sk = kv_sk;
         const std::vector<float>& sv = kv_sv;
+        static const bool ACTX_DBG = getenv("NPU_ATTN_DBG") && atoi(getenv("NPU_ATTN_DBG")) == 1;
+        static int actx_dbg_n = 0;
+        if (ACTX_DBG && actx_dbg_n < 64) {
+            actx_dbg_n++;
+            float qmx = 0, kmx = 0, vmx = 0;
+            for (int i = 0; i < qd; i++) { float a = std::fabs(qo[i]); if (a > qmx) qmx = a; }
+            for (int t = 0; t < seq; t++) {
+                for (int i = 0; i < kd; i++) { float a = std::fabs(ko[(size_t)t * kd + i]); if (a > kmx) kmx = a; }
+                for (int i = 0; i < kd; i++) { float a = std::fabs(vo[(size_t)t * kd + i]); if (a > vmx) vmx = a; }
+            }
+            fprintf(stderr, "[ACTX-DBG] seq=%d nq=%d nkv=%d hd=%d sq=%.6g sk=%.6g maxq=%.6g maxk=%.6g maxv=%.6g p0=%.6g sv0..3=%.4g %.4g %.4g %.4g\n",
+                    seq, nq, nkv, hd, sq, sk, qmx, kmx, vmx,
+                    1.0f / (sq * sk * std::sqrt((float)hd)), sv[0], sv[1], sv[2], sv[3]);
+            // head-0 raw score range (the quantity the softmax must hold) and the
+            // per-token max score for the first 8 keys.
+            {
+                const int tgt = getenv("NPU_ATTN_DBG_SEQ") ? atoi(getenv("NPU_ATTN_DBG_SEQ")) : 8;
+                if (seq == tgt) {
+                    float smax = -1e30f, smin = 1e30f;
+                    for (int t = 0; t < seq; t++) {
+                        double sc = 0;
+                        for (int d = 0; d < hd; d++) sc += (double)qo[d] * (double)ko[(size_t)t * kd + d];
+                        sc /= std::sqrt((double)hd);
+                        if ((float)sc > smax) smax = (float)sc;
+                        if ((float)sc < smin) smin = (float)sc;
+                    }
+                    fprintf(stderr, "[ACTX-DBG] score range (head0, seq=%d): min=%.6g max=%.6g span=%.6g\n",
+                            seq, smin, smax, smax - smin);
+                }
+            }
+        }
 
         // ── bo0: A-frame (head h at row h·2048) + params at PARAM_ROW ──
         for (int h = 0; h < nq; h++) {

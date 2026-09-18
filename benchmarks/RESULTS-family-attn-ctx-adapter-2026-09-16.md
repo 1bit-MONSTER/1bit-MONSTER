@@ -261,3 +261,194 @@ AttnCtx's layer-0 `C2` **inside the engine** (`NPU_ATTN_DUMP=1` with
 the same `bqo`/KV-cache bytes on the host — is the difference (a) the Q/K/V bytes the
 engine hands over, or (b) the AttnCtx's internal scale/quantisation? That separates
 "wrong input" from "wrong contract" in one run.
+
+## Addendum 6: in-engine dump — the AttnCtx softmax output is SATURATED (wrong input)
+
+`NPU_ATTN_CTX=1 NPU_ATTN_DUMP=1 NPU_ATTN_DUMP_SEQ=8` on the 8-token prompt:
+
+```
+[attnDump] params0=5.198035e-03 seq=8
+[attnDump] pass0 C2 head0 nonzero=128
+[attnDump] pass1 C2 head0 nonzero=128
+[attnDump] C2 head0 nonzero idx: 0 1 2 3 4 5 6 7 64 65 ... 448 449 450 451  (mmul C row-0 pattern)
+[attnDump] A2 head0 t=0..3: 127 127 127 127 | t=128..131: 0 0 0 0
+Segmentation fault (core dumped)
+```
+
+**The A2 (the kernel's int8 softmax output) is saturated at 127 for every token
+shown**, where the standalone bench delivered `2/8/8/8/3/27/3/5/9` and the host A2
+expectation agreed with it exactly. A saturated softmax output means the scores the
+kernel sees are far too large (or the per-call params/scale is wrong) — i.e. the
+engine is feeding the AttnCtx something that does not match the contract the bench
+exercises. That is the **"wrong input"** branch, not merely a contract/precision
+disagreement.
+
+This also explains the in-situ `NPU_ATTN_DIFF` magnitude (0.15-0.82) being ~7x the
+bench's int8-vs-float error (1.2e-1 at seq=8): a saturated A2 is not quantisation
+noise, it is a different computation.
+
+Also note: **the DUMP path itself segfaults** (core dumped after the A2 line) when
+run in-engine — the diagnostic code assumes the bench's buffer sizes/state. That
+must be fixed before the C2raw-vs-expv comparison can complete; treat the printed A2
+as the usable signal for now.
+
+Concrete next step: instrument the AttnCtx's per-call params inside the engine
+(print `sq`, `sk`, `sv[0..3]`, and the packed Q/K extremes for the seq=8 call) and
+compare with the same quantities the bench computes for its own buffers — the one
+that is off identifies the input conversion (most likely the Q/K scale, since
+`max|bActQ|=26.75` in-engine).
+
+## Addendum 7: the input conversion is CORRECT — the AttnCtx softmax saturates on large scores
+
+`NPU_ATTN_DBG=1` prints the AttnCtx per-call scale in-engine (`npu_attn_ctx.h`, gated,
+first three calls only):
+
+```
+[ACTX-DBG] seq=1 nq=20 nkv=4 hd=128 sq=14.2098 sk=17.0042 maxq=8.9375  maxk=7.46875 maxv=0.234375 p0=0.000365807 sv0..3=0.001845 9.948e-05 0.0003153 0.0002922
+[ACTX-DBG] seq=2 nq=20 nkv=4 hd=128 sq=4.74767 sk=17.0042 maxq=26.75   maxk=19.5    maxv=0.4375   p0=0.00109486  sv0..3=0.001845 0.0003499 0.0007382 0.001146
+[ACTX-DBG] seq=3 nq=20 nkv=4 hd=128 sq=8.19356 sk=17.0042 maxq=15.5    maxk=19.5    maxv=0.4375   p0=0.000634405 sv0..3=0.001845 0.0003499 0.0007382 0.001146
+```
+
+The conversion arithmetic is **correct**: `sq = 127/max|q|`, `sk = 127/max|k|`,
+`p0 = 1/(sq·sk·sqrt(hd))`, and the per-dim `sv` is positive and stable. So the
+in-engine **input conversion is not the defect** (it is the same formula the bench
+uses and the same one `zaya_decode.cpp` uses).
+
+What the numbers do reveal is the **score magnitude**: with `max|q|=26.75` and
+`max|k|=19.5`, the raw `q·k/sqrt(hd)` is of order `128 · 26.75 · 19.5 / 11.3 ≈ 6e3`
+(int8-scaled: `127·127·128 · p0 ≈ 2.3e3`). The softmax must therefore subtract a
+large max to stay in range — and addendum 6 shows the delivered **A2 saturated at
+127**. So the working hypothesis is now:
+
+> The AttnCtx's softmax/A2 quantisation does not handle the large raw score range the
+> bf16 prefill produces (post-RoPE Q/K with max ~20-27), while Zaya's decode — the
+> path AttnCtx was written for — feeds bounded, normally-distributed Q/K, as does the
+> standalone bench.
+
+That is a **contract range limit**, not a wiring bug. It also matches the shape of the
+evidence: `npu[0][0] == host[0][0]` exactly (single-key case is just V, no softmax
+pressure), while the error grows with the number of keys and concentrates in heads
+whose scores are largest.
+
+Options if this line is continued: (a) scale Q/K into the AttnCtx's expected range
+before the call and undo the scale after (the params already carry a scale, so a
+bounded pre-normalisation is cheap); (b) add a max-subtraction/max-aware A2 to the
+kernel; (c) accept that the generated int8 kernel serves bounded-Q/K families only,
+and cite the range limit as the exclusion for the bf16 prefill. The `NPU_ATTN_DBG`
+probe stays in `npu_attn_ctx.h` (env-gated, first three calls only) for the next
+round.
+
+## Addendum 8: the score-range estimate was WRONG — scores are small (range hypothesis refuted)
+
+Addendum 7 estimated the raw score magnitude at ~6e3 from `max|q|·max|k|·hd`. That
+estimate was an upper bound assuming every term aligns; it is not what the data does.
+Measured directly in-engine (`NPU_ATTN_DBG=1 NPU_ATTN_DBG_SEQ=8`, head 0, `q·k/sqrt(hd)`
+over the 8 keys), per layer:
+
+```
+L0: min=0        max=0        span=0        (first call, KV not yet populated)
+L1: min=-0.679   max=5.059    span=5.738
+L2: min=-6.637   max=3.987    span=10.624
+L3: min=-1.133   max=3.026    span=4.159
+L4: min=-4.172   max=4.115    span=8.287
+L5: min=-4.776   max=3.610    span=8.386
+```
+
+**Spans of 4-11 are ordinary softmax territory**, so the AttnCtx softmax has no range
+problem here and the "large-Q/K score range" explanation is **refuted**. That also
+removes the reason to trust addendum 6's `A2 = 127` reading: with normal scores the
+softmax cannot saturate, and the DUMP path is the one that *segfaults* in-engine, so
+`A2 = 127` (0x7F — a fill pattern) is most likely a bad SCR read in the diagnostic,
+not the kernel's output.
+
+Where this leaves the Nanbeige gap — the surviving explanation is **precision**, which
+addendum 5's ruling-out does not actually cover:
+
+- The bench's int8-vs-float error was measured on the **bench's own** random buffers.
+  In-engine the data is larger (`max|q| = 26.75`, `sq = 4.75` -> int8 step ~0.21 in
+  q-units), so the same int8 contract is materially coarser on the real prefill than
+  the bench numbers suggest — which is exactly why the bench's 1.2e-1 does not bound
+  the in-situ 0.82.
+- The generated kernel is **int8 KV + int8 Q**, while the dense bf16 prefill is bf16
+  throughout — the dtype mismatch @agent-baaa57 flagged in the beyond-8192 handoff.
+
+So the honest status for Nanbeige: the adapter is fixed, deterministic, and its input
+conversion is verified correct; the residual divergence is a **precision/contract
+mismatch (int8 attention vs the bf16 prefill)** compounded by the prefill stack itself
+differing from FLM even with float attention (CPU path 166103 vs FLM 13). Closing it
+needs either a bf16/higher-precision variant of the generated kernel or a
+quantisation scheme matched to the prefill's value range.
+
+## Addendum 9: DECISIVE — it is the int8 contract, not the kernel (npu == its own EMU)
+
+`NPU_ATTN_EMU_DIFF=1` runs the AttnCtx's **own host EMU** (`run_emu`, the
+float-dequantised int8 contract) and `attn_omp` (pure float) on the same in-situ bytes,
+then compares both to `attn_omp`. Last row of the 8-token block, per layer:
+
+| layer | max\|emu-float\| | max\|npu-float\| | mean\|emu-float\| | mean\|npu-float\| |
+|---|---:|---:|---:|---:|
+| L0 | 0.000214 | 0.000290 | 3.11e-05 | 3.76e-05 |
+| L1 | 0.197073 | 0.197524 | 0.0110877 | 0.0110882 |
+| L2 | 0.784570 | 0.784974 | 0.0229454 | 0.0229443 |
+| L3 | 0.351938 | 0.349967 | 0.0285645 | 0.0285644 |
+| L4 | 0.635414 | 0.634633 | 0.0409032 | 0.0408971 |
+| L5 | 0.691580 | 0.690879 | 0.0433834 | 0.0433841 |
+| L7 | 1.231850 | 1.233040 | 0.0441776 | 0.0441805 |
+
+**`npu` and `emu` agree to ~1e-4 while BOTH diverge from float by 0.2-1.2 max /
+0.01-0.044 mean.** That settles it:
+
+1. **The kernel is faithful** — it reproduces its own host contract essentially
+   exactly (and this is the same kernel that gates NPU==EMU 8.575258e-02 on the bench).
+2. **The disagreement is the int8 contract itself**: quantising the prefill's
+   Q/K/V (max|q| = 26.75 -> int8 step ~0.21) costs 0.01-0.044 mean on the attention
+   output, and up to 1.23 worst-case. The standalone bench's 1.2e-1 figure is smaller
+   only because the bench's synthetic buffers have a smaller dynamic range.
+3. **L0 is the control**: at layer 0 the same contract costs 2.1e-4 — the contract is
+   not "broken", it is *precision-limited on this data*, and the error compounds with
+   depth (L1 -> L7).
+
+So the residual Nanbeige gap needs a **higher-precision generated attention** (a
+bf16-KV/bf16-Q variant, or a quantisation scheme matched to the prefill's range), not
+a wiring or kernel fix. This is the same dtype mismatch @agent-baaa57 flagged for the
+beyond-8192 route (int8 KV there vs bf16 KV in the dense bf16 path).
+
+Cited status for Nanbeige: the `AttnCtx` adapter is implemented, deterministic, and
+verified correct at the interface; end-to-end parity is **blocked by the int8
+attention contract** (quantified above) and, independently, by the bf16 prefill stack
+differing from FLM even with float attention (CPU 166103 vs FLM 13).
+
+## Addendum 10: term attribution — int8 Q/K dominate; A2 and V are negligible
+
+Env-gated EMU variants in `npu_attn_ctx.h` (`NPU_ATTN_EMU_FLOAT_A2`, `NPU_ATTN_EMU_FLOAT_V`)
+keep the int8 path for every term except the one under test, then re-run
+`NPU_ATTN_EMU_DIFF` (8-token prompt, last row, per layer):
+
+| variant | L1 max\|emu-float\| | L2 max\|emu-float\| | L7 max\|emu-float\| |
+|---|---:|---:|---:|
+| int8 everywhere (baseline) | 0.197073 | 0.784570 | 1.231850 |
+| **float A2** (int8 Q/K/V) | 0.192873 | 0.781741 | 1.205480 |
+| **float V** (int8 Q/K/A2) | 0.195907 | 0.781921 | 1.233460 |
+
+Making the softmax output exact changes the divergence by ~2%; making V exact
+changes it by ~1%. Both are noise next to the 0.197-1.232 baseline. **So the
+residual Nanbeige gap is the int8 Q/K quantisation** (the QK^T), which is the one
+term neither variant touches — and it is the term a per-dim/per-head/row scale cannot
+rescue (a per-dim K scale lives inside the mmul sum; a per-head/row Q scale is a
+temperature).
+
+**Consequence for the fix:** a targeted change is worth doing here — a
+**bf16/mixed-precision QK^T** (wider score accumulation) rather than a full bf16
+rewrite of the whole kernel, since the PV/A2 sides are already effectively exact at
+int8. That is also the term the beyond-8192 route needs addressed (int8 KV there vs
+bf16 in the dense path).
+
+The two variants are committed env-gated and OFF by default (`emu_vo` is only set by
+the `NPU_ATTN_EMU_DIFF` probe). Both were corrected during this work: the first cut
+applied a spurious extra `/127` to the float-V dequantisation (`sv` already carries
+`max|V_d|/127`), which made float-V look 127x wrong; the fixed numbers are above.
+
+Also reconfirmed while toggling: `npu-float` is invariant across the variants
+(0.197524 / 0.784974 / 1.23304), i.e. the NPU output does not depend on the EMU
+variant — the earlier apparent dependence was a line-selection artefact in the
+paired-loop shell, not a real effect.
