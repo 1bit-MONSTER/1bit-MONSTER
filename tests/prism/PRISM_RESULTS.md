@@ -75,13 +75,15 @@ Today's effective rate (tok/s x pack size) is `60.8 / 65.5 / 86.0 GB/s `[3-packs
 = 30/33/43% of triad `[3-packs\|verbatim\|derived\|strixhalo-unknown\|32\|capital-of-France\|2026-09-18]`, so the gap is
 `2.62x / 2.45x / 1.83x `[3-packs\|verbatim\|derived\|strixhalo-unknown\|32\|capital-of-France\|2026-09-18]`. PQ2_0 is closest because its
 effective rate already matches the tile GEMV's own `93 GB/s `[3-packs\|verbatim\|HIP prism_gemv_tile.hip\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]` — the model is GEMV-bound,
-so the remaining headroom is exactly the distance from 40-46% to ~80% of triad.
+so the remaining headroom is exactly the distance between the tile GEMV's fraction of
+triad and the fraction the gate implies (both tagged above, not restated here).
 
 **Operator decision this exposes.** The gate as written asks for near-peak streaming through a 64-layer
 hybrid that also carries GDN state and attention, so it sits at the edge of what this box can do *even
 with a perfect weight path*. If the targets are a lane-relative ambition rather than a hard contract,
 saying so lets me re-tag them as `spec-ambition` instead of failing them; if they are hard, then the
-number to plan against is ~80% of triad, not 42/27/22 tok/s in the abstract.
+number to plan against is the fraction of triad the gate implies (tagged above), not the
+tok/s figures in the abstract.
 
 **Result: MISSED, and it is a kernel limit, not a measurement artifact.** The tile GEMV's own best is the
 section-3 row tagged `[3-packs | verbatim | HIP prism_gemv_tile.hip | strixhalo-unknown | - | synthetic x | 2026-09-18]`;
