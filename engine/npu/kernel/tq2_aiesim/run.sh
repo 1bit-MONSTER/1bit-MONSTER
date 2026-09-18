@@ -4,7 +4,7 @@
 # Usage: ./run.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-V=${XILINX_VITIS:-/home/bcloud/Xilinx/2026.1/2026.1/Vitis}
+V=${XILINX_VITIS:-/home/bcloud/Xilinx/2026.1/Vitis}
 export PATH=$V/aietools/bin:$V/bin:$PATH
 export LD_LIBRARY_PATH=$V/aietools/lib/lnx64.o:$V/lib/lnx64.o:${LD_LIBRARY_PATH:-}
 g++ -O2 -o gen_data gen_data.cpp

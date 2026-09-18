@@ -4,8 +4,8 @@
 // Auto-detects NPU, GPU (HIP/Vulkan), and CPU backends, picks the fastest,
 // and transparently failsover on error — zero config, one binary.
 //
-// Build: cmake --build . --target unified_server -j8
-// Run:   ./build/unified_server [--port 8088] [--weights /tmp/zaya_weights]
+// Build: cmake --build . --target onebin -j8
+// Run:   ./build/1bit unified [--port 8088] [--weights /tmp/zaya_weights]
 //
 // API (OpenAI-compatible):
 //   GET  /v1/health           — Backend status & metrics dashboard

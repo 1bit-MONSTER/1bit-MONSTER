@@ -162,6 +162,44 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"cpu_mimo_v2", "hip_gpu", "cpu_generic"},
                 "MiMo-V2 — dedicated CPU engine (MoD hybrid SWA+full, group-topk MoE)"};
     }
+    // Qwen3.5-MoE (35B-A3B, GatedDeltaNet + full attn + gated MoE) —
+    // issue #1831: the HIP 1BP backend cannot run it yet. Interim route to
+    // the validated qwen3next CPU engine (src/qwen3next_engine.cpp, corr
+    // 0.9997 vs the numpy reference) until the HIP port lands, so the arch
+    // has a working non-NPU path. NPU FLM also speaks it (npu_flm maps
+    // qwen35moe -> qwen3.6-moe:35b-a3b) — tried after CPU per issue #1830's
+    // FLM decode defect; reorder once that is fixed.
+    //
+    // THIS MUST PRECEDE THE QWEN3.5 DENSE BRANCH BELOW. That branch matches
+    // `cfg.arch == RCPP_ARCH_QWEN35`, and cfg.arch is derived from this same
+    // string (rcpp_arch_from_string — include/common.h:185), so "qwen35moe" was
+    // caught there and never arrived here: the alternative below was dead code,
+    // and the MoE family took the dense Qwen3.5 engine instead.
+    //
+    // "qwen3_5_moe" is the spelling the loaders actually end up with. For an HF
+    // config with architectures ["Qwen3_5MoeForCausalLM"], that raw string does
+    // not resolve, so safetensors_reader falls back to model_type — and this
+    // family's model_type is `qwen3_5_moe`. It maps to RCPP_ARCH_QWEN3, so
+    // without the string in this list those models fell past every Qwen3.5
+    // branch and onto the plain-Qwen3 route.
+    //
+    // Scoped to this family ONLY — RCPP_ARCH_QWEN3NEXT also covers
+    // qwen3next/gateddeltanet/qwen4exp, whose routing is unchanged.
+    //
+    // Matched by family marker, not by an enumeration: the table spells this
+    // family seven ways — qwen35moe, qwen3_5moe, qwen3_5_moe,
+    // qwen3_5_moe_text, prunedqwen3_5moe, dashqqwen3_5moe, mixfp4qwen3_5moe —
+    // and the previous list of two had already missed the one the loaders
+    // actually select.
+    {
+        const std::string& a = cfg.architecture;
+        if (a.find("qwen3_5moe") != std::string::npos ||
+            a.find("qwen35moe") != std::string::npos ||
+            a.find("qwen3_5_moe") != std::string::npos) {
+            return {{"cpu_qwen3_next", "npu_flm", "cpu_generic"},
+                    "Qwen3.5-MoE — qwen3next CPU engine → FLM NPU → generic CPU (#1831)"};
+        }
+    }
     // Qwen3.5 text decoder: GatedDeltaNet + gated GQA hybrid.
     // Dedicated CPU engine (src/qwen3_5.cpp, mini-gate 20/20 2026-08-16).
     if (cfg.arch == RCPP_ARCH_QWEN35 || cfg.architecture == "qwen35" ||
@@ -225,19 +263,6 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         // cascades down the list (GET_ROWS fail-closed → ggml_vulkan, etc.).
         return {{"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"},
                 "GGUF/H1B model — HRX GPU (fused) → GGML-Vulkan → ZINC GPU → CPU"};
-    }
-    // Qwen3.5-MoE (35B-A3B, GatedDeltaNet + full attn + gated MoE) —
-    // issue #1831: the HIP 1BP backend cannot run it yet. Interim route to
-    // the validated qwen3next CPU engine (src/qwen3next_engine.cpp, corr
-    // 0.9997 vs the numpy reference) until the HIP port lands, so the arch
-    // has a working non-NPU path. NPU FLM also speaks it (npu_flm maps
-    // qwen35moe -> qwen3.6-moe:35b-a3b) — tried after CPU per issue #1830's
-    // FLM decode defect; reorder once that is fixed.
-    // Scoped to the qwen35moe arch strings ONLY — RCPP_ARCH_QWEN3NEXT also
-    // covers qwen3next/gateddeltanet/qwen4exp, whose routing is unchanged.
-    if (cfg.architecture == "qwen3_5_moe_text" || cfg.architecture == "qwen35moe") {
-        return {{"cpu_qwen3_next", "npu_flm", "cpu_generic"},
-                "Qwen3.5-MoE — qwen3next CPU engine → FLM NPU → generic CPU (#1831)"};
     }
     if (cfg.format == ModelFormat::ONEBP) {
         // fused_gpu_npu first (fixed 2026-08-29), then hip_1bp (bit-correct

@@ -39,10 +39,11 @@ done
 
 $PYTHON "$G/n1_core_fused_gu_silu_d_p1_i4.py" -M 8 -K 2048 -N_GU 4096 -N_D 2048 \
     -m 8 -k 64 -n 128 -c 8 -b 2 > "$W/design.mlir" 2>/dev/null
-export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
+export PATH=/home/bcloud/Xilinx/2026.1/Vitis/bin:$PATH
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/iron/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs:/home/bcloud/iron/lib/python3.14/site-packages/aie/_mlir_libs
 cd "$W"
+rc=0
 source /home/bcloud/mlir-aie/npu2_40_toolchain/aiecc_wrapper.sh > /dev/null 2>&1
 /home/bcloud/mlir-aie/npu2_40_toolchain/bin/aiecc --peano="$P" --aietools="$M" \
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
@@ -50,4 +51,9 @@ source /home/bcloud/mlir-aie/npu2_40_toolchain/aiecc_wrapper.sh > /dev/null 2>&1
     --aie-generate-npu-insts \
     --xclbin-name="$G/../xclbins/final_i8_MOE_GUSILU_i4_zaya.xclbin" \
     --npu-insts-name="$G/../xclbins/insts_i8_MOE_GUSILU_i4_zaya.txt" \
-    "$W/design.mlir" 2>&1 | tail -1
+    "$W/design.mlir" > "$W/aiecc.log" 2>&1 || rc=$?
+if [ $rc -ne 0 ]; then
+    echo "aiecc failed (rc=$rc):" >&2
+    tail -8 "$W/aiecc.log" >&2
+fi
+exit $rc

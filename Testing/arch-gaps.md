@@ -491,6 +491,233 @@ done 2026-09-17.**
 
 ---
 
+## Reviewed 2026-09-17 (second batch) — five more un-reviewed classes
+
+Same standard, next batch by instance count on `main` at `02b4e04a3`: `rosetta`
+(5), `babylmpararnn` (4), `idemformer` (4), `sparseast` (4), `urvashi` (4) — 21
+of the **111** instances that the corrected enumeration finds unreviewed. (An
+earlier comment in #2178 said 62 and listed `moonfrost` as already reviewed;
+both were wrong — `moonfrost` has no record in this file, only the watcher's
+own `!! UNCOVERED` lines.)
+
+**Method, and its control.** Tensor names come from
+`model.safetensors.index.json`, or for single-file checkpoints from the
+safetensors **header alone** via an HTTP range request — 41 KB for rosetta, not
+its 15 GB of weights. Nothing was downloaded but metadata.
+
+Whether a name is *handled* was decided by matching it as a whole **dotted
+component** of a string literal in `src/`/`include/`, never by substring. The
+first pass reported `a_n`, `a_r` and `al.` as handled; they were
+`mamba_n_heads`, `mamba_rms_norm` and the word "gated". The matcher was validated
+against a known-good token (`mamba_n_heads` → handled) and those three noise
+tokens (→ not handled) before any verdict below relied on it. As a positive
+control for the method as a whole, `Qwen/Qwen3-0.6B` — a class the registry
+already covers — was put through the same read.
+
+### `rosetta` — `postmedia/rosetta-7b-base` (5)
+
+**A real causal text LM. NOT an alias — and the reason is norm placement, not the
+shell.**
+
+* **Class / model_type**: `RosettaForCausalLM` / `rosetta`, 5 instances
+  (`-base`, `-instruct`, `-think`, and an `nvfp4` quant of each).
+* **Config**: `vocab_size` 161421, `hidden_size` 4096, 32 layers, 32 heads and
+  **32 KV heads** (full MHA, no GQA), `intermediate_size` 11008,
+  `max_position_embeddings` 65536, plus `layer_types` and `sliding_window`.
+* **Tensors** (355): `self_attn.{q,k,v,o}_proj.weight` with **no biases**,
+  `self_attn.q_norm` + `k_norm`, `mlp.{gate,up,down}_proj`,
+  `post_attention_layernorm` **and** `post_feedforward_layernorm`. Every one of
+  those names is in the engine's vocabulary, and unlike `zgcm` above there is no
+  `g_proj`. On the shell alone this looks like the best alias candidate found so
+  far.
+* **Why it is not one anyway**: per layer it carries
+  `post_attention_layernorm` + `post_feedforward_layernorm` + `q_norm` + `k_norm`,
+  and **no `input_layernorm`** — nor a `pre_feedforward_layernorm`. The loader
+  loads `input_layernorm.weight` → `rms_attn` unconditionally
+  (`src/backend_generic.cpp:1471`), and the `gemma_post_norms` branch that is the
+  only reader of `post_feedforward_layernorm` (`:1472-1475`) demands
+  `pre_feedforward_layernorm` first. So rosetta loses the pre-attention norm on
+  the standard branch — which additionally ignores `post_feedforward_layernorm`
+  entirely — or loses the FFN norm on the gemma branch. Either way the norm
+  placement differs from what the engine computes.
+* **Positive control**: `Qwen/Qwen3-0.6B` has `input_layernorm` in every layer,
+  which is why the absence here is a finding and not a naming artefact of my read.
+* **Verdict**: implement, do not alias. Complementary to `zgcm`: that one carried
+  a tensor the engine cannot consume, this one is missing a tensor it requires.
+
+### `babylmpararnn` — `bugkira-ai/babylm-paragru-20m` (4)
+
+**Not a transformer at all — a parallel RNN. Not an alias.**
+
+* **Class / model_type**: `BabyLMParaRNNForCausalLM` / `babylm_pararnn`;
+  `vocab_size` 16000, `hidden_size` 384, 6 layers, with `cell_type`, `spec` and
+  `auto_map` (custom remote code).
+* **Tensors** (83): `inner.blocks.{N}.rnn.layers.{N}.{W_x,a_n,a_r,a_z}`,
+  `norm_rnn`, `norm_mlp`, `inner.pos`, `inner.lm_head`.
+* **Why that is decisive**: there is **no attention tensor of any kind** — no
+  `q/k/v/o_proj`, no `self_attn`. `rnn`, `W_x`, `a_n`, `a_z`, `norm_rnn`,
+  `norm_mlp` and `inner` all have zero dotted-component hits. The engine's
+  recurrent families (MAMBA, RWKV, FALCONMAMBA) are different schemes with their
+  own vocabularies.
+* **Verdict**: implement, do not alias.
+
+### `idemformer` — `aecetin/*-idemformer` (4)
+
+**Cannot be decided on tensors: none are published.**
+
+* 4 instances, all one uploader:
+  `aecetin/{qwen-2.5-7b,gemma-2-2b,llama-3.2-3b,mistral-7b}-idemformer`.
+* By the HF API's own file list each repo holds exactly four files —
+  `.gitattributes`, `README.md`, `config.json`, `idemformer_engine.py` — and
+  **zero weight files**.
+* So the class is one project publishing an inference engine plus configs, with
+  no checkpoints. There are no tensors to apply the standard to, and nothing to
+  run.
+* **Verdict**: not an alias, and not a coverage gap either — there is no model to
+  cover. Worth recording because it means four of the 184 uncovered instances
+  are unreleased conversions rather than unserved families. Not added to an
+  exclusion set, for the same denominator reason as `blockmtp` and `canopy`.
+
+### `sparseast` — `chaman1234/sparse-ast-bwm-100m-32` (4)
+
+**Not a text LM. Not an alias.**
+
+* **Class / model_type**: `SparseASTForCausalLM` / `sparse_ast`; `d_model`,
+  `d_hidden`, `al_hidden`, `num_layers` 18, `domain`.
+* **The decisive numbers are `vocab_size` 512 and `max_position_embeddings` 32** —
+  a 512-token vocabulary over a 32-token context. Like `blockmtp`'s `vocab_size`
+  of 82, this is not a chat LM and cannot be one.
+* **Tensors confirm it independently** (309): `b.{N}.a.in_proj_weight` /
+  `in_proj_bias` — a **fused** QKV projection, whose two names have zero hits
+  across `src/` and `include/` — and `b.{N}.al.{0,1}`, i.e. **two attention
+  sublayers per block** rather than one.
+* **Verdict**: no implementation is warranted.
+
+### `urvashi` — `darkwhiteproductions/urvashi-*` (4)
+
+**Unverifiable: gated, and not the anonymous-fetch kind.**
+
+* 4 instances: `urvashi-3b`, `urvashi-gemma3-270m`, `-1b-base`, `-4b-base`. The
+  HF API reports `gated: manual`, and an anonymous `config.json` fetch returns
+  **HTTP 401**.
+* Unlike the gated repo noted in the section below — where a token would let the
+  census classify it — this needs an approval, so no anonymous run can ever read
+  it and a token alone would not be enough.
+* The names advertise `gemma3` backbones, which if true would make at least three
+  of the four aliases. The name is not the standard here and the tensors are
+  unreachable, so this is recorded as unverifiable rather than reviewed.
+
+## Reviewed 2026-09-17 (third batch) — six more, including the largest remaining
+
+Same method and same matcher as the batch above, checked the same way.
+
+### `fhn_t4max_150m` / `FHN_T4Max_150M` — `aixk/baar2-150m` (4)
+
+**Not an alias.** This is the largest single remaining class, and it is invisible
+to a name search: the census class comes from the arch string `FHN_T4Max_150M`,
+while the configs say `model_type: fhn_concept_gau`. The 4 instances are
+`aixk/baar2-150m`, `baar2-3m`, `baar2-9m`, `baar3-19m`.
+
+* **Tensors** (112): `blocks.{N}.in_proj` / `out_proj` (a **fused** QKV),
+  `blocks.{N}.q_norm` + `k_norm`, **one** `blocks.{N}.norm` per block,
+  `blocks.{N}.res_scale`, and a learned `pos_embed.weight`.
+* **Why that is decisive**: `res_scale` and `pos_embed` have **zero**
+  dotted-component hits — a per-block residual scale factor and a learned
+  *absolute* positional table, where every covered family uses RoPE. Every
+  covered family also carries **two** norms per block (`input_layernorm` and
+  `post_attention_layernorm`); this has one. That `norm`, `q_norm` and `k_norm`
+  are recognised names does not rescue it. (The nearest `res_scale` in the tree is
+  zaya's `res_scale_hs.weight`, a different component — which is exactly the
+  distinction the dotted-component matcher exists to make.)
+* **Verdict**: implement, do not alias.
+
+### `corm` — `ilsp/corm-182m-top1` (3)
+
+**Not an alias, and the disqualifier is the router, not the experts.**
+
+* **Tensors** (423): an ordinary attention shell (`input_layernorm`,
+  `post_attention_layernorm`, `self_attn.{q,k,v,o}_proj`) around a MoE whose
+  experts are `moe.experts.{N}.w1` / `w2` / `w3`.
+* **The experts alone would not disqualify it**: `%sexperts.%d.w1.weight` *is*
+  engine vocabulary (`src/minimaxm2_engine.cpp:198`), so the Mixtral/Nemotron
+  `w1/w2/w3` layout is served.
+* **The router is what does**: `moe.router.expert_queries.weight`,
+  `moe.router.key.weight` (a query-key **retrieval** router),
+  `moe.router.global_null_mean`, `moe.router.routing_temperature` and
+  `moe.router.ema_initialized` all have **zero** hits. The engine's router forms
+  are a single routing matrix (`block_sparse_moe.router.layer.weight`,
+  `experts.router.layer.weight`). A null-expert retrieval router with its own
+  temperature is a different routing scheme, not a rename.
+* **Verdict**: implement, do not alias.
+
+### `fly` — `ngxson/fly-llm-hf` (3)
+
+**Not a transformer. Not an alias.**
+
+* **Tensors** — only **13**: `brain.in_index`, `brain.w_values`, `brain.w_offsets`,
+  `brain.in_proj`, `brain.out_index`, `brain.gain`, `brain.bias`, `brain.rec_gain`,
+  `brain.wte.weight`, `ln.{weight,bias}`, `lm_head.weight`.
+* **Why that is decisive**: `brain`, `rec_gain`, `w_values`, `w_offsets` and
+  `in_index` all have zero hits. A sparse value/offset weight encoding plus a
+  recurrent gain is a brain-inspired recurrent model — there is no attention
+  tensor of any kind, and 13 tensors total is not a transformer of any size.
+* **Verdict**: no implementation warranted as a text family.
+
+### `open1b` — `gensyn/open-1b-base` (3)
+
+**Not an alias.**
+
+* **Tensors** (340): `blocks.{N}.attn.{wq,wk,wv,wo}.weight`, each with a
+  **`weight_scale`** sibling, `blocks.{N}.ffn.w_gate_up.weight` + scale,
+  `norm1`/`norm2`, `emb_norm`, `embedding.tok_embeddings`, `embedding.output`,
+  `norm_out`.
+* **Why that is decisive**: `w_gate_up` is a **fused** gate+up projection (zero
+  hits — the engine loads `gate_proj` and `up_proj` separately), and *every*
+  weight carries a `weight_scale` (zero hits): a quantised scheme the loader does
+  not read. `wq`, `wv`, `norm1` and `norm2` are also outside the vocabulary.
+* **Verdict**: implement, do not alias.
+
+### `tinylm2` — `se00n00/tinylm2-50m-base` (3)
+
+**Not an alias — and the reason is one character.**
+
+* **Tensors** (111): `model.blocks.{N}.attention.{q,k,v,o}_proj`,
+  `model.blocks.{N}.feedforward.{gate,up,down}_proj`,
+  `model.blocks.{N}.norm1.weights` / `norm2.weights`, `model.embeddings`,
+  `model.final_norm.weights`, `model.head_proj`.
+* **Why that is decisive**: the norms are `norm1.**weights**` / `norm2.**weights**`
+  — plural, where the engine reads `.weight` — and `feedforward`, `head_proj`,
+  `norm1` and `norm2` all have zero hits. The block *shape* is a Llama block; the
+  loader would find none of its norms.
+* **Verdict**: implement, do not alias.
+
+### `lightning` — `aobangaming/lightning-60m` (2)
+
+**Not an alias.**
+
+* **Tensors** (101): `lightning.transformer.{N}.attention.qkv.{weight,bias}`,
+  `.attention.out_proj`, `.ffn.{0,1}.{weight,bias}` (two FFN sublayers per block),
+  `norm1`/`norm2` with biases, `lightning.positional_encoding.pe`,
+  `lightning.token_embedding`, `lightning.output_layer`.
+* **Why that is decisive**: `positional_encoding.pe` is a **learned absolute**
+  positional table and has zero hits — every covered family is RoPE — and
+  `lightning`, `output_layer`, `ffn` and `norm1` have zero hits, with two `ffn.N`
+  sublayers per block. That `qkv`, `final_norm` and `token_embedding` *are*
+  recognised does not make it the family that uses those names.
+* **Verdict**: implement, do not alias.
+
+**Running tally**: of the 77 uncovered classes, **19 have a review entry here** —
+8 before today's two batches (`deepseekv41`, `qwen3mamba3`, `gdn2`, `fidel`,
+`blockmtp`, `jarvistitanmoe`, `canopy`, `zgcm`, 73 instances) plus the 11 above
+(21 + 18 = 39 instances) — so **58 classes / 72 instances remain unreviewed**.
+Counted by review *heading* rather than by whether the class name appears anywhere
+in the file: my own prose above mentions `moonfrost` in order to correct the
+record, and a substring test duly reported it as reviewed. The per-entry counts
+are the census's own, which is why `lightning` reads (2) here though three models
+carry the arch.
+
+---
+
 ## Unverifiable: gated configs
 
 `WaveMatrix/Qwen3-VL-8B-Instruct-GPTQ-Int4` is counted as **unverifiable** on
