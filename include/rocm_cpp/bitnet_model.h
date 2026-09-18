@@ -1621,7 +1621,6 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "llavaqwen2")   == 0) return RCPP_ARCH_QWEN2;   // LLaVA w/ qwen2 text decoder
     if (strcmp(s, "hunyuandensev1") == 0) return RCPP_ARCH_LLAMA; // HunYuan dense V1 (llama-layout)
     if (strcmp(s, "seedoss")      == 0) return RCPP_ARCH_LLAMA;   // ByteDance Seed-OSS dense (llama-layout, GQA)
-    if (strcmp(s, "glm4")         == 0) return RCPP_ARCH_LLAMA;   // GLM-4 (llama + partial-rope 0.5 + qkv bias)
     if (strcmp(s, "glm4moe")      == 0) return RCPP_ARCH_LLAMA;   // GLM-4-MoE (same attn + deepseek-style gating)
     if (strcmp(s, "glmmoedsa")    == 0) return RCPP_ARCH_LLAMA;   // GLM-4.5 MoE (DSA attention)
     if (strcmp(s, "glm4moelite")  == 0) return RCPP_ARCH_LLAMA;   // GLM-4-MoE-Lite
@@ -1641,19 +1640,13 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "granite_moe") == 0) return RCPP_ARCH_GEMMA;    // granite MoE (gemma layout)
     if (strcmp(s, "gemma3_text") == 0) return RCPP_ARCH_GEMMA;    // Gemma3TextConfig
     if (strcmp(s, "gemma4_text") == 0) return RCPP_ARCH_GEMMA;
-    if (strcmp(s, "llava")       == 0) return RCPP_ARCH_QWEN2VL;  // LLaVA model_type
     if (strcmp(s, "llava_llama") == 0) return RCPP_ARCH_LLAMA;    // LLaVA-llama text decoder
     if (strcmp(s, "llava_qwen2") == 0) return RCPP_ARCH_QWEN2;
     if (strcmp(s, "deepseek_v2") == 0) return RCPP_ARCH_DEEPSEEK;
-    if (strcmp(s, "deepseek_v3") == 0) return RCPP_ARCH_DEEPSEEK;
-    if (strcmp(s, "deepseek_v4") == 0) return RCPP_ARCH_DEEPSEEK_V4;
     if (strcmp(s, "stablelm_epoch") == 0) return RCPP_ARCH_LLAMA;
-    if (strcmp(s, "openelm")     == 0) return RCPP_ARCH_LLAMA;
-    if (strcmp(s, "cohere")      == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "cambrian_qwen") == 0) return RCPP_ARCH_QWEN2;  // Cambrian-1 (qwen2 text)
     if (strcmp(s, "hunyuan_v1_dense") == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "exaone4")     == 0) return RCPP_ARCH_LLAMA;
-    if (strcmp(s, "nemotron")    == 0) return RCPP_ARCH_NEMOTRON;
     if (strcmp(s, "fp8_qwen3")   == 0) return RCPP_ARCH_QWEN3;    // FP8 wrapper, same layout
     if (strcmp(s, "fp8_qwen2")   == 0) return RCPP_ARCH_QWEN2;
     if (strcmp(s, "fp8_llama")   == 0) return RCPP_ARCH_LLAMA;
@@ -2715,7 +2708,11 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "moeqwen3") == 0) return RCPP_ARCH_QWEN3;
     if (strcmp(s, "moeqwen3b") == 0) return RCPP_ARCH_QWEN3;
     if (strcmp(s, "qwen3moefused") == 0) return RCPP_ARCH_QWEN3;
-    if (strcmp(s, "qwen3_5moe") == 0) return RCPP_ARCH_QWEN3;
+    // `qwen3_5moe` was re-defined here as RCPP_ARCH_QWEN3. It was unreachable:
+    // this function is a linear if-chain and the Qwen3.5 block above matches first, so
+    // removing it changes no resolution - verified by resolving all 2,036 aliases before
+    // and after. Tools that parse this file last-match-wins used to get the opposite
+    // answer from the engine; now the file has one answer (#2501).
     if (strcmp(s, "qwen3_5_moe") == 0) return RCPP_ARCH_QWEN3;
     if (strcmp(s, "dashqqwen3_5moe") == 0) return RCPP_ARCH_QWEN3;
     if (strcmp(s, "qwen3canon") == 0) return RCPP_ARCH_QWEN3;

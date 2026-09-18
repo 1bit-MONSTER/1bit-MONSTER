@@ -4,16 +4,22 @@ name: Xclbin provenance
 # cannot reliably rebuild it - see engine/npu/build_npu_ternary.sh's header), so its
 # hygiene and its provenance have to be checked as *committed state*, not by building.
 # Two failure modes this turns red:
-#   1. Hygiene. Four tracked *.xclbin symlinks point at /opt/fastflowlm/... which exists on
-#      none of our machines - a fresh clone is already broken - and one build ships as a real
-#      file, a byte-identical duplicate, and a symlink. Neither "fix" is safe: copying a
-#      foreign binary over a dangling link hides that it was never built here, and
-#      materialising an alias doubles the payload and hides the aliasing.
+#   1. Hygiene. An in-tree alias must stay inside engine/npu/xclbins/ and name a tracked
+#      sibling *.xclbin: a link that escapes the directory, or names a path the commit does
+#      not carry, is broken in a fresh clone whatever machine made it. Third-party links may
+#      also be tracked, pointing into a machine-local FastFlowLM install (four were, until
+#      #2218 deleted them) - for those the invariant is the TARGET, never whether it
+#      resolves, since that is host state. Neither "fix" is safe: copying a foreign binary
+#      over a dangling link hides that it was never built here, and materialising an alias
+#      doubles the payload and hides the aliasing.
 #   2. Provenance. The artifacts record producer/format/UUID/timestamp but no toolchain
 #      version, no source revision and no generating script, so a green rebuild could never
 #      be shown to reproduce what ships. engine/npu/xclbins/PROVENANCE.json is the recorded
 #      half; an intentional change to the artifact set regenerates it in the SAME commit,
-#      which is the review point.
+#      which is the review point. Every field it records about the committed set is compared
+#      against the tree - the two host-dependent population keys are the only exclusions -
+#      after population.tracked_paths_under_dir sat one path stale against main from
+#      2026-09-16 with this job green (#2513).
 #
 # Runs on stock runners with stdlib Python only - no NPU, no XRT, no toolchain. The check
 # states its population, unit and timezone because a census without them is meaningless

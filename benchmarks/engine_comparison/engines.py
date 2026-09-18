@@ -617,7 +617,14 @@ class ZayaServer(ServerHandle):
             raise RuntimeError(
                 f"port {self.port} is already in use; zaya_server cannot bind it. "
                 f"Stop the process listening there (lsof -iTCP:{self.port} -sTCP:LISTEN).")
-        cmd = [str(config.zaya_server_exe_for(self.backend)),
+        prefix = config.zaya_launch_prefix(self.backend)
+        if len(prefix) > 1:
+            # One-ELF substitution: build/zaya_server is absent, so dispatch needs
+            # the explicit subcommand (config.zaya_launch_prefix explains why).
+            print(f"    note: {config.zaya_server_exe_for(self.backend)} is missing "
+                  f"(it is the argv[0] symlink install.sh creates); launching "
+                  f"{' '.join(prefix)} instead", flush=True)
+        cmd = [*prefix,
                "--model", str(self.model.gguf),
                "--port", str(self.port)]
         cmd += [str(a) for a in spec.zaya_extra_args]
