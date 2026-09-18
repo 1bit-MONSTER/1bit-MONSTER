@@ -25,6 +25,7 @@ Pure C++26, zero Python at runtime, GPL-3.0.
 
 - [guides/windows.md](guides/windows.md) — Windows notes
 - [guides/Lemonade-Compat.md](guides/Lemonade-Compat.md) — Lemonade compatibility
+- [guides/npu-modes.md](guides/npu-modes.md) — NPU engine env switches, incl. the `NPU_BF16` tile requirement and its coverage check (#2601)
 - [guides/launch.md](guides/launch.md) — launch/serving
 
 ## Research & technical deep-dives

@@ -91,6 +91,25 @@ else
     fail=$((fail+1))
 fi
 
+# ── artifact families: every family the engine can construct must have tracked
+# members or be declared build-only (issue #2601). The selfcheck carries fixtures
+# because a gate that cannot fail is not a gate.
+if _af_out=$("$PYTHON" engine/npu/tests/check_artifact_families.py 2>&1); then
+    printf '%s\n' "$_af_out" | tail -1 | sed 's/^/  /'
+    echo "✓ artifact_families"
+else
+    echo "✗ artifact_families"
+    printf '%s\n' "$_af_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+if _af_sc=$(bash Testing/artifact_family_coverage_selfcheck.sh 2>&1); then
+    echo "✓ artifact_family_coverage"
+else
+    echo "✗ artifact_family_coverage"
+    printf '%s\n' "$_af_sc" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 run() {  # run <name> <compile-args...> -- <run-args...>
     local name="$1"; shift
     local src=(); local runargs=()

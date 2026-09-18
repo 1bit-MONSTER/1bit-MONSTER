@@ -734,6 +734,29 @@ int main(int argc,char**argv){
     }
     const char*mp=argv[1];int ng=(argc>2&&!worker_mode)?atoi(argv[2]):32;if(ng<1)ng=1;if(ng>4096)ng=4096; // cap to KV cache size (issue #112)
     const char*input_tok_file=(argc>3&&!worker_mode&&argv[3][0]!='\0')?argv[3]:nullptr;
+    // Reject a non-.q4nx model container before ANY parser walks it (issue #2601:
+    // NPU_BF16=1 on a .gguf used to exit 139 with no output). parse_q4nx_header()
+    // and the weight loader both assume the q4nx container: an 8-byte little-endian
+    // JSON-manifest length at offset 0 that fits the file. A GGUF ("GGUF" magic)
+    // yields a garbage length and the scan runs off the mapping. Legacy .1bp has
+    // its own format and guard below, and is exempted here.
+    {
+        bool mp_is_1bp = strlen(mp) > 4 && strcmp(mp + strlen(mp) - 4, ".1bp") == 0;
+        if (!mp_is_1bp) {
+            FILE* vf = fopen(mp, "rb");
+            if (!vf) { fprintf(stderr, "ERR: cannot open model: %s\n", mp); return 1; }
+            uint8_t hdr[8]; size_t got = fread(hdr, 1, sizeof hdr, vf);
+            fseek(vf, 0, SEEK_END); long fsz = ftell(vf); fclose(vf);
+            uint64_t mlen = 0;
+            for (size_t i = 0; i < got; i++) mlen |= (uint64_t)hdr[i] << (8 * i);
+            if (got < 8 || mlen < 8 || mlen > (uint64_t)fsz) {
+                fprintf(stderr, "ERR: %s is not a .q4nx container (manifest length %llu does not "
+                                "fit a %ld-byte file)%s.\n", mp, (unsigned long long)mlen, fsz,
+                        getenv("NPU_BF16") ? " \u2014 NPU_BF16=1 requires the .q4nx tiles" : "");
+                return 1;
+            }
+        }
+    }
 
     // Model tag
     // Accept --model-tag CLI override (passed by the Zig fused executor)
@@ -1046,16 +1069,29 @@ int main(int argc,char**argv){
     // Open model
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
     uint8_t*md=(uint8_t*)mmap(NULL,st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);
-    uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
-    // The weight loader below is Q4NX-JSON only (manifest at offset 8). The
-    // 1BP binary format (256-byte header + tensor index, no JSON) makes hsz
-    // garbage -> memmem past the mapping in jo()/key_exists = SIGSEGV. The
-    // engine's 1BP support is cfg+emb only; weights require .q4nx conversion
+    // Reject a container this loader cannot parse with a diagnostic instead of a
+    // SIGSEGV (issue #2601: NPU_BF16=1 on a .gguf used to exit 139 with no
+    // output). The weight loader below is Q4NX-JSON only (manifest length at
+    // offset 8). A GGUF (magic "GGUF") or any other container makes hsz garbage
+    // -> memmem past the mapping in jo()/key_exists = SIGSEGV. The engine's 1BP
+    // support is cfg+emb only; weights require .q4nx conversion
     // (tools/tq2_to_q4nx.cpp). Convert instead of crashing.
-    if (is_onebp && (hsz > (uint64_t)st.st_size || hsz < 8)) {
-        fprintf(stderr, "ERR: legacy 1BP model has no JSON manifest — this engine "
-                        "loads weights from .q4nx only.\n"
-                        "     Convert with: build/tq2_to_q4nx %s out.q4nx\n", mp);
+    if (st.st_size < 8) {
+        fprintf(stderr, "ERR: %s is too small to be a .q4nx container (%lld bytes).\n",
+                mp, (long long)st.st_size);
+        return 1;
+    }
+    uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
+    if (hsz > (uint64_t)st.st_size || hsz < 8) {
+        if (is_onebp)
+            fprintf(stderr, "ERR: legacy 1BP model has no JSON manifest — this engine "
+                            "loads weights from .q4nx only.\n"
+                            "     Convert with: build/tq2_to_q4nx %s out.q4nx\n", mp);
+        else
+            fprintf(stderr, "ERR: %s is not a .q4nx container (manifest length %llu "
+                            "does not fit a %lld-byte file)%s.\n",
+                    mp, (unsigned long long)hsz, (long long)st.st_size,
+                    getenv("NPU_BF16") ? " — NPU_BF16=1 requires the .q4nx tiles" : "");
         return 1;
     }
     auto i8p=[&](uint64_t o){return md+df+o;};

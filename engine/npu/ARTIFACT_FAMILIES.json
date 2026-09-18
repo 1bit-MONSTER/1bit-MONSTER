@@ -1,0 +1,5 @@
+{
+  "note": "Artifact families the NPU engine can construct. check_artifact_families.py fails a family that has zero tracked members under engine/npu/xclbins/ unless it is listed in build_only. Issue #2601: NPU_BF16=1 needs final_bf16_*/insts_bf16_*; they are tracked (restored in #2602). A build output is a valid answer, but it must be declared here so a family dropping to zero is a decision, not an accident.",
+  "families": [],
+  "build_only": []
+}
