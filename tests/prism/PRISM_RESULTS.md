@@ -223,7 +223,7 @@ difference, not from any individual dispatch.
 | measurement | value | tag |
 |---|---|---|
 | dispatches per token | 1541 ((20729 - 16106) / 3) | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3 --kernel-trace, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
-| of which buffer copies | 1452 dispatches, 0.37 ms total = 94% of all dispatches | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| of which buffer copies | 418 dispatches = 27% of launch traffic (0.37 ms) [CORRECTED: an earlier figure of 1452 / 94% was a mis-division - the peer's, and I recorded it without checking that the 1452 was itself differenced] | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
 | activation-quant kernel per token | ~257 dispatches, 0.25 ms = under 1% of decode | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
 | GEMV total per token | 21.2 ms (dp4a<18> 6.27 + multi4 14.95) | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3, differenced \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
 | cross-instrument check: profile vs the skip-GEMV split | 21.2 vs 21.1 ms - two independent instruments agreeing within 0.1 ms | `[Bonsai-27B-Q1_0 \| Q1_0 \| rocprofv3 vs PRISM_SKIP_GEMV \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
@@ -237,15 +237,41 @@ cannot explain the in-situ-versus-standalone GEMV gap that motivated it. The pee
 is recorded as wrong, because they killed it themselves with a measurement rather than a defence - the third
 mechanism today to die of data instead of argument.
 
-**The dispatch count is real, and the fusion arithmetic now closes** (rows above): removing a few hundred
-dispatches predicts the measured one-to-two percent almost exactly, which is a better result than either number
-alone. Worth noting what those dispatches mostly are, though: the overwhelming majority are buffer copies, so the
-cheapest next win may be to stop making them rather than to optimise any kernel.
+**The dispatch count is real but immaterial, and that was measured, not argued** (rows below): the fusion win
+was slightly less GPU work rather than fewer launches, and the copies are a quarter of launch traffic rather than
+almost all of it. The earlier advice to attack the copies - which came from the withdrawn figure - is withdrawn
+with it. Recording my own part in that: I checked the ratio (1452 of 1541) but never checked that the numerator
+had itself been differenced, so internal consistency passed while the input was wrong. The gate's coverage
+self-test exists for exactly this failure shape, and this instance shows it needs an input-provenance check too.
 
 **The dominant remaining term is the GEMV aggregate inside the layer loop** (rows above): it runs well below the
 per-tensor standalone rate, and the gap is neither quant nor dispatch. The peer suspects memory-system
 interaction between the GEMVs and the non-GEMV kernels and explicitly declines to assert it - the same standard
 that has now retired three mechanisms, applied to their own.
+
+### Dispatch floor measured directly, and what Q1_0's gate now requires (15:22)
+
+| measurement | value | tag |
+|---|---|---|
+| launch cost, trivial kernel `<<<1,32>>>` | 1.826 us/launch over 20000 launches | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP trivial-kernel loop \| strixhalo-quiet \| - \| - \| 2026-09-18]` |
+| launch cost, realistic shape `<20,256>`, n=5120 | 1.984 us/launch over 20000 launches | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP trivial-kernel loop \| strixhalo-quiet \| - \| - \| 2026-09-18]` |
+| host time to issue a token | 1541 dispatches x that rate = 2.8-3.1 ms against 29.5 ms of GPU work per token | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| Q1_0 GEMV floor at the box triad | 18.1 ms for 3.80 GB at ~210 GB/s; measured in-situ 21.2 ms = 85% of the floor rate | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from rocprofv3 and hip_bw_probe \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| non-GEMV budget the gate leaves, if the GEMV reaches its floor | 5.7 ms, i.e. non-GEMV must fall by about a third | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| same, if the GEMV does not improve | 2.6 ms, i.e. non-GEMV must fall by about two thirds | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| GEMV at floor, non-GEMV untouched | 26.5 ms = 37.7 tok/s - **still short of the gate** | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+| GEMV unchanged, the largest non-GEMV kernel deleted entirely | 26.5 ms = 37.8 tok/s - **still short of the gate** | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 4 \| capital-of-France \| 2026-09-18]` |
+
+**The dispatch story is dead as a material cost, for a reason worth keeping.** Host time to issue every launch is
+well under the GPU's work per token, so the launch cost is overlapped rather than additive: dispatch cost only
+lands in wall time when the host cannot stay ahead of the device. Both of the mechanisms this lane has retired
+today died the same way - a plausible cost that measurement showed to be small or hidden.
+
+**The gate now needs both halves of Q1_0, and that follows from the rows above rather than from optimism.** Even a
+GEMV at its memory floor leaves the pack short with non-GEMV untouched, and deleting the single largest
+non-GEMV kernel entirely does not close it either. So the honest target is a GEMV near its floor *and* roughly a
+third off the non-GEMV budget - the peer's plan to start with `gdn_recurrence` is the right first step, but it is
+a first step and not the whole distance.
 
 **One part of this round is still an estimate, and is recorded as an estimate.** The lost-to-dispatch figure is
 inferred from an assumed per-dispatch cost, and the sum of the measured terms leaves a remainder of about that
