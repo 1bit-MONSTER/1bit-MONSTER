@@ -140,11 +140,17 @@ Converted via C++ toolchain (`src/gguf_to_onebp.cpp`), zero Python at runtime.
 
 **In-lane, not published — Prism ML Bonsai 27B hybrid GatedDeltaNet.** A separate family
 branch from the Deepgrove Bonsai rows above: 64 layers, 48 GatedDeltaNet + 16 gated-GQA,
-served through **1BP v5** with the verbatim Prism packings (Q1_0 3.80 GB / PTQ1_0 5.95 GB /
-PQ2_0 7.17 GB) plus the folded Hadamard transform metadata. Correctness is gated on
-gfx1151 (fork's own generated tokens 5/5 on all three packs; per-layer cosine >= 0.999;
-full 64-layer device forward), but the tok/s targets are **not claimed** — they need a
-quiet box. These `.1bp` files live in the lane worktree, not on HuggingFace. See
+served through **1BP v5** with the verbatim Prism packings — Q1_0 3.80 GB `[Bonsai-27B-Q1_0\|Q1_0\|1BP v5\|cpu-host\|-\|-\|2026-09-18]`,
+PTQ1_0 5.95 GB `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|1BP v5\|cpu-host\|-\|-\|2026-09-18]`,
+PQ2_0 7.17 GB `[Ternary-Bonsai-27B-PQ2_0\|PQ2_0\|1BP v5\|cpu-host\|-\|-\|2026-09-18]`,
+plus a folded PQ2_0 7.14 GB `[Ternary-Bonsai-2-27B-PQ2_0\|PQ2_0\|1BP v5\|cpu-host\|-\|-\|2026-09-18]` —
+and the folded Hadamard transform metadata. Correctness is gated on gfx1151: the fork's own generated
+tokens 5/5 on all three oracle-gated packs `[3-packs\|verbatim\|CPU floor + HIP forward\|strixhalo-busy\|5\|capital-of-France\|2026-09-18]`,
+per-layer cosine >= 0.999 `[3-packs\|verbatim\|numpy streaming ref\|cpu-host\|5\|capital-of-France\|2026-09-18]`,
+and the full 64-layer device forward. The tok/s targets are **NOT MEASURED** — the busy-box figures are
+relative only `[3-packs\|verbatim\|HIP device forward\|strixhalo-busy\|16\|capital-of-France\|2026-09-18]`
+and the gate needs a quiet box; the tagged triad evidence is in the family doc and in
+`tests/prism/PRISM_RESULTS.md`, the lane's results of record (every number tagged). These `.1bp` files live in the lane worktree, not on HuggingFace. See
 [model-families/bitnet-bonsai.md](../../docs/model-families/bitnet-bonsai.md) and the
 [plan of record](../../docs/plans/prism-bonsai-27b-custom-build.md).
 

@@ -28,18 +28,36 @@ llama.cpp fork in the runtime loop; those are oracles/baselines only.
 
 | Pack | Base | Weights | 1BP | Correctness | Greedy decode |
 |---|---|---|---|---|---|
-| `Bonsai-27B-Q1_0` | Qwen3.6 | 1-bit g128 (nb=18) | 3.80 GB | fork oracle 5/5; device forward 5/5 | **15.05 tok/s** |
-| `Ternary-Bonsai-2-27B-PTQ1_0` | Qwen3.8 | base-3 g128 (nb=28), folded | 5.95 GB | fork oracle 5/5; device forward 5/5; per-layer cos >= 0.999 | **10.15 tok/s** |
-| `Ternary-Bonsai-27B-PQ2_0` | Qwen3.6 | ternary g128 (nb=34) | 7.17 GB | fork oracle 5/5; device forward 5/5 | **12.20 tok/s** |
+| `Bonsai-27B-Q1_0` | Qwen3.6 | 1-bit g128 (nb=18) | 3.80 GB `[Bonsai-27B-Q1_0\|Q1_0\|1BP v5\|cpu-host\|-\|-\|2026-09-18]` | fork oracle 5/5; device forward 5/5 `[Bonsai-27B-Q1_0\|Q1_0\|CPU floor + HIP forward\|strixhalo-busy\|5\|capital-of-France\|2026-09-18]` | **15.05 tok/s** `[Bonsai-27B-Q1_0\|Q1_0\|HIP device forward\|strixhalo-busy\|16\|capital-of-France\|2026-09-18]` |
+| `Ternary-Bonsai-2-27B-PTQ1_0` | Qwen3.8 | base-3 g128 (nb=28), folded | 5.95 GB `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|1BP v5\|cpu-host\|-\|-\|2026-09-18]` | fork oracle 5/5; device forward 5/5; per-layer cos >= 0.999 `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|CPU floor + HIP forward\|strixhalo-busy\|5\|capital-of-France\|2026-09-18]` | **10.15 tok/s** `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|HIP device forward\|strixhalo-busy\|16\|capital-of-France\|2026-09-18]` |
+| `Ternary-Bonsai-27B-PQ2_0` | Qwen3.6 | ternary g128 (nb=34) | 7.17 GB `[Ternary-Bonsai-27B-PQ2_0\|PQ2_0\|1BP v5\|cpu-host\|-\|-\|2026-09-18]` | fork oracle 5/5; device forward 5/5 `[Ternary-Bonsai-27B-PQ2_0\|PQ2_0\|CPU floor + HIP forward\|strixhalo-busy\|5\|capital-of-France\|2026-09-18]` | **12.20 tok/s** `[Ternary-Bonsai-27B-PQ2_0\|PQ2_0\|HIP device forward\|strixhalo-busy\|16\|capital-of-France\|2026-09-18]` |
+| `Ternary-Bonsai-2-27B-PQ2_0` | Qwen3.8 | ternary g128 (nb=34), folded | 7.14 GB `[Ternary-Bonsai-2-27B-PQ2_0\|PQ2_0\|1BP v5\|cpu-host\|-\|-\|2026-09-18]` | container byte-exact vs source GGUF; not yet oracle-gated `[Ternary-Bonsai-2-27B-PQ2_0\|PQ2_0\|1BP v5 verifier\|cpu-host\|-\|-\|2026-09-18]` | not measured |
 
-**Honesty tags.** Correctness results are on strixhalo gfx1151 and timing-immune: the
-fork's own *generated* tokens are matched 5/5 on all three packs by both the CPU floor
-and the full device forward, and the folded pack agrees per-layer with the in-repo numpy
-reference at cosine >= 0.999 across all 64 layers. The **tok/s figures were measured with
-other lanes active (load 3-20) and are relative only**; the lane's targets (>=42 / >=27 /
->=22 tok/s) require a quiet box and are not yet claimed. Kernel-level GEMV improved
-23->80 (Q1_0), 25->93 (PTQ1_0), 35->93 (PQ2_0) GB/s with the tile kernel - ~40-46% of
-the ~201 GB/s device triad ceiling. Plan of record:
+**Measured quality (PPL, timing-immune).** Perplexity over the WS-00 gate corpus at 128
+tokens through our own device forward:
+Q1_0 5.93, PQ2_0 6.08 `[Q1_0+PQ2_0\|Q1_0/PQ2_0\|HIP PrismEngine + .htok\|strixhalo-busy\|128\|WS-00 gate corpus\|2026-09-18]`
+PTQ1_0 5.69 `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|HIP PrismEngine + .htok\|strixhalo-busy\|128\|WS-00 gate corpus\|2026-09-18]`
+(Qwen3.8 base, so not like-for-like with the Qwen3.6 rows). The `.htok` tokenizer files are
+byte-identical across packs.
+
+**Honesty tags.** Correctness results are on strixhalo gfx1151 and timing-immune.
+
+- fork's own *generated* tokens matched 5/5 by both the CPU floor and the full device forward, all three packs
+  `[3-packs\|verbatim\|CPU floor + HIP forward\|strixhalo-busy\|5\|capital-of-France\|2026-09-18]`
+- per-layer cosine against the in-repo numpy streaming reference, all 64 layers
+  `[3-packs\|verbatim\|numpy streaming ref\|cpu-host\|5\|capital-of-France\|2026-09-18]`:
+  min 1.000000 PTQ1_0 / 0.999979 PQ2_0 / 1.000000 Q1_0 `[3-packs\|verbatim\|numpy streaming ref\|cpu-host\|5\|capital-of-France\|2026-09-18]`
+- kernel-level GEMV, tile kernel (Q1_0 23->80, PTQ1_0 25->93, PQ2_0 35->93) GB/s
+  `[3-packs\|verbatim\|HIP prism_gemv_tile.hip\|strixhalo-unknown\|-\|synthetic x\|2026-09-18]`
+  = 40-46% of the device triad ceiling `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|-\|-\|2026-09-18]`
+
+The **tok/s figures above were measured with other lanes active and are relative only** (`strixhalo-busy`);
+they are **not** gate numbers. The lane's targets >=42 / >=27 / >=22 tok/s `[P3-gate-target\|3-packs\|spec\|n/a\|-\|-\|2026-09-18]`
+require a quiet box: at 2026-09-18 12:40Z two peer NPU engines were live and the device triad read
+`139.3-170.0 GB/s `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|-\|-\|2026-09-18]` against `201-219 GB/s idle `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|-\|-\|2026-09-18]`,
+so **the P3 gate is NOT YET MEASURED** and a ~6 min exclusive window is requested.
+Results of record with the full tag set: [tests/prism/PRISM_RESULTS.md](../../tests/prism/PRISM_RESULTS.md),
+enforced by `tests/prism/check_honesty_tags.py`. Plan of record:
 [docs/plans/prism-bonsai-27b-custom-build.md](../plans/prism-bonsai-27b-custom-build.md).
 
 **See also:** [block-scaled ternary format](../research/block-scaled-ternary-format.md) · [benchmarks SSOT](../wiki/performance.md) · [all families](README.md)

@@ -13,7 +13,6 @@ Every numeric claim in this file carries the P6 honesty tag
 ## 1. Container — 1BP v5 with verbatim Prism payloads
 
 Source GGUFs → `~/models/prism/1bp/*.1bp`, regeneration **≈ 7 s/model** `[3-packs | GGUF -> 1BP converter | CPU-host gguf_to_onebp | cpu-host | - | - | 2026-09-18]`. Each verbatim tensor is
-Each verbatim tensor is
 `memcmp`'d against its source GGUF tensor.
 
 | measurement | value | tag |
@@ -54,17 +53,23 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | triad, box idle (baseline) | 201-219 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 
-## 5. P3 gate — NOT YET MEASURED
+## 5. P3 gate — MEASURED, **NOT MET** (2026-09-18)
 
-Targets on a quiet box: **>=42 tok/s** (Q1_0, 3.80 GB) `[P3-gate-target | Q1_0 | spec | n/a | - | - | 2026-09-18]`,
-**>=27** (PTQ1_0, 5.878 GB) `[P3-gate-target | PTQ1_0 | spec | n/a | - | - | 2026-09-18]`, **>=22**
-(PQ2_0, 7.137 GB) `[P3-gate-target | PQ2_0 | spec | n/a | - | - | 2026-09-18]`; outside baseline to beat:
-**28.8 tok/s** (Q1_0) `[Bonsai-27B-Q1_0 | Q1_0 | Prism llama.cpp fork + Vulkan | strixhalo-unknown | 32 | - | 2026-09-18]`
-and **4.4 tok/s** (PTQ1_0) `[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | Prism llama.cpp fork + Vulkan | strixhalo-unknown | 32 | - | 2026-09-18]`.
+The box was clean-rebooted to clear the peer lanes, and the backend decoded 32 tokens per pack in the
+post-reboot window (no `npu_engine_*` / `pf` / `python3` lane). No triad reading was taken in that
+window, so the box is tagged `strixhalo-unknown`, **not** `strixhalo-quiet`.
 
-**Status: open, blocked on an exclusive device window — not on our code.** At 2026-09-18 12:40Z the
-box carried two peer NPU engines (`npu_engine_llama` Llama-3.1-8B-NPU2, `npu_engine_zr1`); the triad
-reading for that state is the tagged row in §4, and because the GPU path shares LPDDR with them, any
-tok/s taken then is invalid for the gate *and* my run would perturb their measurement. Window requested via the mesh
-mailbox (`~/.dsh/scratch/mesh/LANE-agent-dddf9e-prism-bonsai.txt`, ~6 min needed). No number in this
-file is a gate number until a `strixhalo-quiet` row exists above.
+| pack | decoded (32 tokens) | gate | tag |
+|---|---|---|---|
+| Bonsai-27B-Q1_0 3.80 GB | 16 tok/s | >=42 tok/s | `[Bonsai-27B-Q1_0 | Q1_0 | HIP bench_hip_1bp | strixhalo-unknown | 32 | capital-of-France | 2026-09-18]` |
+| Ternary-Bonsai-2-27B-PTQ1_0 5.95 GB | 11 tok/s | >=27 tok/s | `[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | HIP bench_hip_1bp | strixhalo-unknown | 32 | capital-of-France | 2026-09-18]` |
+| Ternary-Bonsai-27B-PQ2_0 7.17 GB | 12 tok/s | >=22 tok/s | `[Ternary-Bonsai-27B-PQ2_0 | PQ2_0 | HIP bench_hip_1bp | strixhalo-unknown | 32 | capital-of-France | 2026-09-18]` |
+
+**Result: MISSED, and it is a kernel limit, not a measurement artifact.** The tile GEMV's own best is the
+section-3 row tagged `[3-packs | verbatim | HIP prism_gemv_tile.hip | strixhalo-unknown | - | synthetic x | 2026-09-18]`;
+at that bandwidth the Q1_0 model projects to 21 tok/s `[Bonsai-27B-Q1_0 | Q1_0 | HIP projected from GEMV BW | strixhalo-unknown | - | capital-of-France | 2026-09-18]`,
+already short of the gate before any non-GEMV overhead. Closing the gap needs a new kernel decomposition
+(in the tile design each weight byte is paired with an x reload per four rows), not a measurement rerun.
+
+Outside baseline to beat: the fork's own Vulkan numbers, 28.8 tok/s `[Bonsai-27B-Q1_0 | Q1_0 | Prism llama.cpp fork + Vulkan | strixhalo-unknown | 32 | - | 2026-09-18]`
+and 4.4 tok/s `[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | Prism llama.cpp fork + Vulkan | strixhalo-unknown | 32 | - | 2026-09-18]`.

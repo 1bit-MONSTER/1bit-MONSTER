@@ -44,6 +44,57 @@ def tags_on(line):
     return out
 
 
+# Shared docs that also carry this lane's claims. Scope rules, so that nothing here polices another
+# lane's rows in the same file:
+#   A) LINE scope  - the line itself names this lane (a pack name, "Prism ML", PrismEngine, prism_*).
+#      This catches the family doc's pack table, whose rows name the packs but not the family.
+#   B) PARA scope  - a prose paragraph naming the lane; table rows are excluded from this rule,
+#      because one markdown table is a single paragraph and would otherwise drag in other lanes.
+SCOPED = {
+    "docs/model-families/bitnet-bonsai.md": ("prism ml", "gateddeltanet", "prismengine", "prism_",
+                                             "bonsai-27b-q1_0", "ternary-bonsai-2-27b",
+                                             "ternary-bonsai-27b"),
+    "models/catalog/README.md": ("prism ml", "gateddeltanet", "prismengine", "prism_",
+                                 "bonsai-27b-q1_0", "ternary-bonsai-2-27b", "ternary-bonsai-27b"),
+    "research/TRACKING.md": ("prism ml bonsai 27b",),
+}
+
+
+def _in_scope_line(line, markers):
+    low = line.lower()
+    return any(m in low for m in markers)
+
+
+def check_scoped(root, fails):
+    """Honesty check for this lane's claims living in shared docs (see the scope rules above)."""
+    checked = 0
+    for rel, markers in SCOPED.items():
+        f = root / rel
+        if not f.exists():
+            continue
+        lines = f.read_text().split("\n")
+        para_start = 0
+        for i in range(len(lines) + 1):
+            at_break = i == len(lines) or not lines[i].strip()
+            if at_break:
+                blob = " ".join(lines[para_start:i]).lower()
+                para_hit = any(m in blob for m in markers)
+                for k in range(para_start, i):
+                    line = lines[k]
+                    hit = _in_scope_line(line, markers) or (
+                        para_hit and not line.lstrip().startswith("|")
+                    )
+                    if not hit or not NUM.search(line):
+                        continue
+                    checked += 1
+                    if not tags_on(line):
+                        fails.append(
+                            f"{rel}:{k+1}: lane claim without a 7-field tag: {line.strip()[:100]}"
+                        )
+                para_start = i + 1
+    return checked
+
+
 def main():
     if not DOC.exists():
         print(f"FAIL: {DOC} missing")
@@ -88,6 +139,8 @@ def main():
     for i, lo, hi in quiet_triads:
         if hi < 200.0:
             fails.append(f"{i}: strixhalo-quiet triad is only {lo}-{hi} GB/s (<200) — not quiet")
+
+    checked += check_scoped(DOC.resolve().parents[2], fails)
 
     print(f"honesty tags: {checked} numeric claims checked, "
           f"{len(quiet_triads)} quiet triad line(s), {len(fails)} violation(s)")
