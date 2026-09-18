@@ -25,7 +25,7 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO"
+cd "$REPO" || exit 2
 
 # Toolchain roots: overridable so this can be pointed at another install, and so the
 # "toolchain absent" path is testable.
