@@ -11,8 +11,15 @@ unified path (bf16 prefill + runlist decode), un-clamped with
 | model | native prefill | native TTFT | FLM prefill | FLM TTFT | prefill | TTFT |
 |---|---:|---:|---:|---:|---:|---:|
 | Qwen3-0.6B | **2024 t/s** (4046 ms) | **4.046 s** | 1830.17 | 4.245 s | **1.11x** | faster by 0.20 s |
+| Qwen3-1.7B | **1477 t/s** (5546 ms) | **5.546 s** | 1385.08 | 5.605 s | **1.07x** | faster by 0.06 s |
+| Qwen3-4B | **637 t/s** (12858 ms) | **12.858 s** | 514.00 | 15.096 s | **1.24x** | faster by 2.24 s |
+| Qwen3-VL-4B | **637 t/s** (12870 ms) | **12.870 s** | 548.61 | 14.136 s | **1.16x** | faster by 1.27 s |
 | Qwen3-8B | **464 / 425 t/s** (17641 / 19272 ms) | 17.641 / 19.272 s | 420.89 | 18.435 s | **1.01–1.10x** | −0.79 s / +0.84 s |
-| Llama-3.1-8B | **407 t/s** (20129 ms) | 20.129 s | 401.50 | 19.380 s | **1.01x** | **+0.75 s (0.96x)** |
+| Llama-3.1-8B | **407 t/s** (20129 ms) | 20.129 s | 401.50 | 19.380 s | **1.01x** | +0.75 s (0.96x) |
+
+**All six models prefilled exactly 8192 tokens and all six are at or above FLM on prefill at
+8k (1.01–1.24x); five of six are faster to first token**, Llama being a hair slower
+(20.13 s vs 19.38 s).
 
 **This contradicts `RESULTS-yardstick-defaultpath-2026-09-16.md`**, which recorded the 8k
 rows as native losing badly: Qwen3-8B 0.71x prefill with TTFT 35.2 s vs 23.5 s, Llama 0.62x
@@ -56,13 +63,12 @@ the 8k prefill/TTFT row without pretending a decode rate exists.
 
 ## Caveats
 
-- **Two native runs for 8B, one for 0.6B and Llama; one FLM run each.** Given the documented
+- **Two native runs for 8B, one for the other five; one FLM run each.** Given the documented
   session variance, this is a contradiction of the old record, not yet a replacement for it:
   the 8k clause needs a repeated, interleaved campaign (both arms in the same window, several
   runs) before it is claimed.
 - Llama again needed `NPU_UNIFIED=1 NPU_LAYER_ELF_DIR=<warm dir>`; its `/tmp/llama-elfs` cache
   was warm from the 1k runs, but 8k contexts are new, so the 20.1 s prefill includes
   on-demand ELF generation for the first run at that length.
-- 4B, VL-4B and 1.7B were not measured at 8k in this window.
 - The FLM legs run with the production `flm serve` present (npu_ab.sh warns), as in every
   previously recorded reference in this lane.
