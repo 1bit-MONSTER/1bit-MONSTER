@@ -14,9 +14,16 @@ on:
   push:
     paths:
       - '.github/workflows/bench.yml'
-      - 'engine/npu/src/**'
-      - 'engine/npu/kernel/**'
-      - 'engine/npu/xclbins/**'
+      # Everything the engine build READS, not only its sources. The job's own
+      # compile line also pulls headers from engine/npu/{include,generators},
+      # include/ and npu-infer/{include,src}, so a change to any of those moves
+      # the binary and has to re-run this. `engine/npu/**` additionally covers
+      # CMakeLists.txt and build_npu.sh — the two other descriptions of this same
+      # build (#2505) — which previously could change without firing this job at
+      # all. Checked by the paths-coverage rule in Testing/repo_docs_selfcheck.py.
+      - 'engine/npu/**'
+      - 'npu-infer/**'
+      - 'include/**'
 
 permissions:
   contents: read

@@ -14,7 +14,10 @@ Checks:
      (CLI subcommands, run.sh, make targets, referenced scripts)
   4. CI workflows that invoke a script which is not in the tree, and trigger
      `paths:` entries naming files that do not exist (a trigger for a file that
-     is not there can never fire — a gate that silently never runs)
+     is not there can never fire — a gate that silently never runs). The same
+     defect one step further in: a `paths:` block that does not cover the
+     sources and include directories the job's OWN compiler commands read, so
+     changing them cannot fire the job at all.
   5. `-D` variables in OUR configure commands that CMakeLists.txt does not
      declare (and that are not standard CMake variables) — a documented knob
      that does nothing;
@@ -277,6 +280,146 @@ def make_targets() -> set[str]:
     return targets
 
 
+# A compiler invocation inside a `run:` block. Note there is no `\b` after
+# `g++`: `+` is not a word character, so `\b` can never match there — an earlier
+# version of the coverage check below used one and silently matched nothing,
+# reporting every workflow as covered. It now also asserts it found inputs.
+CC_INVOCATION = re.compile(r"(?<![\w+-])(g\+\+|gcc|clang\+\+|clang)(?![\w+-])")
+
+# #2506 replaced bench.yml's hand-rolled g++ line with `cmake -S engine/npu ...`, so a
+# job can now build without naming a compiler anywhere in the workflow. Matching only
+# the compiler made this rule go silent on the one job it was written for: the check
+# still ran, parsed no inputs, and reported nothing — a gate that had stopped looking.
+CMAKE_CONFIGURE = re.compile(r"(?<![\w-])cmake(?![\w-])[^\n]*?\s-S\s+([^\s;|&'\"]+)")
+
+
+def strip_comments(body: str) -> str:
+    """Drop `#` comments from a workflow run body.
+
+    Not cosmetic. main's bench.yml explains the g++ line it replaced in a comment that
+    contains "g++", so scanning the raw body made this rule report "a compiler runs in
+    this job" about a job that no longer runs one — a finding that sends the reader to
+    the wrong line. `#` opens a comment at line start or after whitespace; shell
+    parameter expansions (`${x#y}`) keep theirs because there the `#` follows a word
+    character.
+    """
+    return "\n".join(re.sub(r"(^|\s)#.*$", "", l) for l in body.splitlines())
+
+
+def run_scripts(text: str):
+    """Yield (line_number, body) for every `run: |` / `run: >` block."""
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^(\s*)run:\s*[|>]", lines[i])
+        if not m:
+            i += 1
+            continue
+        parent = len(m.group(1))
+        start = i + 2                     # 1-based line number of the first body line
+        i += 1
+        body = []
+        while i < len(lines):
+            line = lines[i]
+            if line.strip() and (len(line) - len(line.lstrip())) <= parent:
+                break
+            body.append(line)
+            i += 1
+        yield start, "\n".join(body)
+
+
+def trigger_paths(text: str) -> list[str]:
+    """The entries of every `paths:` / `paths-ignore:` block in a workflow.
+
+    Comments and blank lines inside the block are skipped rather than ending it —
+    a comment there is normal (and this check's own author put one in bench.yml
+    and watched the parse return a single entry, which read as "nothing covered").
+    """
+    pats, lines, i = [], text.splitlines(), 0
+    while i < len(lines):
+        if not re.match(r"^\s*paths(-ignore)?:", lines[i]):
+            i += 1
+            continue
+        i += 1
+        while i < len(lines):
+            line = lines[i]
+            if re.match(r"^\s*#", line) or not line.strip():
+                i += 1
+                continue
+            m = re.match(r"^\s*-\s*['\"]?([^'\"\s]+)", line)
+            if not m:
+                break
+            pats.append(m.group(1))
+            i += 1
+    return pats
+
+
+def compiled_inputs(script: str) -> set[str]:
+    """In-repo sources and -I directories a script's compiler commands read."""
+    joined, cur = [], ""
+    for line in script.splitlines():
+        # Join backslash continuations first: the sources sit on continuation
+        # lines that do not themselves contain the compiler's name.
+        cur += line.rstrip()
+        if cur.endswith("\\"):
+            cur = cur[:-1] + " "
+            continue
+        joined.append(cur)
+        cur = ""
+    if cur:
+        joined.append(cur)
+    found: set[str] = set()
+    for cmd in joined:
+        if not CC_INVOCATION.search(cmd):
+            continue
+        for tok in cmd.split():
+            if tok.startswith("-I"):
+                d = tok[2:].strip("\"'")
+                if d and not d.startswith("/") and d != ".":
+                    found.add(d)
+            elif re.search(r"\.(cpp|cc|c)$", tok):
+                p = tok.strip("\"'\\")
+                if not p.startswith("/") and (ROOT / p).exists():
+                    found.add(p)
+    return found
+
+
+def cmake_inputs(script: str) -> set[str]:
+    """The build description a `cmake -S <dir>` invocation reads.
+
+    A CMake build's source list lives in CMakeLists.txt, not in the workflow, so the
+    file is the in-repo input: if it can change without firing the job, the job's
+    result is stale for exactly the reason this check exists. The sources it names
+    are covered by the same glob that covers the file."""
+    found: set[str] = set()
+    for line in script.splitlines():
+        for m in CMAKE_CONFIGURE.finditer(line):
+            d = m.group(1).strip("\"'")
+            if d.startswith("/"):
+                continue
+            cm = ROOT / d / "CMakeLists.txt"
+            if cm.exists():
+                found.add(str(cm.relative_to(ROOT)))
+    return found
+
+
+def path_covered(p: str, pats: list[str]) -> bool:
+    """Does any `paths:` entry cover `p`?
+
+    `dir/**` has to cover the directory itself as well as its contents: the check
+    is fed both compiled sources and `-I` directories, and `-Iengine/npu` is as
+    much an input as `engine/npu/src/x.cpp`.
+    """
+    for pat in pats:
+        if pat == p:
+            return True
+        if pat.endswith("/**"):
+            base = pat[:-3]
+            if p == base or p.startswith(base + "/"):
+                return True
+    return False
+
+
 def main() -> int:
     mode = "all" if "--all" in sys.argv else "gate"
     findings: list[tuple[str, int, str]] = []
@@ -401,6 +544,37 @@ def main() -> int:
     for wf in (ROOT / ".github/workflows").glob("*.yml"):
         lines = wf.read_text(encoding="utf-8", errors="replace").splitlines()
         in_paths = False
+
+        # Check 4, second half: a `paths:` block is a subscription, so it has to
+        # cover what the job compiles — including the include directories, since
+        # a header change moves the build just as much as a source change.
+        text = "\n".join(lines)
+        pats = trigger_paths(text)
+        if pats:
+            saw_build, inputs, first_cc = False, set(), 1
+            for start, script in run_scripts(text):
+                script = strip_comments(script)
+                cc = CC_INVOCATION.search(script)
+                cm = CMAKE_CONFIGURE.search(script)
+                if not (cc or cm):
+                    continue
+                if not saw_build:
+                    first_cc = start
+                saw_build = True
+                if cc:
+                    inputs |= compiled_inputs(script)
+                if cm:
+                    inputs |= cmake_inputs(script)
+            if saw_build and not inputs:
+                findings.append((str(wf.relative_to(ROOT)), first_cc,
+                                 "a build runs in this job but no in-repo input was "
+                                 "parsed — the coverage check below would be vacuous"))
+            for p in sorted(inputs):
+                if path_covered(p, pats):
+                    continue
+                findings.append((str(wf.relative_to(ROOT)), first_cc,
+                                 f"build input not covered by the paths: trigger: {p}"))
+
         for i, line in enumerate(lines, 1):
             if re.match(r"^\s*paths(-ignore)?:", line):
                 in_paths = True
