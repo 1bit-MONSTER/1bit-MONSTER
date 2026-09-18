@@ -32,6 +32,10 @@ int prism_gemv_tile_f32(const void*, const float*, float*, int, int, int, void*)
 int prism_gemv_dense_f32(const float*, const float*, float*, int, int, void*);
 int prism_quant_q8_f32(const float*, int, int8_t*, void*, void*);
 int prism_gemv_dp4a_f32(const void*, const int8_t*, const void*, float*, int, int, int, void*);
+int prism_gemv_dp4a_multi4_f32(const void*, const void*, const void*, const void*,
+                               float*, float*, float*, float*,
+                               int, int, int, int, int, int, int, int, int, int,
+                               const int8_t*, const void*, void*);
 int prism_conv1d_silu_f32(const float*, const float*, float*, float*, int, int, void*);
 int prism_l2norm_heads_f32(float*, int, int, void*);
 int prism_gbeta_f32(const float*, const float*, const float*, const float*, float*, float*, int, void*);
@@ -133,10 +137,12 @@ public:
             rot(d_xn_, sgH_, d_xr_, H, 0);
 
             if (linear[l]) {
-                matvec(L(l, "blk.%d.attn_qkv.weight"), d_xr_, d_qkv_);
-                matvec(L(l, "blk.%d.attn_gate.weight"), d_xr_, d_z_);
-                matvec(L(l, "blk.%d.ssm_alpha.weight"), d_xr_, d_a_);
-                matvec(L(l, "blk.%d.ssm_beta.weight"), d_xr_, d_b_);
+                {   // four matrices share d_xr_: one quant + one launch
+                    const std::string nm[4] = {L(l, "blk.%d.attn_qkv.weight"), L(l, "blk.%d.attn_gate.weight"),
+                                               L(l, "blk.%d.ssm_alpha.weight"), L(l, "blk.%d.ssm_beta.weight")};
+                    float* yp[4] = {d_qkv_, d_z_, d_a_, d_b_};
+                    matvec_multi(nm, yp, 4, d_xr_);
+                }
                 if (prism_conv1d_silu_f32(d_qkv_, vec(L(l, "blk.%d.ssm_conv1d.weight")), conv_state_[l], d_conv_, CD, 3, nullptr)) return -1;
                 if (prism_l2norm_heads_f32(d_conv_, NK, HK, nullptr)) return -1;
                 if (prism_l2norm_heads_f32(d_conv_ + KD, NK, HK, nullptr)) return -1;
@@ -151,9 +157,12 @@ public:
                 matvec(L(l, "blk.%d.ssm_out.weight"), d_cr_, d_out_);
                 if (prism_add_f32(d_h_, d_out_, H, nullptr)) return -1;
             } else {
-                matvec(L(l, "blk.%d.attn_q.weight"), d_xr_, d_q_);
-                matvec(L(l, "blk.%d.attn_k.weight"), d_xr_, d_kb_);
-                matvec(L(l, "blk.%d.attn_v.weight"), d_xr_, d_vb_);
+                {   // q/k/v share d_xr_
+                    const std::string nm[3] = {L(l, "blk.%d.attn_q.weight"), L(l, "blk.%d.attn_k.weight"),
+                                               L(l, "blk.%d.attn_v.weight")};
+                    float* yp[3] = {d_q_, d_kb_, d_vb_};
+                    matvec_multi(nm, yp, 3, d_xr_);
+                }
                 if (prism_split_qgate_f32(d_q_, d_qs_, d_gt_, NH, HD, nullptr)) return -1;
                 if (prism_qk_norm_rope_f32(d_qs_, d_kb_, vec(L(l, "blk.%d.attn_q_norm.weight")),
                                            vec(L(l, "blk.%d.attn_k_norm.weight")),
@@ -171,8 +180,11 @@ public:
             HC(hipMemcpy(d_yn_, d_h_, H * 4, hipMemcpyDeviceToDevice));
             if (prism_rmsnorm_f32(d_yn_, vec(L(l, "blk.%d.post_attention_norm.weight")), H, nullptr)) return -1;
             rot(d_yn_, sgH_, d_yr_, H, 0);
-            matvec(L(l, "blk.%d.ffn_gate.weight"), d_yr_, d_gate_);
-            matvec(L(l, "blk.%d.ffn_up.weight"), d_yr_, d_up_);
+            {   // gate/up share d_yr_ (the fork's ncols_dst fusion)
+                const std::string nm[2] = {L(l, "blk.%d.ffn_gate.weight"), L(l, "blk.%d.ffn_up.weight")};
+                float* yp[2] = {d_gate_, d_up_};
+                matvec_multi(nm, yp, 2, d_yr_);
+            }
             if (prism_silu_mul_f32(d_gate_, d_up_, NF, nullptr)) return -1;
             rot(d_gate_, sgF_, d_gr_, NF, 0);
             matvec(L(l, "blk.%d.ffn_down.weight"), d_gr_, d_down_);
@@ -218,6 +230,28 @@ private:
         if (!has_transform) { if (in != out) HC(hipMemcpy(out, in, (size_t)width * 4, hipMemcpyDeviceToDevice)); return; }
         if (prism_hadamard_fwht_f32(in, sgn, out, width, block, inverse, nullptr)) { std::fprintf(stderr, "PrismEngine: fwht %d failed\n", width); std::abort(); }
     }
+    // Several weight matrices fed from ONE activation row: one quant, one launch. This is the
+    // fork's vec_dot_*_multi<ncols_dst> idea (one activation quant shared by several matvecs).
+    void matvec_multi(const std::string* names, float** ys, int n, const float* x) {
+        PrismGpuTensor* G[4] = {nullptr, nullptr, nullptr, nullptr};
+        for (int i = 0; i < n; i++) { up(names[i]); G[i] = &g_[names[i]]; }
+        bool dp4a_ok = true;
+        for (int i = 0; i < n; i++) dp4a_ok &= (G[i]->nb == 18 || G[i]->nb == 34 || G[i]->nb == 28);
+        if (!dp4a_ok || G[0]->cols != G[n - 1]->cols) {   // not a shared-x dp4a group
+            for (int i = 0; i < n; i++) matvec(names[i], x, ys[i]);
+            return;
+        }
+        const int cols = G[0]->cols;
+        if (prism_quant_q8_f32(x, cols, d_q8_, d_ds_, nullptr)) { std::fprintf(stderr, "PrismEngine: quant failed\n"); std::abort(); }
+        const int rc = prism_gemv_dp4a_multi4_f32(
+            G[0]->p, n > 1 ? G[1]->p : nullptr, n > 2 ? G[2]->p : nullptr, n > 3 ? G[3]->p : nullptr,
+            ys[0], n > 1 ? ys[1] : nullptr, n > 2 ? ys[2] : nullptr, n > 3 ? ys[3] : nullptr,
+            G[0]->rows, n > 1 ? G[1]->rows : 0, n > 2 ? G[2]->rows : 0, n > 3 ? G[3]->rows : 0,
+            n, cols, G[0]->nb, n > 1 ? G[1]->nb : 0, n > 2 ? G[2]->nb : 0, n > 3 ? G[3]->nb : 0,
+            d_q8_, d_ds_, nullptr);
+        if (rc) { std::fprintf(stderr, "PrismEngine: multi-gemv failed\n"); std::abort(); }
+    }
+
     void up(const std::string& n) {
         if (g_.count(n)) return;
         const OnebpTensor* te = t(n);

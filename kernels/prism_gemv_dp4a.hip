@@ -127,6 +127,45 @@ __device__ __forceinline__ float dot_ptq1_128(const uint8_t* bq, const int8_t* q
     return __half2float(*reinterpret_cast<const __half*>(bq + 26)) * acc;
 }
 
+// Runtime layout dispatch for the fused variant (a matrix has a single nb, so the branch
+// is uniform across a block).
+__device__ __forceinline__ float prism_dot_nb(const uint8_t* blk, const int8_t* q8,
+                                              const __half* ds, int nb) {
+    if (nb == 18) return dot_q1_128(blk, q8, ds);
+    if (nb == 34) return dot_pq2_128(blk, q8, ds);
+    return dot_ptq1_128(blk, q8, ds);
+}
+
+// Up to four weight matrices that share ONE activation row, dotted against ONE q8_1
+// quantization of it, in ONE launch. Extracted from the fork's vec_dot_ptq1_0_q8_1_multi
+// (used there for gate/up): the saving is the per-matrix quant kernel and launch, not the dot.
+__global__ void prism_gemv_dp4a_multi4_kernel(
+        const uint8_t* __restrict__ W0, const uint8_t* __restrict__ W1,
+        const uint8_t* __restrict__ W2, const uint8_t* __restrict__ W3,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2, float* __restrict__ y3,
+        int rows0, int rows1, int rows2, int rows3, int n, int cols,
+        int nb0, int nb1, int nb2, int nb3,
+        const int8_t* __restrict__ q8, const __half* __restrict__ ds) {
+    const int m = blockIdx.y;
+    if (m >= n) return;
+    const uint8_t* W = (m == 0) ? W0 : (m == 1) ? W1 : (m == 2) ? W2 : W3;
+    float* y = (m == 0) ? y0 : (m == 1) ? y1 : (m == 2) ? y2 : y3;
+    const int rows = (m == 0) ? rows0 : (m == 1) ? rows1 : (m == 2) ? rows2 : rows3;
+    const int nb = (m == 0) ? nb0 : (m == 1) ? nb1 : (m == 2) ? nb2 : nb3;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int r = blockIdx.x * (blockDim.x >> 5) + warp;
+    if (r >= rows) return;
+    const int bpr = cols >> 7;
+    const uint8_t* row = W + (size_t)r * bpr * nb;
+    float acc = 0.f;
+    for (int b = lane; b < bpr; b += 32) {
+        acc += prism_dot_nb(row + (size_t)b * nb, q8 + (size_t)b * 128, ds + (size_t)b * 4, nb);
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffffffffffull, acc, off);
+    if (lane == 0) y[r] = acc;
+}
+
 // One warp per output row; lane l owns blocks l, l+32, ... of the row.
 template <int NB>
 __global__ void prism_gemv_dp4a_kernel(const uint8_t* __restrict__ W, const int8_t* __restrict__ q8,
@@ -160,6 +199,26 @@ extern "C" int prism_quant_q8_f32(const float* x, int n, int8_t* q8, void* ds, v
 }
 
 // y = W.x for the Prism Q1_0 (nb=18) and PQ2_0 (nb=34) layouts via int8 dp4a.
+extern "C" int prism_gemv_dp4a_multi4_f32(
+        const void* W0, const void* W1, const void* W2, const void* W3,
+        float* y0, float* y1, float* y2, float* y3,
+        int rows0, int rows1, int rows2, int rows3, int n, int cols,
+        int nb0, int nb1, int nb2, int nb3,
+        const int8_t* q8, const void* ds, void* stream) {
+    if (n < 1 || n > 4 || cols <= 0 || (cols & 127) || !q8 || !ds) return 1;
+    int mx = rows0;
+    if (n > 1 && rows1 > mx) mx = rows1;
+    if (n > 2 && rows2 > mx) mx = rows2;
+    if (n > 3 && rows3 > mx) mx = rows3;
+    dim3 g((mx + 7) / 8, n);
+    prism_gemv_dp4a_multi4_kernel<<<g, 256, 0, (hipStream_t)stream>>>(
+        (const uint8_t*)W0, (const uint8_t*)W1, (const uint8_t*)W2, (const uint8_t*)W3,
+        y0, y1, y2, y3, rows0, rows1, rows2, rows3, n, cols, nb0, nb1, nb2, nb3,
+        q8, (const __half*)ds);
+    HIP_CHECK(hipGetLastError());
+    return 0;
+}
+
 extern "C" int prism_gemv_dp4a_f32(const void* W, const int8_t* q8, const void* ds, float* y,
                                    int rows, int cols, int nb, void* stream) {
     if (!W || !q8 || !ds || !y || rows <= 0 || cols <= 0 || (cols & 127)) return 1;
