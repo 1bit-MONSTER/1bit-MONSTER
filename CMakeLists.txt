@@ -436,6 +436,7 @@ set(RCPP_SOURCES
     kernels/hadamard_rotate_butterfly.hip
     kernels/prism_hadamard_fwht.hip
     kernels/prism_gemv.hip
+    kernels/prism_gemv_row4.hip
     kernels/prism_gdn.hip
     kernels/prism_attn.hip
     kernels/prism_ops.hip
