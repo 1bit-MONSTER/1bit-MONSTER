@@ -52,58 +52,66 @@ of the bf16 default path**. The attention term does grow here too (360 → 5740 
 tokens, ~45% of the prefill at both ends), but the per-token cost stays flat because the GEMM
 term grows proportionally (171 → 1075 ms).
 
-## FLM references for the same contexts, and the resulting verdict
+## FLM references, the gates, and what each row may claim
 
 `flm bench` does not exist in this build, so FLM's on-box numbers come from the yardstick's
 own server path with the native lane skipped:
 
 ```
-bash ~/npu-ab/npu_ab.sh --model qwen3_4b --flm-tag qwen3:4b --engine .../npu_engine_qwen3_4b \
-  --q4nx ~/.config/flm/models/Qwen3-4B-NPU2/model.q4nx \
-  --tokenizer ~/.config/flm/models/Qwen3-4B-NPU2/tokenizer.json \
+bash ~/npu-ab/npu_ab.sh --model <model> --flm-tag <tag> --engine ... --q4nx ... --tokenizer ... \
   --prompt /tmp/p_<ctx>.txt --ctx-k <k> --decode-tokens 8 --reps 1 --skip-native
 ```
 
-| ctx | lane | prefill t/s | TTFT | decode t/s | correctness gate |
-|---:|---|---:|---:|---:|---|
-| 1k | native bf16 | **653** | **1.568 s** | **20.0** | bf16 == runlist stream ([576 3840 315 24231]) |
-| 1k | FLM on-box (FLM v1.0.4) | 495.95 | 1.979 s | 18.51 | FLM-TEXT-OK |
-| 8k | native bf16 | **636** | **12.875 s** | **13.9** | run completed, rc=0 |
-| 8k | FLM on-box | 570.16 | 13.610 s | 13.54 | FLM-TEXT-OK |
+### 1k — GATED, and the verdict stands
 
-**Qwen3-4B's bf16 default path meets the criterion-(c) shape at both measured contexts:
-prefill 1.32x / 1.12x FLM, TTFT faster by 0.41 s / 0.74 s, decode 1.08x / 1.03x.** This is the
-second model after Qwen3-0.6B for which no criterion-(c) clause is refused, and the first in
-the H=2560 family.
+| lane | prefill t/s | TTFT | decode t/s |
+|---|---:|---:|---:|
+| Qwen3-4B native bf16 | **653** | **1.568 s** | **20.0** |
+| Qwen3-4B FLM on-box (v1.0.4) | 495.95 | 1.979 s | 18.51 |
+| Qwen3-VL-4B native bf16 | **650** | **1.576 s** | 13.9 |
+| Qwen3-VL-4B FLM on-box | 501.91 | 1.946 s | **18.57** |
 
-Caveats, stated because they bound what this row claims:
+Gate for both native rows: the bf16 arm and the runlist arm, on the identical id file,
+emit the identical stream — `[1] 576  [2] 3840  [3] 315  [4] 24231` (and the bf16 arm
+continues `44295 22148 5812 2973`). Qwen3-4B's runlist prefill at 1024 is 59475 ms
+(58 ms/token) and VL-4B's is 57420 ms (56 ms/token) — 37x the bf16 prefill.
 
-- **Input equality here is weaker than I1.** Both arms consumed the same source passage and
-  the same token count (1024 / 8192), but FLM went through `npu_ab.sh`'s own tokenizer
-  (`prompt_tokens=37759 -> ctx_tokens=8192`) while the native arm consumed `/tmp/p_<ctx>.txt`
-  ids directly. The byte-identity assertion I1 covers the oracle scoreboard, not this pair; a
-  strict single-stream comparison would need FLM to accept the id file.
-- `npu_ab.sh` warns that the production `flm serve qwen3.6-moe:35b-a3b` was already running
-  (1 pre-existing process), so the FLM leg is not on a pristine box. The native leg is
-  unaffected (it is a different process and the same warning applied to every previously
-  recorded FLM reference in this lane).
-- **The 8k prompt prefilled 8185 tokens, not 8192** (`=== Prefill 8185 [bf16] ===`, no
-  warning). 8192 was requested and the file holds exactly 8192 ids; the 7-token shortfall is
-  recorded as observed, unexplained. It makes the native 8k row *slightly* favourable
-  (7 tokens less prefill work) and does not change the 1.12x margin's direction.
+Verdict: **Qwen3-4B meets the criterion-(c) clause at 1k** — prefill 1.32x FLM, TTFT faster
+by 0.41 s, decode 1.08x. **Qwen3-VL-4B does not**: prefill 1.29x and TTFT faster by 0.37 s,
+but decode is **0.75x FLM** (13.9 vs 18.57 tok/s). The two H=2560 variants do not behave
+alike on decode.
 
-## The correctness gate (same bytes, same invocation)
+### 8k — MEASURED BUT UNGATED; no parity claim is made
 
-The bf16 arm was run on the runlist gate arm's exact ids file, and both emit the same stream:
+| lane | prefill t/s | TTFT | decode t/s |
+|---|---:|---:|---:|
+| Qwen3-4B native bf16 (8185 tokens) | 636 | 12.875 s | 13.9 |
+| Qwen3-4B FLM on-box (8192 tokens) | 570.16 | 13.610 s | 13.54 |
+
+Those numbers would read as native ahead on all three, but **the gate fails and the
+comparison is confounded**, for two independently verified reasons, so per invariant I3 the
+row is refused as parity evidence:
 
 ```
-bf16    (NPU_PREFILL_BF16=1):  [1] 576  [2] 3840  [3] 315  [4] 24231  [5] 44295 …
-runlist (NPU_RUNLIST=1):       [1] 576  [2] 3840  [3] 315  [4] 24231
+input: prompt 8192 tokens -> 8185 (max_seq_len 4096: the KV window and the per-ctx ELFs
+       are built for 4096; raise with NPU_PROMPT_MAX)        <- bf16 arm: 7 tokens short
+
+[runlist] build ctx=8194 failed
+[runlist] whole-layer path failed (rc=1); falling back to split path
+  I8Ctx: xclbin init failed: No such file or directory 'engine/npu/xclbins/final_i8_G_K2560_N9728.xclbin'
+FAIL G                                                     <- gate arm: fails, rc=1
 ```
 
-So the 4B bf16 row carries the same gate the 0.6B row did. (`g4_1k.log` also shows the
-runlist prefill at 1024 tokens is 59475 ms / 58 ms per prompt token — 38x the bf16 prefill's
-1.53 ms — which is the reason the default path prefers bf16 for prefill.)
+- The native bf16 row prefilled **8185 of 8192** tokens, so it is not the same computation
+  as FLM's 8192-token prompt. The engine names its own knob: `NPU_PROMPT_MAX`.
+- The runlist gate arm **cannot run at 8k**: the whole-layer build fails at `ctx=8194` and the
+  fallback then dies on a missing **i8** tile, `final_i8_G_K2560_N9728.xclbin` (the H=2560
+  `GU_split=1` G tile has no i8 build — only the bf16 one). So there is no gated comparand at
+  8k for this model, and the runlist's own 8k behaviour is an open defect.
+
+Both causes are named and fixable; neither is fixed here. A re-run with `NPU_PROMPT_MAX`
+raised and the i8 G tile built (or the per-ctx ELF window extended past 8192) would make the
+8k row gateable.
 
 ## Status of criterion (c) after this
 
@@ -111,13 +119,15 @@ runlist prefill at 1024 tokens is 59475 ms / 58 ms per prompt token — 38x the 
 |---|---|---|---|
 | Qwen3-0.6B | yes, 1.01–1.34x @1k–8k | faster 1k–4k, −2% @8k | yes |
 | Qwen3-1.7B | yes, 1.03–1.34x | faster 1k–4k, −2% @8k | no, 0.64–0.98x |
-| Qwen3-4B | **yes**, 1.32x @1k / 1.12x @8k | **faster** by 0.41 s @1k, 0.74 s @8k | **yes**, 1.08x / 1.03x |
+| Qwen3-4B | **yes @1k** 1.32x; 8k ungated | faster by 0.41 s @1k; 8k ungated | **yes @1k** 1.08x; 8k ungated |
 | Qwen3-8B | yes @1k 4.09x, no @8k 0.71x | 3.9x faster @1k, slower @8k | yes |
 | Llama-3.1-8B | yes @1k 3.89x, no @8k 0.62x | 3.8x faster @1k, slower @8k | — |
-| Qwen3-VL-4B | shares 4B's tile set; not measured here | — | — |
+| Qwen3-VL-4B | **yes @1k** 1.29x | faster by 0.37 s @1k | **no @1k** 0.75x |
 
-Criterion (c) as written remains **unmet**, but this document removes two of its three
-blockers: the H=2560 shape blocker is refuted, and 4B now has a gated verdict — all three
-metrics at or above FLM at both measured contexts. What is left is the one real remaining
-problem: **8B and Llama invert by 8k on prefill/TTFT** (0.71x and 0.62x) while their decode
-stays ahead, and Qwen3-VL-4B is unmeasured though it shares 4B's tile set and shape.
+Criterion (c) as written remains **unmet**. What this document changes is the *shape* of the
+remaining gap: the H=2560 "blocked by mixed columns" cell is refuted, Qwen3-4B now has a
+**gated** 1k verdict at or above FLM on all three metrics, and Qwen3-VL-4B has a gated 1k
+verdict that **fails the decode clause** (0.75x). The remaining blockers are now: the
+8B/Llama 8k prefill/TTFT inversion (0.71x / 0.62x) with decode ahead; the 4B/VL-4B 8k row,
+which is ungated until `NPU_PROMPT_MAX` and the missing i8 `G_K2560_N9728` tile or the
+per-ctx ELF window are addressed; and VL-4B's decode deficit.
