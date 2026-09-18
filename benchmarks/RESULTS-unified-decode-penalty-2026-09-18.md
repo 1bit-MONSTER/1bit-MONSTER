@@ -1,0 +1,72 @@
+# The unified decode penalty: 3.3 ms/token, device-side, in the bf16→runlist KV handoff
+
+Goal `mu35shsg-i3hlyi`, criterion (c). Follows
+`RESULTS-decode-window-warmup-2026-09-18.md`, which showed the native decode is ~1–7%
+behind FLM at a warm-up-free window and that this is now the clause (c) fails on.
+
+This localises that shortfall to one place, and shows it is recoverable: **the runlist
+decode executes ~3.3 ms/token faster when the KV it reads was written by the runlist prefill
+than when it was written by the bf16 prefill** — same engine binary, same prompt, same decode
+length, only the prefill path different.
+
+## Measurement
+
+Qwen3-0.6B, `/tmp/p_1k.txt` (1024 ids), `NPU_RUNLIST_STATS=1`, decode 16 tokens:
+
+| prefill path | device exec / token | host build / token | decode | prefill |
+|---|---:|---:|---:|---:|
+| bf16 (unified, default) | **15.46–15.94 ms** | 1.34–1.97 ms | 17.1 ms/tok (**59** tok/s) | 0.55 ms/token |
+| runlist (NPU_RUNLIST=1) | **12.48–12.50 ms** | 1.43–1.83 ms | 12.2 ms/tok (**82** tok/s) | 14 ms/token |
+
+And at 32 decode tokens for the comparable rows:
+
+| configuration (1k) | decode | FLM on-box |
+|---|---:|---:|
+| pure runlist (runlist prefill + runlist decode) | **80 tok/s** | 75.25 |
+| unified (bf16 prefill + runlist decode) | 69.9 tok/s | 75.25 |
+
+**The host side is identical** (build ~1.5 ms/token in both), so the difference is entirely
+device execution: the runlist's per-token kernels do ~3.3 ms more work, or wait ~3.3 ms
+longer, when the KV BO was produced by the bf16 prefill.
+
+## Why this matters for criterion (c)
+
+The pure runlist decode (80 tok/s at 1k) **beats FLM (75.25)**. The default path does not
+(69.9), and the default path is the one the criterion measures because its prefill/TTFT are
+the reason it is the default (0.535 ms/prompt-token against the runlist's 14 ms).
+
+So the decode clause is not blocked by the decode kernels; it is blocked by the **handoff**.
+Recovering those 3.3 ms/token would make the default path's decode >= FLM *while keeping*
+prefill at 1.33x and TTFT faster at 1k — i.e. it would close criterion (c) for Qwen3-0.6B
+outright, and likely for the H=2560 pair (which shows the same 0.99x at 1k).
+
+## Candidate mechanisms (named, not tested)
+
+The bf16 prefill drives the captured FLM attention ELF (`Bf16Mm::run_attn`) and writes
+`kv_caches[l][0].k/v`; the runlist path writes its KV through the per-ctx whole-layer ELF.
+Both then hand over to the same `RuntimeLayerEngine` decode, so the difference is in what the
+decode reads:
+
+1. **KV layout/quantisation**: if the bf16 prefill's KV is stored in a wider or differently
+   packed form than the runlist ELF expects, every decode step's KV read spans more memory
+   (or a per-step repack happens on device). The `KV_REGION` knob (`NPU_ATTN_KV_REGION`) and
+   the `AttnCtx` N-split work in `RESULTS-family-attn-ctx-adapter-2026-09-16.md` are the
+   existing body of knowledge on this layout.
+2. **KV length/alignment**: the bf16 prefill caps at 8185/8161 of the requested tokens
+   (`NPU_PROMPT_MAX`), so the runlist session may be advancing a position counter that does
+   not match the KV actually present, costing a padded row read per step.
+3. **BO residency**: the unified path holds the bf16 context BOs alive alongside the runlist
+   session (the engine's own note: "the bf16 prefill block … hands its final hidden and its KV
+   to the runlist session and `_exit()`s from there"), so the decode may contend for device
+   memory/banks it does not need.
+
+The cheapest discriminator is (1): dump the first 4 KB of the KV BO after each prefill and
+compare the two byte streams for the same prompt and position — a `NPU_ATTN_DUMP`-style
+comparison the `AttnCtx` work already has hooks for.
+
+## Status
+
+Criterion (c) remains unmet. What changed here is that its remaining decode shortfall is now
+a **named, ~3.3 ms/token device-side handoff cost with a measured beat-FLM target behind it**,
+rather than "native decode is a few percent slower". That is a bounded engineering target,
+not a mystery.
