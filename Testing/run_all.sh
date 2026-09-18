@@ -15,18 +15,55 @@ fail=0; total=0; skip=0
 # compile line omitted src/hrx_inprocess.cpp, so it could not have linked. Nothing
 # noticed, because nothing ran it. This fails the moment another one appears —
 # either wire it into this script (or a workflow), or say above why it is manual.
+#
+# A comment is not an invocation. The corpus is this script plus the workflows,
+# and this script's own text NAMES the orphans it exists to report ("Two
+# selfchecks sat here invoked by nothing (hrx_backend_selfcheck.cpp, …)") — so
+# grepping the raw text made the tripwire pass on the prose describing the bug.
+# Measured: with both invocations deleted and those comments left alone it still
+# printed "✓ every Testing/*_selfcheck.* is invoked". Comments are stripped
+# below, and the control at the end of this block fails the run if a comment
+# ever counts again.
+strip_comments_stream() {
+    sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#.*$//'
+}
+
+# selfcheck_orphans <corpus> <file...> — the basenames no line of <corpus> names.
+# The corpus arrives as an argument rather than through a pipe so the comparison
+# can be run against a synthesized corpus below; piping it into `grep -q` also
+# made printf die of SIGPIPE once per file ("Broken pipe" on stderr, up to 25
+# times a run) as soon as grep found its match.
+selfcheck_orphans() {
+    local corpus="$1" f b out=""
+    shift
+    for f in "$@"; do
+        b="$(basename "$f")"
+        case "$corpus" in
+            *"$b"*) ;;
+            *) out="$out $b" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 total=$((total+1))
-_orphans=""
-_corpus="$(cat Testing/run_all.sh .github/workflows/*.yml 2>/dev/null)"
-for _f in Testing/*_selfcheck.*; do
-    _b="$(basename "$_f")"
-    printf '%s' "$_corpus" | grep -q -- "$_b" || _orphans="$_orphans $_b"
-done
+_corpus="$( { cat Testing/run_all.sh .github/workflows/*.yml; } 2>/dev/null | strip_comments_stream )"
+_orphans="$(selfcheck_orphans "$_corpus" Testing/*_selfcheck.*)"
 if [ -n "$_orphans" ]; then
     echo "✗ selfcheck wiring: nothing invokes:$_orphans"
     fail=$((fail+1))
 else
     echo "✓ selfcheck wiring (every Testing/*_selfcheck.* is invoked)"
+fi
+# Control: a selfcheck named ONLY inside a comment must still be reported. The
+# first version of this tripwire passed this case, which is how it was blind.
+_ctl_corpus="$(printf '# coming soon: Testing/hrx_backend_selfcheck.cpp\n' | strip_comments_stream)"
+_ctl="$(selfcheck_orphans "$_ctl_corpus" Testing/hrx_backend_selfcheck.cpp)"
+if [ -z "$_ctl" ]; then
+    echo "✗ selfcheck wiring control: a comment counted as an invocation — the check above is blind"
+    fail=$((fail+1))
+else
+    echo "✓ selfcheck wiring control (a comment is not an invocation)"
 fi
 
 run() {  # run <name> <compile-args...> -- <run-args...>
