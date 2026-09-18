@@ -73,6 +73,9 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 | triad sweep, same window, lower sizes AFTER the run - the box drifted mid-run | 180.9-192.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | triad, same box minutes after the leaked-harness kill | 202.5-217.1 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
 | triad, @agent-1141bd three-kernel window 15:45:05 (before -> after, 256 MB) | 213.0-214.3 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-quiet\|- \| - \| 2026-09-18]` |
+| bandwidth direction, same window (load 14): read-only 1024 MB | 210.4 GB/s | `[n/a\|probe\|HIP hip_bw_probe direction test\|strixhalo-busy\|- \| - \| 2026-09-18]` |
+| bandwidth direction, same window: write-only 1024 MB | 193.8 GB/s | `[n/a\|probe\|HIP hip_bw_probe direction test\|strixhalo-busy\|- \| - \| 2026-09-18]` |
+| bandwidth direction, same window: triad 128/256 MB | 207.9 / 202.9 GB/s | `[n/a\|probe\|HIP hip_bw_probe direction test\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | contaminant profile: Prism attribution harness, two processes | 98% CPU each, 43 minutes of CPU, zero device I/O, held the NPU device | `[Prism-lane\|leaked probe\|/tmp/attrib\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 | triad, 2 peer NPU engines live | 139.3-170.0 GB/s | `[n/a\|probe\|HIP hip_bw_probe\|strixhalo-busy\|- \| - \| 2026-09-18]` |
 
@@ -102,6 +105,22 @@ attributed. One reading correction: the symbol I quoted as `prism_gemv_warp4_ker
 unambiguous lane symbols, so the "this lane's tooling" conclusion survives the correction. What does not depend on
 attribution at all: tens of minutes of CPU with zero device I/O is a leftover rather than an experiment, and the
 decision to kill it was right without waiting for an owner.
+
+**Second contamination, same lane, opposite direction (peer notice, 15:56).** A lane benchmark
+(`/tmp/bh <Prism Q1_0 1BP> 32`) held the NPU device while a peer ran an 8k measurement, and their guard flagged it as
+a foreign holder and discarded the run rather than averaging it in. That is accepted as this lane's: no process of
+ours is running now (verified - the device is held by the production FLM server and by the NPU lane's own engine),
+and `/tmp/bh` was rebuilt at 16:13, so the harness is in active use rather than leaked. The difference from the
+earlier incident matters: this one was a *legitimate measurement* colliding with another lane's, not a spinning
+leftover, and the gap is etiquette rather than hygiene - our runs do not hold `/tmp/1bit-npu-device.lock`, do not
+declare themselves, and do not print the load or the holder set. Fix adopted for this lane: any device run takes
+the lock for its duration, prints its own holder set and the box load, and is timeout-bounded. The peer's guard
+(`benchmarks/c8k_guarded.sh`, plain /proc/<pid>/fd scanning) and their engine's contention warning with the
+strict and allow-contended knobs are available to copy; both live in their tree, not ours.
+
+**Host-side note, theirs and applicable to us:** a foreign `pf` at several thousand percent CPU plus clang builds
+inflated the host-bound side of their measurements by a factor of roughly three at load 23 against load 17. Any
+host-bound measurement in this lane records the load alongside the number.
 
 Two independent detectors caught this, which is the part worth keeping: the peer's run guard discarded the
 contaminated measurements, and this lane's own rule refused the quiet tag on the drifted window. Neither was
@@ -154,6 +173,22 @@ shader handles the same file, so the column is to be produced from our own path 
 third-party runtime in the loop - and ZINC becomes an optional cross-check if zig is ever installed. The earlier
 untracked log is excluded on three independent grounds (untracked, untagged, build absent), which is the same rule
 that keeps every other row in this file admissible.
+
+## 4e. Non-GEMV chase continues - GDN 4-way split (0c56243d6), cumulative movement, and no gate claim
+
+| measurement | value | tag |
+|---|---|---|
+| GDN recurrence, isolated A/B, both kernels built from the tree | 2-way 28.534 -> 4-way 20.666 us/layer = 1.370 -> 0.992 ms/token (1.38x) | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP gdn_recurrence isolated A/B \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+| why further splitting is legitimate rather than thrashing | 48 heads x 2 thread groups = 12288 threads on a 32-CU part, so the kernel was still latency-bound, not work-bound | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP gdn_recurrence geometry \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+| correctness of the 4-way split | per-thread traversal order unchanged, so per-element fp32 is bit-identical; fork oracle 5/5, compare_gen 11/11, GDN kernel and layer-0 parity gates PASS | `[3-packs \| verbatim \| HIP GDN 4-way vs 2-way \| strixhalo-quiet \| 11 \| capital-of-France \| 2026-09-18]` |
+| cumulative non-GEMV movement, all isolated and correctness-gated | gdn 2.215 -> 0.992 ms/token; rmsnorm 1.280 -> 0.655; FWHT 1.022 -> 0.801 | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP isolated A/B per kernel \| strixhalo-quiet \| 1 \| capital-of-France \| 2026-09-18]` |
+| gate claim from these wins | NONE - the four-gate windows since ran at load 11-26 and read 32/23/23 while their triad edges were 203.2/207.7, so they are loaded readings, not canonical ones | `[3-packs \| verbatim \| HIP backend, loaded windows \| strixhalo-busy \| 32 \| capital-of-France \| 2026-09-18]` |
+
+**No gate move is claimed, and the canonical set stands** (row above): the kernel work is real and correctness-gated,
+but the windows that could have shown it were loaded and the peer declined to read a gate value off them. That is
+the inherited rule working in the right direction - an isolated A/B is the instrument for a kernel claim, a window
+is the instrument for a gate claim - so the cumulative non-GEMV gains stay recorded as kernel facts awaiting a
+settled box.
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 
@@ -234,6 +269,7 @@ deliverable constraint is unchanged.
 | PTQ1_0 budget vs that dot | 48.7 ms needed, 37.0 ms allowed; needs >=160.6 GB/s aggregate | - | **infeasible on this dot** | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| derived \| strixhalo-quiet \| - \| - \| 2026-09-18]` |
 | Q1_0 in-situ split, same binary and window (weight GEMVs skipped by a diagnostic hook, reverted after) | full 29.5 ms/token; weight GEMVs 21.1 ms (= 180.1 GB/s aggregate); all other kernels + launches 8.4 ms | - | measured in-situ, not standalone | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP dp4a forward with and without GEMVs \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | Q1_0 dp4a bandwidth, standalone per tensor | lm_head 201.1, ssm_out 235.8, ffn_down 335.6, ffn_gate 249.6, ffn_up 246.0 GB/s | - | in-situ aggregate is 180.1 GB/s, so the loss is the activation-quant pass + dependency + launches, not the dot | `[Bonsai-27B-Q1_0 \| Q1_0 \| HIP prism_gemv_dp4a.hip \| strixhalo-quiet \| - \| synthetic x \| 2026-09-18]` |
+| Q1_0 GEMV against the achievable bound (read-only, directional) | floor 17.1 ms for 3.60 GB at 210 GB/s against ~20.0 ms measured = 86% of achievable; the gate needs ~95% | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived from hip_bw_probe direction test + rocprofv3 \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 | Q1_0 gate arithmetic (gate needs 23.81 ms/token) | GEMV at 250 GB/s = 15.2 ms, + 8.4 ms non-GEMV = 23.6 ms -> 42.4 tok/s; with non-GEMV at 2.5 ms -> 17.7 ms -> 56.5 tok/s | - | **reachable by either lever alone** | `[Bonsai-27B-Q1_0 \| Q1_0 \| derived \| strixhalo-quiet \| 32 \| capital-of-France \| 2026-09-18]` |
 
 **PQ2_0 is MET**, on a gate-clearing decode in a window whose triad cleared the quiet threshold on both sides, with the
@@ -449,6 +485,14 @@ correct for the old non-GEMV figure and is no longer correct.
 floor would clear the gate comes from *overlapping* in-situ durations: those terms sum below the wall itself (the rows
 above carry both figures), so the sum is low by construction. A projection built that way cannot be used as a gate value -
 only a window can move a gate - so the row above is recorded as arithmetic, not as a measurement of the gate.
+
+**The right bound was checked, not assumed, and it closes a question.** The triad mixes reads and writes, so it is
+not obviously the correct ceiling for a kernel that only reads weights; the directional test settles it - read-only
+bandwidth is essentially the same as the triad (rows in section 4), so a weight-streaming GEMV gets no extra
+headroom from the read/write asymmetry. Against that bound the Q1_0 GEMV achieves the fraction of the achievable
+rate recorded in the row above, and the gate needs it near-complete (or the non-GEMV cut further). That is the honest
+distance: not scheduling, not tiling, but the unpack costing the read stream a double-digit fraction of its
+throughput.
 
 **Five GEMV hypotheses retired by measurement, one left standing and explicitly unmeasured.** The quant pass, the
 dispatch cost, the in-situ tax, lane-tail/r4, and LDS staging have all been killed by data - the last
