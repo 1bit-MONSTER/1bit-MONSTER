@@ -52,19 +52,22 @@ __global__ void prism_gemv_tile_q1_kernel(const uint8_t* __restrict__ W, const f
     for (int b = 0; b < bpr; b++) {
         const size_t bo = (size_t)b * NB;
         const float4 xv = *reinterpret_cast<const float4*>(&x[((size_t)b << 7) + 4 * lane]);
-        const uint8_t y0 = R0[bo + b0], y1 = R1[bo + b0], y2 = R2[bo + b0], y3 = R3[bo + b0];
-        const float d0 = tile_h2f(R0 + bo);
-        const float d1 = tile_h2f(R1 + bo);
-        const float d2 = tile_h2f(R2 + bo);
-        const float d3 = tile_h2f(R3 + bo);
-#pragma unroll
-        for (int k = 0; k < 4; k++) {
-            const float xk = (k == 0) ? xv.x : (k == 1) ? xv.y : (k == 2) ? xv.z : xv.w;
-            a0 += (((y0 >> (sh + k)) & 1u) ? d0 : -d0) * xk;
-            a1 += (((y1 >> (sh + k)) & 1u) ? d1 : -d1) * xk;
-            a2 += (((y2 >> (sh + k)) & 1u) ? d2 : -d2) * xk;
-            a3 += (((y3 >> (sh + k)) & 1u) ? d3 : -d3) * xk;
-        }
+        // 1-bit dot via sum-over-set-bits: for one row, sum_k bit_k*x_k = 2*sp - s with
+        // s = x0+x1+x2+x3 and sp = sum of x where the bit is set. One shared s and four
+        // nibble extractions replace 16 per-element branch/select/FMA triples (measured
+        // 131.2 -> 142.2 GB/s on Q1_0, corr 1.0).
+        const float x0 = xv.x, x1 = xv.y, x2 = xv.z, x3 = xv.w;
+        const float s = x0 + x1 + x2 + x3;
+        const uint8_t m0 = (uint8_t)((R0[bo + b0] >> sh) & 0xFu), m1 = (uint8_t)((R1[bo + b0] >> sh) & 0xFu);
+        const uint8_t m2 = (uint8_t)((R2[bo + b0] >> sh) & 0xFu), m3 = (uint8_t)((R3[bo + b0] >> sh) & 0xFu);
+        const float sp0 = ((m0 & 1u) ? x0 : 0.f) + ((m0 & 2u) ? x1 : 0.f) + ((m0 & 4u) ? x2 : 0.f) + ((m0 & 8u) ? x3 : 0.f);
+        const float sp1 = ((m1 & 1u) ? x0 : 0.f) + ((m1 & 2u) ? x1 : 0.f) + ((m1 & 4u) ? x2 : 0.f) + ((m1 & 8u) ? x3 : 0.f);
+        const float sp2 = ((m2 & 1u) ? x0 : 0.f) + ((m2 & 2u) ? x1 : 0.f) + ((m2 & 4u) ? x2 : 0.f) + ((m2 & 8u) ? x3 : 0.f);
+        const float sp3 = ((m3 & 1u) ? x0 : 0.f) + ((m3 & 2u) ? x1 : 0.f) + ((m3 & 4u) ? x2 : 0.f) + ((m3 & 8u) ? x3 : 0.f);
+        a0 += tile_h2f(R0 + bo) * (2.f * sp0 - s);
+        a1 += tile_h2f(R1 + bo) * (2.f * sp1 - s);
+        a2 += tile_h2f(R2 + bo) * (2.f * sp2 - s);
+        a3 += tile_h2f(R3 + bo) * (2.f * sp3 - s);
     }
     for (int off = 16; off > 0; off >>= 1) {
         a0 += __shfl_down_sync(0xffffffffffffffffull, a0, off);
