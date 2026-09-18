@@ -94,3 +94,42 @@ That is a better test than the live `/tmp/attrib` case, because the live case di
 between two checks (the two processes had exited by the time the rebuilt binary was ready) —
 which is itself the point: the contamination is transient and unattended, so the instrument has
 to be deterministic.
+
+## Second contamination axis: host CPU load (the "conv+other" term is host work)
+
+The device guard above is necessary and not sufficient. The 8k native prefill of a **small**
+model is dominated by host work, not by the array: for Qwen3-0.6B the engine reports
+
+```
+Prefill:  4078ms (0.498 ms/tok) [GEMM  ..., attn 2434ms, conv+other  ~4000ms]
+```
+
+so ~2.4 s of attention on the device and ~4 s of host `conv+other`. When the host is busy that
+term is what moves. Measured on 2026-09-18 with a foreign `pf` process at ~3000–3100% CPU
+(~31 of 32 cores) plus rising `pi` activity — **all device-holder checks clean**:
+
+| 1-min load before | native 0.6B 8k prefill | ms/prompt-token |
+|---:|---:|---:|
+| 16.83 | 4078 ms | 0.498 |
+| 20.89 | 7268 ms | 0.887 (1.8x) |
+| 23.23 → 27.64 | 11238 ms | 1.372 (2.8x, still rising during the run) |
+
+The same command, the same binary, the same prompt, no foreign device holder. The engine's own
+breakdown shows the split: `attn` stays flat at ~2.4 s while `conv+other` tracks the load.
+
+**Consequences:**
+
+- **Every 8k native number in this lane needs the host load recorded beside it**, not just the
+  device holders. The "parity at 8k" reading in `RESULTS-8k-campaign-variance-2026-09-18.md` was
+  taken with the load unrecorded, so it is a measurement of the environment as much as of the
+  engine: at load ~17 the 0.6B prefill is 4078 ms; at load ~23 it is 11238 ms.
+- The earlier "native ahead at 8k" table and the older "0.62–0.71x inversion" table are both
+  compatible with load differences of this size — for the host-bound models (0.6B, and to a
+  lesser degree 1.7B) the load term can move the result by 2.8x on its own.
+- FLM is much less host-bound (its own numbers moved only 1628 → 1953 t/s across the same
+  runs), so **load bias favours FLM** on the small models: the native side degrades first.
+- **Rule:** `benchmarks/c8k_guarded.sh` now gates on both axes — foreign `accel0` holders
+  (transient `flm serve` instances included; only the production `qwen3.6-moe:35b-a3b` server
+  is excluded) and 1-min load (default ceiling 18, calibrated above), plus a load-rise check
+  across the run, and a settle loop that waits for a transient holder to release the device
+  before measuring.
