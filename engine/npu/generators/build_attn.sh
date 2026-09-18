@@ -45,6 +45,15 @@ $PYTHON "$G/n1_core_attn.py" -M 8 -K 128 -N "${NPU_ATTN_N:-512}" -m 8 -k 64 -n 1
     > "$W/design.mlir" 2>/dev/null
 cd "$W"  # link_with resolves attn_kernel.o from CWD
 export PATH=/home/bcloud/Xilinx/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
+# The python bindings and the aiecc binary MUST come from the same install. The
+# bindings here are install_tmp's (the emitted MLIR is in that revision's dialect
+# syntax) while aiecc was being taken from build_tmp -- a tree rebuilt later, whose
+# parser rejects it:
+#     build_tmp aiecc + install_tmp bindings -> "design.mlir:NNN:44: error: expected ')'"
+#     install_tmp aiecc + install_tmp bindings -> compiles, and reproduces the
+#                                                 shipped attn_insts.txt byte-for-byte
+# (AttnNL: the mismatch is a stale path in this script, NOT the local mlir-aie WIP
+# patch -- that was my misdiagnosis. Do not "fix" it by reverting the patch.)
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
 /home/bcloud/mlir-aie/install_tmp/bin/aiecc --peano="$P" --aietools="$M" \

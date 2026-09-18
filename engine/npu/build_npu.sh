@@ -4,6 +4,13 @@ set -euo pipefail
 
 SRCDIR="$(cd "$(dirname "$0")" && pwd)"
 BUILDDIR="$SRCDIR/build"
+# Create it here, not further down: the object files below are compiled to this
+# path long before the mkdir that used to sit next to the link step, so a fresh
+# clone or worktree — where build/ does not exist yet — died at the very first
+# compile with "can't create .../dequant_q4nx.o: No such file or directory".
+# It worked for years only because existing trees already had the directory.
+mkdir -p "$BUILDDIR"
+REPO_ROOT="$(cd "$SRCDIR/../.." && pwd)"
 SRC="$SRCDIR/src/npu_engine_universal.cpp"
 DEQUANT="$SRCDIR/src/dequant_q4nx.cpp"
 DEQUANT_O="$BUILDDIR/dequant_q4nx.o"
@@ -16,10 +23,33 @@ INSTR_GEN_O="$BUILDDIR/gemm_npu_instructions.o"
 # (zaya_moe_cpu.h uses AVX2 for the host amax pass).
 ZAYA_DECODE="$SRCDIR/src/zaya_decode.cpp"
 ZAYA_DECODE_O="$BUILDDIR/zaya_decode.o"
+# Single-launch whole-layer per-ctx ELF path (#2080/#2150): RuntimeLayerEngine
+# bridge + npu-infer model loader + runtime_layer. model.c is C; the bridge and
+# runtime_layer.cpp are C++. Isolated TU: npu-infer's ModelConfig (common.h) must
+# NOT reach npu_engine_universal.cpp (name clash with engine's model_config.h).
+RUNLIST_BRIDGE="$SRCDIR/src/npu_runlist_bridge.cpp"
+RUNLIST_BRIDGE_O="$BUILDDIR/npu_runlist_bridge.o"
+# FLM bf16 GEMM bridge (dequant.xclbin + mm.xclbin via libgemm/libdequant) — the
+# prefill mm path. Built as a SEPARATE TU with the FLM headers (its Bf16Mm needs
+# FLM's lm_config/modules/npu_utils_xrt, which must NOT reach the main engine TU).
+FLM_ROOT="${FLM_ROOT:-/home/bcloud/.local/flm-v0946}"
+# v0.9.46 drop-in (task-4 MoE unblock): the v0.9.46 headers + the official v0.9.46
+# .deb libs (md5 39a6c36a) — the v1.0.x libs NaNs the MoE GDN.
+FLM_INC="${FLM_INC:-/home/bcloud/.local/flm-v0946/include}"
+FLM_LIB="${FLM_LIB:-/home/bcloud/.local/flm-v0946/lib/xrt}"
+BF16MM_BRIDGE="$SRCDIR/src/npu_engine_bf16_mm_bridge.cpp"
+BF16MM_BRIDGE_O="$BUILDDIR/npu_engine_bf16_mm_bridge.o"
+# FLM prefill bridge (libqwen3_npu::prefill — the prefill/TTFT measurement path)
+FLM_PREFILL_BRIDGE="$SRCDIR/src/flm_prefill_bridge.cpp"
+FLM_PREFILL_BRIDGE_O="$BUILDDIR/flm_prefill_bridge.o"
+RUNLIST_RT="$REPO_ROOT/npu-infer/src/runtime_layer.cpp"
+RUNLIST_RT_O="$BUILDDIR/npu_runlist_runtime.o"
+NPU_MODEL_C="$REPO_ROOT/npu-infer/src/model.c"
+NPU_MODEL_O="$BUILDDIR/npu_model.o"
+NPU_INFER_INC="$REPO_ROOT/npu-infer/include"
 
 # XRT headers at /usr/include, libs at system default path
 XRT_INC="/usr/include"
-REPO_ROOT="$(cd "$SRCDIR/../.." && pwd)"
 
 # Create the build dir up front: its FIRST use is the one-time compiles directly
 # below, not the model loop. With `set -e` and no dir, a tree that has never been
@@ -51,6 +81,30 @@ if [ ! -f "$ZAYA_DECODE_O" ] || [ "$ZAYA_DECODE" -nt "$ZAYA_DECODE_O" ]; then
         -o "$ZAYA_DECODE_O" "$ZAYA_DECODE"
 fi
 
+# One-time: compile the runlist whole-layer stack (model.c + runtime_layer + bridge)
+if [ ! -f "$NPU_MODEL_O" ] || [ "$NPU_MODEL_C" -nt "$NPU_MODEL_O" ]; then
+    echo "gcc -c -O3 -std=c11 -o $NPU_MODEL_O $NPU_MODEL_C"
+    gcc -c -O3 -std=c11 -I"$NPU_INFER_INC" -o "$NPU_MODEL_O" "$NPU_MODEL_C"
+fi
+if [ ! -f "$RUNLIST_RT_O" ] || [ "$RUNLIST_RT" -nt "$RUNLIST_RT_O" ]; then
+    echo "g++ -c -std=c++17 -O3 -o $RUNLIST_RT_O $RUNLIST_RT"
+    g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_RT_O" "$RUNLIST_RT"
+fi
+if [ ! -f "$RUNLIST_BRIDGE_O" ] || [ "$RUNLIST_BRIDGE" -nt "$RUNLIST_BRIDGE_O" ]; then
+    echo "g++ -c -std=c++17 -O3 -o $RUNLIST_BRIDGE_O $RUNLIST_BRIDGE"
+    g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE"
+fi
+# bf16 mm bridge (FLM headers + libgemm/libdequant at link time)
+if [ ! -f "$BF16MM_BRIDGE_O" ] || [ "$BF16MM_BRIDGE" -nt "$BF16MM_BRIDGE_O" ] || [ "$SRCDIR/src/npu_engine_bf16_mm.h" -nt "$BF16MM_BRIDGE_O" ]; then
+    echo "g++ -c -std=c++17 -O2 -o $BF16MM_BRIDGE_O $BF16MM_BRIDGE"
+    g++ -c -std=c++17 -O2 -I"$SRCDIR/src" -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$BF16MM_BRIDGE_O" "$BF16MM_BRIDGE"
+fi
+# flm prefill bridge (libqwen3_npu)
+if [ ! -f "$FLM_PREFILL_BRIDGE_O" ] || [ "$FLM_PREFILL_BRIDGE" -nt "$FLM_PREFILL_BRIDGE_O" ]; then
+    echo "g++ -c -std=c++17 -O2 -mavx2 -o $FLM_PREFILL_BRIDGE_O $FLM_PREFILL_BRIDGE"
+    g++ -c -std=c++17 -O2 -mavx2 -include climits -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$FLM_PREFILL_BRIDGE_O" "$FLM_PREFILL_BRIDGE"
+fi
+
 # Models to build
 MODELS=(
     "qwen3_0_6b"
@@ -74,12 +128,46 @@ MODELS=(
 )
 
 CXX="${CXX:-g++}"
+# Runlist-capable XRT 2.26.0 (exports xrt::runlist, #2150) at a dedicated
+# prefix. The system XRT 2.21.75 declares xrt::runlist but does not export it
+# (link fails), so prefer the scoped stack when present; fall back to system
+# XRT (which still builds the split path, just without runlist batching).
+XRT_RUNLIST_LIB="${XRT_RUNLIST_LIB:-/usr/local/xrt-runlist/lib}"
+if [ -f "$XRT_RUNLIST_LIB/libxrt_coreutil.so.2" ]; then
+    XRT_LIBS=(-L"$XRT_RUNLIST_LIB" -l:libxrt_coreutil.so.2 -l:libxrt_core.so.2 "-Wl,-rpath,$XRT_RUNLIST_LIB")
+else
+    XRT_LIBS=(-lxrt_coreutil -lxrt_core)
+fi
 # XRT uses shared libs (must come AFTER source on command line)
-LIBS=(-lxrt_coreutil -lxrt_core -laiebu -luuid -lm -ldl)
+LIBS=("${XRT_LIBS[@]}" -laiebu -luuid -lm -ldl -L"$FLM_LIB" -lgemm -ldequant -lqwen3_npu -lqwen3_6_moe_npu -lqwen3_5vl_npu -lq4_npu_eXpress -lmha -llm_head -lllama_npu -lgemma4e_npu -lphi4_npu -lnanbeige_npu -llfm2_npu "-Wl,-rpath,$FLM_LIB")
 CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$SRCDIR/generators" -I"$REPO_ROOT/include" -I"$XRT_INC")
-ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O")
+ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_BRIDGE_O" "$BF16MM_BRIDGE_O" "$FLM_PREFILL_BRIDGE_O")
 
 echo "=== Building NPU engine variants ==="
+
+# gen_layer_elfs — the on-demand per-context ELF generator the runtime shells
+# out to when a context is missing (RT_ELF_GEN, see runtime_layer.cpp
+# ensure_layer_kernel). Built here, next to the engine binaries, because the
+# bridge looks for it there: the shipped per-context ELF sets stop at ctx 2200,
+# and without a generator every prompt longer than that abandons the fast paths
+# and lands on the 112-launch split path (~2 tok/s instead of ~57).
+# It needs gemma_text_npu for its family switch, which LIBS above does not list.
+GEN_SRC="$REPO_ROOT/npu-infer/tools/gen_layer_elfs.cpp"
+GEN_BIN="$BUILDDIR/gen_layer_elfs"
+if [ -f "$GEN_SRC" ]; then
+    echo ""
+    echo "--- gen_layer_elfs -> $GEN_BIN ---"
+    if ! $CXX -O2 -std=c++17 -include climits "$GEN_SRC" -o "$GEN_BIN" \
+        -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I/usr/include/aiebu \
+        -L"$FLM_LIB" \
+        -lqwen3_npu -lllama_npu -lnanbeige_npu -lphi4_npu -lqwen3_6_moe_npu \
+        -lgemma4e_npu -lgemma_text_npu -llfm2_npu \
+        -lgemm -lmha -lq4_npu_eXpress -L/usr/local/lib -laiebu -lxrt_coreutil -lxrt_core \
+        -Wl,-rpath,"$FLM_LIB" 2>&1 | tail -5; then
+        echo "WARN: gen_layer_elfs did not build — contexts beyond the shipped" >&2
+        echo "      per-context ELF sets will not be generated on demand." >&2
+    fi
+fi
 
 for model in "${MODELS[@]}"; do
     binary="$BUILDDIR/npu_engine_$model"

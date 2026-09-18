@@ -1,0 +1,128 @@
+// flm_prefill_bridge.cpp — drive FastFlowLM's REAL qwen3_npu::prefill() for the
+// native engine's prefill/TTFT measurement (architectural change: stop
+// reimplementing FLM's mm.xclbin+attn.xclbin prefill with host float32 norms —
+// which diverges from the layer.xclbin decode at H>1024 — and orchestrate FLM's
+// own libqwen3_npu instead; the native runlist decode stays 1bit-MONSTER's).
+//
+// C-linkage bridge so npu_engine_universal.cpp never sees FLM's headers
+// (lm_config/npu_utils clash with the engine's vendored stubs).
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <memory>
+#include <chrono>
+#include "npu_utils/npu_utils_xrt.hpp"
+#include <xrt/xrt_device.h>
+#include "tensor_utils/q4_npu_eXpress.hpp"
+#include "models/qwen3/qwen3_npu.hpp"
+#include "models/qwen3_6_moe/qwen3_6_moe_npu.hpp"
+#include "models/llama/llama_npu.hpp"
+#include "models/gemma4e/gemma4e_npu.hpp"
+#include "models/phi4/phi4_npu.hpp"
+#include "models/nanbeige/nanbeige_npu.hpp"
+#include "models/lfm2/lfm2_npu.hpp"
+#include "models/qwen3_5vl/qwen3_5vl_npu.hpp"
+#include "lm_config.hpp"
+
+// utils::find_xclbin_path is provided by npu_engine_bf16_mm_bridge.cpp.
+
+static std::unique_ptr<xrt::device> g_dev;
+static std::unique_ptr<npu_xclbin_manager> g_npu;
+static std::unique_ptr<Q4NX> g_q4nx;
+static std::unique_ptr<causal_lm> g_model;
+
+// family selects the FLM model class (one per native-engine family).
+// MAX_L: 32768 for dense text models (32k sweep), 4096 for the v0.9.46 MoE.
+extern "C" int flm_prefill_init(const char* model_dir, const char* family) {
+    const char* root = getenv("FLM_ROOT");
+    setenv("FLM_XCLBIN_PATH",
+           root ? (std::string(root) + "/xclbins").c_str()
+                : "/home/bcloud/amd-oss/fastflowlm/src/xclbins", 0);
+    try {
+        LM_Config config;
+        config.from_pretrained(model_dir);
+        g_dev = std::make_unique<xrt::device>(0);
+        g_npu = std::make_unique<npu_xclbin_manager>(device_npu2, g_dev.get());
+        g_q4nx = std::make_unique<Q4NX>(model_dir);
+        const std::string fam = family ? family : "qwen3";
+        if (fam == "qwen3_6_moe")
+            g_model = std::make_unique<qwen3_6_moe_npu>(config, g_npu.get(), 4096);
+        else if (fam == "llama")
+            g_model = std::make_unique<llama_npu>(config, g_npu.get(), 32768);
+        else if (fam == "gemma4e")
+            g_model = std::make_unique<gemma4e_npu>(config, g_npu.get(), 32768);
+        else if (fam == "phi4")
+            g_model = std::make_unique<phi4_npu>(config, g_npu.get(), 32768);
+        else if (fam == "nanbeige")
+            g_model = std::make_unique<nanbeige_npu>(config, g_npu.get(), 32768);
+        else if (fam == "lfm2")
+            g_model = std::make_unique<lfm2_npu>(config, g_npu.get(), 32768);
+        else if (fam == "qwen3_5vl")
+            g_model = std::make_unique<qwen3_5vl_npu>(config, g_npu.get(), 4096);
+        else
+            g_model = std::make_unique<qwen3_npu>(config, g_npu.get(), 32768);
+        g_model->load_weights(*g_q4nx);
+    } catch (std::exception& e) {
+        fprintf(stderr, "[flm_prefill] init failed: %s\n", e.what());
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* prefill_ms) {
+    if (!g_model) return 1;
+    std::vector<int> prompt(ids, ids + n);
+    auto t0 = std::chrono::steady_clock::now();
+    auto out = g_model->prefill(prompt, nullptr);
+    auto t1 = std::chrono::steady_clock::now();
+    *prefill_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    if (out.size() < 2) { fprintf(stderr, "[flm_prefill] prefill returned %zu logits\n", out.size()); return 1; }
+    int best = 0;
+    for (size_t j = 1; j < out.size(); j++) if (out[j] > out[best]) best = (int)j;
+    if (getenv("FLM_DBG")) {
+        int top[5] = {0,0,0,0,0};
+        for (size_t j = 1; j < out.size(); j++) {
+            for (int k = 0; k < 5; k++) if (out[j] > out[top[k]]) { for (int m = 4; m > k; m--) top[m] = top[m-1]; top[k] = (int)j; break; }
+        }
+        const bf16* lg = out.data();
+        fprintf(stderr, "[flm_prefill] out=%zu best=%d top=%d,%d,%d,%d,%d | lg[0..7]=%.4g,%.4g,%.4g,%.4g,%.4g,%.4g,%.4g,%.4g\n",
+                out.size(), best, top[0], top[1], top[2], top[3], top[4],
+                (float)lg[0], (float)lg[1], (float)lg[2], (float)lg[3],
+                (float)lg[4], (float)lg[5], (float)lg[6], (float)lg[7]);
+    }
+    if (getenv("FLM_DUMP_KV")) {
+        // Dump the KV cache of the first full-attention layer (3) at pos 0,
+        // for a layer-by-layer diff against the native engine.
+        for (int layer = 3; layer <= 3; layer++) {
+            buffer<bf16> kc = g_model->get_k_cache(layer, 0);
+            buffer<bf16> vc = g_model->get_v_cache(layer, 0);
+            fprintf(stderr, "[flm_kv] layer=%d k=%zu v=%zu\n", layer, kc.size(), vc.size());
+            if (kc.size() >= 16) {
+                fprintf(stderr, "[flm_k] ");
+                for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", (float)kc[i]);
+                fprintf(stderr, "\n");
+            }
+            if (vc.size() >= 16) {
+                fprintf(stderr, "[flm_v] ");
+                for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", (float)vc[i]);
+                fprintf(stderr, "\n");
+            }
+        }
+    }
+    *boot_token = best;
+    return 0;
+}
+
+extern "C" int flm_decode_run(int token, int* next_token, double* decode_ms) {
+    if (!g_model) return 1;
+    auto t0 = std::chrono::steady_clock::now();
+    auto out = g_model->forward(token);
+    auto t1 = std::chrono::steady_clock::now();
+    *decode_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    int best = 0;
+    for (size_t j = 1; j < out.size(); j++) if (out[j] > out[best]) best = (int)j;
+    *next_token = best;
+    return 0;
+}

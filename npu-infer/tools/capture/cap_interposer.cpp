@@ -75,6 +75,87 @@ static std::set<std::pair<unsigned long, size_t>> g_bo_sizes;
 static std::set<std::pair<unsigned long, size_t>> g_extbo_sizes;
 static long g_seq = 0;
 static std::map<unsigned long, std::string> g_bo_labels;
+static std::set<size_t> g_seen_big;      // keyed by POINTER (not size) — see the dump site
+static std::map<size_t, int> g_big_per_size;  // pointer-dedup alone can still flood; cap per size
+
+// ---------------------------------------------------------------------------
+// BO lifetime registry — why this exists
+//
+// Every capture container in this file keys by the ADDRESS of an xrt::bo that
+// belongs to the RUNTIME, not to us: g_run_bo_ptrs (filled from
+// run::set_arg_at_index), g_bo_sizes (from xrt::bo::sync), g_extbo_sizes (from
+// xrt::ext::bo::bo) and g_act_bo / g_kv_bo. Those addresses are dereferenced
+// much later, inside runlist::execute() / runlist::wait() — but xrt::bo is a
+// HANDLE (detail::pimpl<bo_impl>, i.e. a shared_ptr) whose address says nothing
+// about its lifetime, and FLM binds temporaries for some arguments
+// (`run.set_arg(7, xrt::bo{...})`). By the time execute() walks the maps such an
+// object is gone, so `reinterpret_cast<xrt::bo*>(addr)->map()` reads freed
+// memory and dies at `xrt::bo::map()+163` (`mov (%rdi),%rax`).
+//
+// Reproduced twice on 2026-09-15: `flm bench nanbeige4.1:3b` at 00:29:49
+// (CAP_DIR=capnb_L1024) and again at 00:30:37 (capnb_L2048). Both runs stop
+// mid-loop at `RUNLIST 65: execute (pre-dump)` — after three PREINSTS dumps and
+// before the loop's `pre-dumped N insts BOs` terminator — i.e. on the next
+// address the loop dereferences. Those runs saw 114 distinct BO addresses and 11
+// run addresses, so owning them is bounded.
+//
+// Fix: whenever we hold a pointer to an object we KNOW is alive (we are inside
+// one of its own methods, or it was just handed to set_arg_at_index), keep an
+// owning COPY here under the same address the capture maps already use. A copy
+// shares the same bo_impl, so the impl and its buffer stay alive for as long as
+// we do; every later dereference goes through bo_from_addr() and uses the copy,
+// never the stale address. Containers and log/filename formats are unchanged.
+//
+// NOTE (2026-09-15): xrt::ext::bo derives from xrt::bo, so ownership of an
+// ext::bo address also keeps the base subobject valid. The copy is a slice of
+// the derived object, which is fine — size()/map() are base methods and the
+// shared bo_impl is what has to survive.
+// ---------------------------------------------------------------------------
+static std::map<size_t, xrt::bo> g_bo_owner;
+
+static void own_bo(const void* addr) {
+    if (!addr) return;
+    const xrt::bo* b = reinterpret_cast<const xrt::bo*>(addr);
+    auto it = g_bo_owner.find((size_t)addr);
+    if (it == g_bo_owner.end()) g_bo_owner.emplace((size_t)addr, *b);
+    else it->second = *b;   // same address reused by a newer BO: keep the newer one
+}
+
+// Owning copy for an address recorded earlier, or nullptr if it was never
+// registered while alive — callers must skip on nullptr rather than deref.
+static xrt::bo* bo_from_addr(const void* addr) {
+    if (!addr) return nullptr;
+    auto it = g_bo_owner.find((size_t)addr);
+    return it == g_bo_owner.end() ? nullptr : &it->second;
+}
+
+// ---------------------------------------------------------------------------
+// The run-keyed path owns its BOs DIRECTLY, keyed by the very (run, arg) slots
+// g_run_bo_ptrs already uses — this is the path the kernel-identification work
+// actually reads (the preinsts / arg3 / postrun dumps).
+//
+// The address registry above removes the crash but still resolves BY ADDRESS,
+// and on this path that is not enough: the runtime allocates fresh BOs per call
+// (the capture log shows a4 and a7 changing on every runlist), so a freed 1 MiB
+// slot is handed straight back for the next 1 MiB BO. An address recorded for an
+// older run key — and execute() walks EVERY run key, not just the current one —
+// can therefore resolve to a NEWER BO and dump the wrong buffer under the old
+// run's name. That is a silent wrong capture, which is the failure mode this
+// lane has already been burned by, so it is worth more than the crash fix.
+//
+// Owning the copy in the (run, arg) slot cannot alias: the slot holds exactly the
+// BO currently bound to that run and argument, and a stale different run key
+// keeps its own pinned copy.
+// ---------------------------------------------------------------------------
+static std::map<unsigned long, std::map<int, xrt::bo>> g_run_bos;
+
+// Owning BO for one (run, arg) slot, or nullptr if that slot was never bound.
+static xrt::bo* run_bo(unsigned long runkey, int arg) {
+    auto it = g_run_bos.find(runkey);
+    if (it == g_run_bos.end()) return nullptr;
+    auto a = it->second.find(arg);
+    return a == it->second.end() ? nullptr : &a->second;
+}
 
 static void ensure_log() {
     if (!g_log) {
@@ -128,10 +209,14 @@ extern "C" void _ZN3xrt2bo4syncE18xclBOSyncDirectionmm(void* self, int dir,
     // capture: the buffer handle is xrt::bo::get() at vtable+0x? — use the
     // xrt::bo public API through a reinterpreted object.
     try {
-        xrt::bo* bo = reinterpret_cast<xrt::bo*>(self);
+        // self is this xrt::bo, so it is provably alive right now: take ownership
+        // BEFORE recording the address — runlist::execute() dereferences it later.
+        own_bo(self);
+        xrt::bo* bo = bo_from_addr(self);
+        if (!bo) return;
         size_t bosz = bo->size();
         g_bo_sizes.insert({(unsigned long)self, bosz});
-        bool capture = true;  // capture ALL BO syncs (TXN insts + weight + act + kv)
+        bool capture = !getenv("CAP_NO_SYNC");  // gate: CAP_NO_SYNC keeps only runlist preinsts (i6) dumps — the per-sync 32MB kv writes fill /tmp on long runs
         if (capture) {
             const uint8_t* p = (const uint8_t*)bo->map();
             ensure_log();
@@ -161,19 +246,33 @@ extern "C" void _ZN3xrt3run16set_arg_at_indexEiRKNS_2boE(void* self, int idx, co
     if (!real_set_arg) real_set_arg = (set_arg_fn)dlsym(RTLD_NEXT, "_ZN3xrt3run16set_arg_at_indexEiRKNS_2boE");
     if (real_set_arg) real_set_arg(self, idx, bo);
     try {
+        // The caller's object is alive for the duration of this call, but NOT
+        // necessarily until runlist::execute() reads the address back out of
+        // g_run_bo_ptrs. The (run, arg) slot below owns a copy from here on and
+        // every later dereference on this path goes through run_bo(), so this
+        // path does not touch the address registry at all — which also stops
+        // g_bo_owner accumulating one owner per BO FLM ever binds.
         const xrt::bo* b = reinterpret_cast<const xrt::bo*>(bo);
+        g_run_bos[(unsigned long)self][idx] = *b;   // exact owner for this (run, arg)
         g_run_args[(unsigned long)self].push_back({idx, b->size()});
         g_run_bo_ptrs[(unsigned long)self][idx] = bo;
         ensure_log();
         fprintf(g_log, "SETARG %p idx=%d size=%zu bo=%p\n", self, idx, b->size(), (void*)bo);
-        // dump the idx3 BO (the runtime's insts BO per create_run: (3,0,0,insts,weight))
+        // Dump idx3. CORRECTED 2026-09-13: idx3 is NOT an instruction BO. The vendor's
+        // create_run (npu_utils_xrt.hpp:262-274) binds BOs at 3+i in CALLER order with no
+        // intrinsic meaning, and FLM's first BO is its ACTIVATION buffer -- 1 MB of float/
+        // bf16 data. A capture that labelled it "insts" sent a reader into a byte analysis
+        // of a data buffer looking for an instruction transaction header, so the file is
+        // now named arg3_* and the log says ARG3_DUMP. A real transaction starts with a
+        // structured header (layer_ctx1.txn begins 0001 0406 0801 ...); this file begins
+        // 14c3 1e41 4840 873f, which is bf16 data.
         if (idx == 3 && b->size() <= 2000000) {
             const uint8_t* pm = (const uint8_t*)b->map();
             char fn[256];
-            snprintf(fn, sizeof(fn), "%s/insts_%04ld_%zu.bin", CAP_DIR, g_seq, b->size());
+            snprintf(fn, sizeof(fn), "%s/arg3_%04ld_%zu.bin", CAP_DIR, g_seq, b->size());
             FILE* ff = fopen(fn, "wb");
             if (ff) { fwrite(pm, 1, b->size(), ff); fclose(ff); }
-            fprintf(g_log, "INSTS_DUMP -> %s\n", fn);
+            fprintf(g_log, "ARG3_DUMP -> %s (activation/data BO, NOT instructions)\n", fn);
         }
     } catch (...) {}
 }
@@ -199,6 +298,26 @@ extern "C" void _ZN3xrt3run5startEv(void* self) {
     for (auto& kv : g_run_args[(unsigned long)self])
         fprintf(g_log, "%d:%zu ", kv.first, kv.second);
     fprintf(g_log, "]\n");
+    // post-run dump of the kv BO (idx7, 32MB) — the runtime's KV write
+    if (getenv("CAP_POSTRUN_KV")) {
+        auto it = g_run_bo_ptrs.find((unsigned long)self);
+        if (it != g_run_bo_ptrs.end()) {
+            auto a7 = it->second.find(7);
+            if (a7 != it->second.end()) {
+                try {
+                    xrt::bo* bo = run_bo((unsigned long)self, 7);
+                    const uint8_t* p = bo ? (const uint8_t*)bo->map() : nullptr;
+                    if (p) {
+                        char fname[256];
+                        snprintf(fname, sizeof(fname), "%s/postrun_kv_%03d.bin", CAP_DIR, n);
+                        FILE* f = fopen(fname, "wb");
+                        if (f) { fwrite(p, 1, bo->size(), f); fclose(f); }
+                        fprintf(g_log, "POSTRUN_KV -> %s (%zu B)\n", fname, bo->size());
+                    }
+                } catch (...) {}
+            }
+        }
+    }
     // post-run dump of the act BO (idx3) — the layer's output written in-place
     if (getenv("CAP_POSTRUN_ACT")) {
         auto it = g_run_bo_ptrs.find((unsigned long)self);
@@ -206,8 +325,8 @@ extern "C" void _ZN3xrt3run5startEv(void* self) {
             auto a3 = it->second.find(3);
             if (a3 != it->second.end()) {
                 try {
-                    xrt::bo* bo = reinterpret_cast<xrt::bo*>(const_cast<void*>(a3->second));
-                    const uint8_t* p = (const uint8_t*)bo->map();
+                    xrt::bo* bo = run_bo((unsigned long)self, 3);
+                    const uint8_t* p = bo ? (const uint8_t*)bo->map() : nullptr;
                     if (p) {
                         char fname[256];
                         snprintf(fname, sizeof(fname), "%s/postrun_act_%03d_%zx.bin", CAP_DIR, n, (size_t)a3->second);
@@ -246,9 +365,25 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
                 const void* bop = ab.second;
                 if (bop == nullptr) continue;
                 try {
-                    xrt::bo* bo = reinterpret_cast<xrt::bo*>(const_cast<void*>(bop));
+                    xrt::bo* bo = run_bo(runkey, aidx);   // owned by the (run, arg) slot — cannot alias
+                    if (!bo) continue;   // slot never bound: skip instead of dereferencing a dead address
                     size_t bosz = bo->size();
-                    if (bosz > 3000000) continue;   // skip weight/kv BOs
+                    if (bosz > 3000000) {           // weight/kv BOs: dump once if CAP_DUMP_BIG
+                        if (!getenv("CAP_DUMP_BIG")) continue;
+                        // Dedup by POINTER, not by size. Keying by size kept only the FIRST BO of
+                        // each size, which is NOT the one the manifest names as arg4 -- so a
+                        // byte-level comparison against it silently diffed a third, same-sized
+                        // object (found in 25.1, which is why that diff is void). The manifest
+                        // reports the bound pointer, so the dumped file must carry it.
+                        // A per-size cap keeps this bounded: CAP_BIG_MAX (default 4), because a
+                        // 32-layer model otherwise writes 32 x 59 MB of same-sized weight BOs.
+                        if (g_seen_big.count((size_t)bop)) continue;
+                        int cap = 4;
+                        if (const char* e = getenv("CAP_BIG_MAX")) { cap = atoi(e); if (cap < 1) cap = 4; }
+                        if (g_big_per_size[bosz] >= cap) continue;
+                        g_seen_big.insert((size_t)bop);
+                        g_big_per_size[bosz]++;
+                    }
                     const uint8_t* p = (const uint8_t*)bo->map();
                     if (p) {
                         char fname[256];
@@ -269,10 +404,39 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
     fprintf(g_log, "RUNLIST %ld: execute\n", g_runlist_n);
     int n = 0;
     // ext::bo objects (the runtime's data/insts BOs) — dump the small ones
+    // plus the 32 MB kv BO (the runtime's per-layer KV cache)
     for (auto& kv : g_extbo_sizes) {
+        if (kv.second == 8388608 && getenv("CAP_MM_W")) {
+            try {
+                xrt::bo* mwb = bo_from_addr((const void*)kv.first);
+                const uint8_t* pm = mwb ? (const uint8_t*)mwb->map() : nullptr;
+                if (pm) {
+                    char fname[256];
+                    snprintf(fname, sizeof(fname), "%s/mmw_%03ld_%zx_%zu.bin", CAP_DIR, g_runlist_n, (size_t)kv.first, kv.second);
+                    FILE* f = fopen(fname, "wb");
+                    if (f) { fwrite(pm, 1, kv.second, f); fclose(f); }
+                    fprintf(g_log, "MMW -> %s\n", fname);
+                }
+            } catch (...) {}
+        }
+        if (kv.second == 33554432 && getenv("CAP_RUNLIST_KV")) {
+            try {
+                xrt::bo* kvb = bo_from_addr((const void*)kv.first);
+                const uint8_t* pm = kvb ? (const uint8_t*)kvb->map() : nullptr;
+                if (pm) {
+                    char fname[256];
+                    snprintf(fname, sizeof(fname), "%s/runlist_kv_%03ld_%zx.bin",
+                             CAP_DIR, g_runlist_n, (size_t)kv.first);
+                    FILE* f = fopen(fname, "wb");
+                    if (f) { fwrite(pm, 1, kv.second, f); fclose(f); }
+                    fprintf(g_log, "RUNLIST_KV -> %s\n", fname);
+                }
+            } catch (...) {}
+        }
         if (kv.second > 2000000) continue;
         try {
-            const uint8_t* pm = (const uint8_t*)reinterpret_cast<xrt::bo*>(kv.first)->map();
+            xrt::bo* xsb = bo_from_addr((const void*)kv.first);
+            const uint8_t* pm = xsb ? (const uint8_t*)xsb->map() : nullptr;
             if (pm) {
                 char fname[256];
                 snprintf(fname, sizeof(fname), "%s/extsmall_%03ld_%02d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, (size_t)kv.first, kv.second);
@@ -287,7 +451,8 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
         // coherent map with no sync — their BOs are small)
         if (kv.second < 1000000 && kv.second > 512) {
             try {
-                xrt::bo* bo = reinterpret_cast<xrt::bo*>(kv.first);
+                xrt::bo* bo = bo_from_addr((const void*)kv.first);
+                if (!bo) continue;
                 size_t bosz = bo->size();
                 const uint8_t* p = (const uint8_t*)bo->map();
                 char fname[256];
@@ -299,8 +464,11 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
             continue;
         }
         if (kv.second < 1000000) continue;
+        if (getenv("CAP_SKIP_BIG")) continue;
+        if (getenv("CAP_NO_SYNC")) continue;   // lean: preinsts (i6) only
         try {
-            xrt::bo* bo = reinterpret_cast<xrt::bo*>(kv.first);
+            xrt::bo* bo = bo_from_addr((const void*)kv.first);
+            if (!bo) continue;
             size_t bosz = bo->size();
             const uint8_t* p = (const uint8_t*)bo->map();
             char fname[256];
@@ -311,6 +479,125 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
         } catch (...) {}
     }
     fprintf(g_log, "RUNLIST %ld: dumped %d big BOs\n", g_runlist_n, n);
+}
+
+// ===== runlist::add hook — capture the EXACT per-forward run order =====
+static long g_add_n = 0;
+// Owning pointers into g_run_bos nodes (std::map nodes are stable), so the wait
+// hook holds the BO itself rather than an address that may have been reused.
+// The original address is kept alongside purely for filenames and log lines.
+static xrt::bo* g_act_bo = nullptr;         // last-seen arg idx=3 (act) BO
+static const void* g_act_bo_addr = nullptr;
+static void record_act_bo(const void* run) {
+    xrt::bo* b = run_bo((unsigned long)run, 3);
+    if (!b) return;
+    g_act_bo = b;
+    auto it = g_run_bo_ptrs.find((unsigned long)run);
+    if (it != g_run_bo_ptrs.end()) {
+        auto a3 = it->second.find(3);
+        if (a3 != it->second.end()) g_act_bo_addr = a3->second;
+    }
+}
+
+static xrt::bo* g_kv_bo = nullptr;          // last-seen arg idx=7 (kv) BO
+static const void* g_kv_bo_addr = nullptr;
+static void record_kv_bo(const void* run) {
+    xrt::bo* b = run_bo((unsigned long)run, 7);
+    if (!b) return;
+    g_kv_bo = b;
+    auto it = g_run_bo_ptrs.find((unsigned long)run);
+    if (it != g_run_bo_ptrs.end()) {
+        auto a7 = it->second.find(7);
+        if (a7 != it->second.end()) g_kv_bo_addr = a7->second;
+    }
+}
+typedef void (*rl_add_fn)(void*, const void*);
+static rl_add_fn real_rl_add = nullptr;
+extern "C" void _ZN3xrt7runlist3addERKNS_3runE(void* self, const void* run) {
+    if (!real_rl_add) real_rl_add = (rl_add_fn)dlsym(RTLD_NEXT, "_ZN3xrt7runlist3addERKNS_3runE");
+    if (real_rl_add) real_rl_add(self, run);
+    ensure_log();
+    record_act_bo(run);
+    record_kv_bo(run);
+    // resolve this run's args from the map
+    auto it = g_run_bo_ptrs.find((unsigned long)run);
+    fprintf(g_log, "RUNLIST_ADD run=%p rl=%p", run, self);
+    if (it != g_run_bo_ptrs.end()) {
+        for (auto& ab : it->second)
+            fprintf(g_log, " a%d=%p", ab.first, ab.second);
+    }
+    fprintf(g_log, "\n");
+}
+extern "C" void _ZN3xrt7runlist3addEONS_3runE(void* self, void* run) {
+    if (!real_rl_add) real_rl_add = (rl_add_fn)dlsym(RTLD_NEXT, "_ZN3xrt7runlist3addEONS_3runE");
+    if (real_rl_add) real_rl_add(self, run);
+    ensure_log();
+    record_act_bo(run);
+    record_kv_bo(run);
+    auto it = g_run_bo_ptrs.find((unsigned long)run);
+    fprintf(g_log, "RUNLIST_ADD(rv) run=%p rl=%p", run, self);
+    if (it != g_run_bo_ptrs.end()) {
+        for (auto& ab : it->second)
+            fprintf(g_log, " a%d=%p", ab.first, ab.second);
+    }
+    fprintf(g_log, "\n");
+}
+
+// ===== runlist::wait hook — dump the act BO AFTER the device completes =====
+typedef void (*rl_wait_fn)(void*, const void*);
+static rl_wait_fn real_rl_wait = nullptr;
+extern "C" void _ZNK3xrt7runlist4waitERKNSt6chrono8durationIlSt5ratioILl1ELl1000EEEE(void* self, const void* dur) {
+    if (!real_rl_wait) real_rl_wait = (rl_wait_fn)dlsym(RTLD_NEXT, "_ZNK3xrt7runlist4waitERKNSt6chrono8durationIlSt5ratioILl1ELl1000EEEE");
+    if (real_rl_wait) real_rl_wait(self, dur);
+    ensure_log();
+    fprintf(g_log, "RUNLIST wait done\n");
+    if (g_act_bo && !getenv("CAP_NO_SYNC")) {
+        try {
+            xrt::bo* bo = g_act_bo;
+            size_t bosz = bo->size();
+            const uint8_t* p = (const uint8_t*)bo->map();
+            if (p) {
+                char fname[256];
+                snprintf(fname, sizeof(fname), "%s/actpost_%03ld_%zx_%zu.bin", CAP_DIR, g_runlist_n, (size_t)g_act_bo_addr, bosz);
+                FILE* f = fopen(fname, "wb");
+                if (f) { fwrite(p, 1, bosz, f); fclose(f); }
+                fprintf(g_log, "ACTPOST runlist=%ld act=%p size=%zu -> %s\n", g_runlist_n, g_act_bo_addr, bosz, fname);
+            }
+        } catch (...) {}
+    }
+    if (g_kv_bo && !getenv("CAP_NO_SYNC")) {
+        try {
+            xrt::bo* bo = g_kv_bo;
+            size_t bosz = bo->size();
+            const uint8_t* p = (const uint8_t*)bo->map();
+            if (p) {
+                char fname[256];
+                snprintf(fname, sizeof(fname), "%s/kvpost_%03ld_%zx_%zu.bin", CAP_DIR, g_runlist_n, (size_t)g_kv_bo_addr, bosz);
+                FILE* f = fopen(fname, "wb");
+                if (f) { fwrite(p, 1, bosz, f); fclose(f); }
+                fprintf(g_log, "KVPOST runlist=%ld kv=%p size=%zu -> %s\n", g_runlist_n, g_kv_bo_addr, bosz, fname);
+            }
+        } catch (...) {}
+    }
+    // post-wait dump of ALL big ext::bo (complete per-layer kv/weight state)
+    if (!getenv("CAP_SKIP_BIG") && !getenv("CAP_NO_SYNC")) {
+        int n = 0;
+        for (auto& kv : g_extbo_sizes) {
+            if (kv.second <= 1000000) continue;
+            try {
+                xrt::bo* wpb = bo_from_addr((const void*)kv.first);
+                const uint8_t* pm = wpb ? (const uint8_t*)wpb->map() : nullptr;
+                if (pm) {
+                    char fname[256];
+                    snprintf(fname, sizeof(fname), "%s/waitpost_%03ld_%02d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, (size_t)kv.first, kv.second);
+                    FILE* f = fopen(fname, "wb");
+                    if (f) { fwrite(pm, 1, kv.second, f); fclose(f); }
+                    n++;
+                }
+            } catch (...) {}
+        }
+        fprintf(g_log, "WAITPOST runlist=%ld dumped %d big ext BOs\n", g_runlist_n, n);
+    }
 }
 
 // void xrt::run::set_arg_at_index(int, const void*) — scalar args (opcode/ninstr)
@@ -331,6 +618,9 @@ extern "C" void _ZN3xrt3ext2boC1ERKNS_6deviceEm(void* self, const void* dev, siz
     if (!real_extbo) real_extbo = (extbo_fn)dlsym(RTLD_NEXT, "_ZN3xrt3ext2boC1ERKNS_6deviceEm");
     if (real_extbo) real_extbo(self, dev, size);
     ensure_log();
+    // self is the ext::bo just constructed (ext::bo derives from xrt::bo), so the
+    // base subobject is alive now — own it before recording the address.
+    own_bo(self);
     g_extbo_sizes.insert({(unsigned long)self, size});
     fprintf(g_log, "EXTBO %p size=%zu\n", self, size);
     if (size <= 2000000) {

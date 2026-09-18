@@ -29,7 +29,9 @@ typedef struct {
     uint32_t npu_block_rows;   // 256 — each BO holds this many rows
     uint32_t npu_weight_bo_size; // 1048576 — 1MB per weight BO
     uint32_t npu_activation_bo_size; // 1048576 — 1MB per activation BO
-    uint32_t npu_kv_cache_bo_size; // 134217728 — 128MB per KV cache BO
+    uint32_t npu_kv_cache_bo_size; // 134217728 — 128MB per KV cache BO (UNIT: allocation,
+                                   // a capacity CEILING. It is deliberately larger than the
+                                   // layout below needs; do not read it as a token count.)
 } ModelConfig;
 
 static const ModelConfig QWEN3_0_6B_CONFIG = {

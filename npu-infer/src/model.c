@@ -73,7 +73,13 @@ int npu_weight_num_blocks(const TensorDesc* desc, const ModelConfig* config,
     int64_t i8_rows = desc->shape[0];
     int64_t logical_rows = i8_rows * 8192 / in_features;
     int n_rb = (int)((logical_rows + config->npu_block_rows - 1) / config->npu_block_rows);
-    int n_cb = (int)((in_features + config->npu_block_cols - 1) / config->npu_block_cols);
+    // Full-width blocks for wide weights (FFN down: in=3072 > block_cols):
+    // the K=3072 insts expect a [256, 3072] weight in ONE BO, so n_cb=1 and
+    // the block holds the whole width (issue #2006 / NPU_GEMM_FIX.md — the
+    // previous [256, 1024] slice layout made the down GEMM read 2048 columns
+    // past the 1 MB BO -> intermittent aie2_set_cmd_timeout).
+    int n_cb = (in_features > config->npu_block_cols) ? 1
+               : (int)((in_features + config->npu_block_cols - 1) / config->npu_block_cols);
     return n_rb * n_cb;
 }
 
@@ -100,19 +106,21 @@ int npu_dequant_block(void* out, const void* in,
     if (n_tile_cols <= 0) return 0;
     int64_t logical_rows = i8_rows * 8192 / in_features;
     int n_row_blocks = (int)((logical_rows + block_rows - 1) / block_rows);
-    int n_col_blocks = (int)((in_features + block_cols - 1) / block_cols);
+    int n_col_blocks = (in_features > block_cols) ? 1
+                       : (int)((in_features + block_cols - 1) / block_cols);
+    int block_width = (in_features > block_cols) ? in_features : block_cols;
     int rb = block_idx / n_col_blocks;      // row block
     int cb = block_idx % n_col_blocks;      // col block
     if (rb >= n_row_blocks || cb >= n_col_blocks) return 0;
     int64_t row_start = (int64_t)rb * block_rows;
-    int col_start = cb * block_cols;
+    int col_start = cb * block_width;
     int num_rows = (int)MIN64(logical_rows - row_start, block_rows);
-    int num_cols = (int)MIN64(in_features - col_start, block_cols);
+    int num_cols = (int)MIN64(in_features - col_start, block_width);
     if (num_rows <= 0 || num_cols <= 0) return 0;
 
     const uint8_t* data = (const uint8_t*)in;
     uint16_t* bf16_out = (uint16_t*)out;
-    memset(bf16_out, 0, (size_t)num_rows * block_cols * 2);
+    memset(bf16_out, 0, (size_t)num_rows * block_width * 2);
 
     for (int r = 0; r < num_rows; r++) {
         int64_t lr_global = row_start + r;
@@ -147,7 +155,7 @@ int npu_dequant_block(void* out, const void* in,
             // (the torch2aie/zaya convention W = q*scale + zp does NOT match
             // this file — it mis-dequantizes every element).
             float w = ((float)q - zp) * scale;
-            bf16_out[r * block_cols + c] = f32_to_bf16(w);
+            bf16_out[r * block_width + c] = f32_to_bf16(w);
         }
     }
     return num_rows * num_cols;
@@ -188,13 +196,58 @@ int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
 // runtime layout).
 // ===========================================================================
 #define NPU_TILE_BYTES 5120
-#define NPU_LAYER_TILES 1920       // q256+k128+v128+o256+up384+gate384+down384
-#define NPU_LAYER_BO_BYTES (NPU_LAYER_TILES * NPU_TILE_BYTES)  // 9830400
+
+
+// Tiles in a projection tensor. shape[0] is the ROW count and shape[1] is the row width IN
+// BYTES (a q4nx byte extent; for bf16 tensors shape[-1] counts elements, so the two must not
+// be conflated). A tile is NPU_TILE_BYTES = 5120 B. Every model until Gemma3-1B had
+// shape[1] == 5120, i.e. one row == one tile, so shape[0] was also the tile count and this
+// returns exactly shape[0]. Gemma3-1B has shape[1] == 1280 -- a quarter-tile row -- where
+// using shape[0] overstates the count 4x and every derived offset and BO size is wrong.
+// THE SAME RULE MUST BE USED EVERYWHERE a tile count is derived from a tensor: the source
+// read, the destination offsets, and the BO size. Fixing one of the three and not the others
+// moves the fault rather than removing it -- which is how this was found.
+int npu_desc_tiles(const TensorDesc* d) {
+    if (!d || d->ndim != 2) return 0;
+    long long rows = (long long)d->shape[0];
+    long long rb   = (long long)d->shape[1];
+    if (rows <= 0) return 0;
+    if (rb > 0 && rb != NPU_TILE_BYTES)
+        return (int)((rows * rb + NPU_TILE_BYTES - 1) / NPU_TILE_BYTES);
+    return (int)rows;
+}
 
 static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int G) {
-    const int S = G / 2;
+    // S is the HALF-GROUP length. It was G/2, which is integer division and therefore breaks
+    // for an ODD G: with G=9 (Gemma3-1B, H=1152 -> 1152/128 = 9) the map o -> i was not a
+    // permutation -- o=8 and o=0 both landed on source tile 0 -- so one tile was written twice
+    // and another never, silently corrupting the weights.
+    //
+    // (G+1)/2 is identical to G/2 for every EVEN G, so this is a no-op for every model that
+    // worked before (all of them have an even G on every projection), and a permutation for
+    // odd G as well. Verified by exhaustive permutation check for G = 8, 16, 20, 24, 54, 84
+    // (unchanged) and 9 (fixed).
+    //
+    // SECOND FIX (2026-09-14): that permutation check was run over the IN-GROUP domain
+    // o in [0, G), where the map IS a permutation for odd G. The full map runs over
+    // o in [0, n_tiles), and the in-group term was computed from the RAW o rather than
+    // from o % G, so it kept growing past the group instead of cycling inside it.
+    // For EVEN G that is harmless, because (o/2) % S + S*(o%2) is periodic with period
+    // 2S = G, so raw-o and o%G agree exactly. For ODD G, 2S = G+1 != G, so they diverge:
+    // at G=9, n=27 it emitted i = 27 = n_tiles (out of range) and a duplicate.
+    // Using o % G makes the in-group term periodic with period G for every G. It is
+    // BIT-IDENTICAL for every even G (checked for G = 8, 16, 54 over full and ragged
+    // tails), so it is a provable no-op for every model that worked before, and for G=9,
+    // n=27 the map becomes a clean permutation (0 duplicates, 0 out-of-range, max 26).
+    //
+    // Caveat, stated because it matters: this is the minimal rule that restores the necessary
+    // permutation property, NOT a derivation of the vendor's layout -- the reorder was only
+    // ever verified byte-exact for G=8 and G=16 (both powers of two; see the note on
+    // npu_pack_layer_bo). Odd G needs a device run behind it before it is called correct.
+    const int S = (G + 1) / 2;
     for (int o = 0; o < n_tiles; o++) {
-        int i = G * (o / G) + (o / 2) % S + S * (o % 2);
+        const int og = o % G;   // in-group position; raw `o` grows past the group for odd G
+        int i = G * (o / G) + (og / 2) % S + S * (og % 2);
         memcpy(dst + (size_t)o * NPU_TILE_BYTES,
                src + (size_t)i * NPU_TILE_BYTES, NPU_TILE_BYTES);
     }
@@ -202,48 +255,472 @@ static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int
 
 // Pack one projection's reordered tiles into the layer BO at `tile_offset`.
 static void npu_pack_proj(uint8_t* bo, const TensorDesc* desc, ModelWeights* mw,
-                          int tile_offset, int G) {
+                          int tile_offset, int G, const char* name) {
     if (desc->ndim != 2) return;
-    int n_tiles = (int)desc->shape[0];
+    // shape[0] is the ROW count and shape[1] is the row width IN BYTES (this is a q4nx
+    // byte extent, not an element count -- for bf16 tensors shape[-1] counts elements,
+    // which is why the two must not be conflated).
+    //
+    // A tile is NPU_TILE_BYTES = 5120 B. Every model until Gemma3-1B had shape[1] == 5120,
+    // i.e. one row == one tile, and shape[0] was therefore the tile count as well. Gemma3-1B's
+    // tensors have shape[1] == 1280 -- a QUARTER-tile row -- so shape[0] (576 for q_proj) is
+    // FOUR TIMES the tile count (144), and npu_reorder_tiles read 4x the tensor's bytes and
+    // segfaulted. Deriving the count from the byte extent is IDENTICAL whenever
+    // shape[1] == 5120 (checked for Qwen3-0.6B: 256*5120/5120 == 256) and correct otherwise.
+    int n_tiles = npu_desc_tiles(desc);
+    if (getenv("RT_PACK_DEBUG"))
+        fprintf(stderr, "  pack %-5s n_tiles=%4d G=%3d off_tile=%5d ndim=%d shape0=%d shape1=%d\n",
+                name ? name : "?", n_tiles, G, tile_offset,
+                desc->ndim, desc->ndim > 0 ? (int)desc->shape[0] : -1,
+                desc->ndim > 1 ? (int)desc->shape[1] : -1);
     const uint8_t* data = (const uint8_t*)model_tensor_data(mw, (TensorDesc*)desc);
+    // A tensor can be 2-D and still have no data (absent from the bundle, or not mapped).
+    // Without this the reorder memcpy's from NULL and the process segfaults, which reads
+    // as a crash in the packing path with no statement of WHICH projection is missing.
+    // Returning here keeps the fault in the caller, which knows the projection name.
+    if (!data) {
+        fprintf(stderr, "RuntimeLayer: pack_proj: tensor has no data (n_tiles=%d G=%d offset=%d)\n",
+                n_tiles, G, tile_offset);
+        return;
+    }
     npu_reorder_tiles(bo + (size_t)tile_offset * NPU_TILE_BYTES, data, n_tiles, G);
 }
 
-// Pack a full layer (all 7 projections) into the runtime's 10 MB layout.
-// Returns the number of tiles written (1920) or 0 on error.
+// Pack a full layer (all 7 projections) into the runtime's per-layer BO layout.
+// Geometry is DERIVED from the model dims (verified byte-exact vs the runtime
+// for Qwen3-0.6B AND 1.7B):
+//   reorder group G = K/128  (K = contraction dim; q/k/v/up/gate=H, o=NH*HD, down=IM)
+//   gate/up alternating chunk CH = H/16 (== 8 * G_gateup)
+//   tile offsets = cumulative tile counts (q, k, v, o, up/gate, down)
+// Returns the total number of tiles written, or 0 on error.
 int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
                       const ModelConfig* config, int layer_idx) {
     if (!bo_buffer || !mw || !config || layer_idx < 0 || layer_idx >= config->num_layers)
         return 0;
-    memset(bo_buffer, 0, NPU_LAYER_BO_BYTES);
     LayerWeights* lw = &mw->layers[layer_idx];
 
-    npu_pack_proj(bo_buffer, &lw->q_proj_weight, mw, 0, 8);
-    npu_pack_proj(bo_buffer, &lw->k_proj_weight, mw, 256, 8);
-    npu_pack_proj(bo_buffer, &lw->v_proj_weight, mw, 384, 8);
-    npu_pack_proj(bo_buffer, &lw->o_proj_weight, mw, 512, 16);
+    // Group counts are the number of 128-wide K-groups, i.e. ceil(K/128). Integer division
+    // was used here, which silently TRUNCATES when the contraction dim is not a multiple of
+    // 128 -- Gemma3-1B has IM=24864 and 24864 % 128 == 32, so G_d came out 194 instead of 195
+    // and the last group was dropped. For every model whose dims are already aligned this is
+    // exactly the old value, so the change is a no-op for all of them.
+    const int G_h = (config->hidden_size + 127) / 128;                            // q/k/v/up/gate
+    const int G_o = (config->num_attention_heads * config->head_dim + 127) / 128; // o_proj
+    const int G_d = (config->intermediate_size + 127) / 128;                      // down_proj
+    const int CH  = config->hidden_size / 16;                                    // 8 * G_h
 
-    // gate/up: alternating 64-tile chunks (up0, gate0, up1, gate1, ...)
-    const int CH = 64;  // chunk size
-    int up_tiles = (lw->up_proj_weight.ndim == 2) ? (int)lw->up_proj_weight.shape[0] : 0;
-    int gate_tiles = (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
+    const int q_t  = npu_desc_tiles(&lw->q_proj_weight);
+    const int k_t  = npu_desc_tiles(&lw->k_proj_weight);
+    const int v_t  = npu_desc_tiles(&lw->v_proj_weight);
+    const int o_t  = npu_desc_tiles(&lw->o_proj_weight);
+    const int up_t = npu_desc_tiles(&lw->up_proj_weight);
+    const int gate_t = npu_desc_tiles(&lw->gate_proj_weight);
+    const int d_t  = npu_desc_tiles(&lw->down_proj_weight);
+
+    // LFM2 hybrid: a short-conv layer has no q/k/v/o at all and carries its own block.
+    const int sp_t = npu_desc_tiles(&lw->shortconv_in_proj_weight);
+    const int so_t = npu_desc_tiles(&lw->shortconv_out_proj_weight);
+    // G is the CONTRACTION-dim group count (see the rule above: G = K/128). The short-conv
+    // in_proj is H -> 3H, so K = H and G must be H/128 -- writing 3H/128 here used the OUTPUT
+    // dim instead, and the byte diff against FLM's own LFM2 weight BO showed exactly that: the
+    // engine's conv-layer packing matched FLM through gate/up and down_proj (6,144 of 8,192
+    // tiles, in order) and diverged at the short-conv block, which is the only block this G
+    // touches.
+    const int G_sp = (config->hidden_size + 127) / 128;  // in_proj:  K = H   -> G = H/128
+    const int G_so = (config->hidden_size + 127) / 128;  // out_proj: K = H   -> G = H/128
+
+    // LAYOUT, read off FLM's own BO (not inferred): for a conv layer the SHORT-CONV block comes
+    // FIRST, then gate/up and down. Measured placements of the engine's blocks in FLM's BO:
+    //   sp (1536 tiles) -> FLM 0..1535      so (512) -> FLM 1536..2047
+    //   gu (4096)       -> FLM 2048..6143   d (2048) -> FLM 6144..8191
+    // Every block's INTERNAL tile order is identical (sp's first eight land at 0..7, so's at
+    // 1536..1543), so this is a pure block reordering -- which is also why the earlier version,
+    // which appended the short-conv after down_proj, matched FLM for exactly the 6,144 tiles of
+    // the gu+d prefix and diverged for the rest.
+    // Attention layers have no short-conv, so their layout is unchanged: q,k,v,o,gu,d from 0.
+    const int off_sp = 0;                        // shortconv.in_proj  (conv layers only)
+    const int off_so = off_sp + sp_t;            // shortconv.out_proj
+    const int off_q  = off_so + so_t;
+    const int off_k  = off_q + q_t;
+    const int off_v  = off_k + k_t;
+    const int off_o  = off_v + v_t;
+    const int off_gu = off_o + o_t;
+    const int off_d  = off_gu + up_t + gate_t;
+    const int total  = off_d + d_t;
+
+    memset(bo_buffer, 0, (size_t)total * NPU_TILE_BYTES);
+
+    npu_pack_proj(bo_buffer, &lw->q_proj_weight, mw, off_q, G_h, "q");
+    npu_pack_proj(bo_buffer, &lw->k_proj_weight, mw, off_k, G_h, "k");
+    npu_pack_proj(bo_buffer, &lw->v_proj_weight, mw, off_v, G_h, "v");
+    npu_pack_proj(bo_buffer, &lw->o_proj_weight, mw, off_o, G_o, "o");
+
+    // Short-conv block (LFM2 conv layers only; absent elsewhere so these no-op).
+    if (sp_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_in_proj_weight,  mw, off_sp, G_sp, "scin");
+    if (so_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_out_proj_weight, mw, off_so, G_so, "scout");
+
+    // gate/up: alternating CH-tile chunks (up0, gate0, up1, gate1, ...)
     const uint8_t* up = (const uint8_t*)model_tensor_data(mw, &lw->up_proj_weight);
     const uint8_t* gate = (const uint8_t*)model_tensor_data(mw, &lw->gate_proj_weight);
-    int n_chunks = (up_tiles + CH - 1) / CH;
+    int n_chunks = (up_t + CH - 1) / CH;
     for (int c = 0; c < n_chunks; c++) {
-        int up_n = (up_tiles - c * CH > CH) ? CH : up_tiles - c * CH;
-        int gate_n = (gate_tiles - c * CH > CH) ? CH : gate_tiles - c * CH;
-        int base = 768 + c * 2 * CH;
+        int up_n = (up_t - c * CH > CH) ? CH : up_t - c * CH;
+        int gate_n = (gate_t - c * CH > CH) ? CH : gate_t - c * CH;
+        int base = off_gu + c * 2 * CH;
         if (up_n > 0 && up)
-            npu_reorder_tiles(bo_buffer + (size_t)(base) * NPU_TILE_BYTES,
-                              up + (size_t)c * CH * NPU_TILE_BYTES, up_n, 8);
+            npu_reorder_tiles(bo_buffer + (size_t)base * NPU_TILE_BYTES,
+                              up + (size_t)c * CH * NPU_TILE_BYTES, up_n, G_h);
         if (gate_n > 0 && gate)
             npu_reorder_tiles(bo_buffer + (size_t)(base + CH) * NPU_TILE_BYTES,
-                              gate + (size_t)c * CH * NPU_TILE_BYTES, gate_n, 8);
+                              gate + (size_t)c * CH * NPU_TILE_BYTES, gate_n, G_h);
     }
 
-    npu_pack_proj(bo_buffer, &lw->down_proj_weight, mw, 1536, 24);
-    return NPU_LAYER_TILES;
+    npu_pack_proj(bo_buffer, &lw->down_proj_weight, mw, off_d, G_d, "down");
+    return total;
+}
+
+// Per-layer tile offsets (in 5120-byte Q4NX tiles) for the dequant weight_offset.
+// Mirrors the off_* computation in npu_pack_layer_bo (byte-verified layout).
+void npu_layer_tile_offsets(ModelWeights* mw, int layer_idx,
+                            int* off_q, int* off_k, int* off_v, int* off_o,
+                            int* off_gu, int* off_d) {
+    if (off_q) *off_q = 0;
+    LayerWeights* lw = &mw->layers[layer_idx];
+    int q_t  = npu_desc_tiles(&lw->q_proj_weight);
+    int k_t  = npu_desc_tiles(&lw->k_proj_weight);
+    int v_t  = npu_desc_tiles(&lw->v_proj_weight);
+    int o_t  = npu_desc_tiles(&lw->o_proj_weight);
+    int up_t = npu_desc_tiles(&lw->up_proj_weight);
+    int gate_t = npu_desc_tiles(&lw->gate_proj_weight);
+    int oq = 0, ok = q_t, ov = q_t + k_t, oo = q_t + k_t + v_t;
+    int ogu = oo + o_t, od = ogu + up_t + gate_t;
+    if (off_q)  *off_q  = oq;
+    if (off_k)  *off_k  = ok;
+    if (off_v)  *off_v  = ov;
+    if (off_o)  *off_o  = oo;
+    if (off_gu) *off_gu = ogu;
+    if (off_d)  *off_d  = od;
+}
+
+// Short-conv tile offsets within the per-layer BO (LFM2 hybrid conv layers only).
+// Both are 0 on attention layers, where the shortconv tensors are absent. Additive
+// deliberately: npu_layer_tile_offsets() keeps its 6-output signature.
+void npu_layer_shortconv_offsets(ModelWeights* mw, int layer_idx, int* off_sp, int* off_so) {
+    if (off_sp) *off_sp = 0;
+    if (off_so) *off_so = 0;
+    if (!mw || layer_idx < 0 || layer_idx >= mw->config.num_layers) return;
+    LayerWeights* lw = &mw->layers[layer_idx];
+    int q_t  = npu_desc_tiles(&lw->q_proj_weight);
+    int k_t  = npu_desc_tiles(&lw->k_proj_weight);
+    int v_t  = npu_desc_tiles(&lw->v_proj_weight);
+    int o_t  = npu_desc_tiles(&lw->o_proj_weight);
+    int up_t = npu_desc_tiles(&lw->up_proj_weight);
+    int gate_t = npu_desc_tiles(&lw->gate_proj_weight);
+    int d_t  = npu_desc_tiles(&lw->down_proj_weight);
+    int sp_t = npu_desc_tiles(&lw->shortconv_in_proj_weight);
+    const int od = q_t + k_t + v_t + o_t + up_t + gate_t + d_t;
+    if (off_sp) *off_sp = od;
+    if (off_so) *off_so = od + sp_t;
+}
+
+// Total per-layer weight BO bytes (all layers share the same geometry).
+int npu_layer_bo_bytes(ModelWeights* mw, const ModelConfig* config) {
+    if (!mw || !config) return 0;
+    // Size the BO for the LARGEST layer, not layer 0. Hybrid models mix layer types:
+    // LFM2-1.2B layer 0 is a gated short-conv layer with no q/k/v/o at all, while its
+    // attention layers (2,5,8,10,12,14) have four more tensors. Sizing from layer 0
+    // therefore under-allocates and npu_pack_layer_bo() writes past the end -- observed
+    // as a SIGSEGV in __memset_avx512_unaligned_erms <- npu_pack_layer_bo <-
+    // npu_bf16_pack_layer when first running LFM2. Taking the max over all layers is
+    // correct for homogeneous models too (every layer is identical there).
+    int tmax = 0;
+    int nl = mw->config.num_layers;   // bound by the calloc'd layers[] array
+    if (nl <= 0) nl = 1;
+    for (int l = 0; l < nl; l++) {
+        LayerWeights* lw = &mw->layers[l];
+        int t = 0;
+        t += npu_desc_tiles(&lw->q_proj_weight);
+        t += npu_desc_tiles(&lw->k_proj_weight);
+        t += npu_desc_tiles(&lw->v_proj_weight);
+        t += npu_desc_tiles(&lw->o_proj_weight);
+        t += npu_desc_tiles(&lw->up_proj_weight);
+        t += npu_desc_tiles(&lw->gate_proj_weight);
+        t += npu_desc_tiles(&lw->down_proj_weight);
+        // The short-conv block also needs room when present (LFM2 conv layers).
+        t += npu_desc_tiles(&lw->shortconv_in_proj_weight);
+        t += npu_desc_tiles(&lw->shortconv_out_proj_weight);
+        if (t > tmax) tmax = t;
+    }
+    return tmax * NPU_TILE_BYTES;
+}
+
+// ===========================================================================
+// 35B MoE weight-BO packing (Round 38) — docs/35b-forward-integration.md
+// ---------------------------------------------------------------------------
+// The runtime's weight BO stores the MoE expert tensors as 4736-B rows
+// (each file 5120-B Q4NX tile trimmed to [0:4736]) in 16-row reorder blocks:
+//   out[o] = in[o/2 + 8*(o%2)]        (A/B half interleave)
+// Verified byte-exact against the runtime's qwen3_6_reorder_cpy on real
+// up_exps tiles (tools/call_reorder*). Per-layer weight-BO map (layer 0):
+//   up_exps @ 0x0        (32768 rows x 4736 = 2048 blocks of 16)
+//   gate_exps @ 0x9400000 (148 MiB, same geometry)
+//   down_exps @ 0x12800000 (296 MiB, same geometry)
+//   share_up/down/gate @ 0x1bc00000/0x1bd28000/0x1bc94000
+//   moe_router @ 0x3000, shared_expert_gate @ 0x2000 (small, norm region)
+//   qkv_proj @ 0x1bdbc000 (2304 x 5120-B tiles; out padded 8704 -> 9216)
+//   gate_proj @ 0x1c6fc000
+// ===========================================================================
+#define NPU_MOE_ROW_BYTES   4736
+#define NPU_MOE_BLOCK_ROWS  16
+#define NPU_MOE_BLOCK_BYTES (NPU_MOE_ROW_BYTES * NPU_MOE_BLOCK_ROWS)
+
+// Pack one expert tensor (n_tiles x 5120-B file rows) into 4736-B rows in
+// 16-row blocks: out[blk*75776 + o*4736] = trimmed_tile[o/2 + 8*(o%2)].
+// n_tiles must be a multiple of 16 (32768 for the 35B experts).
+//
+// ⚠ ROUND 43 CORRECTION: this helper does NOT reproduce the runtime's actual
+// 35B layer weight-BO layout — the capture-backed spec in
+// tools/verify_moe_bo_layout.py + docs/35b-forward-integration.md Round 43
+// supersedes it (runtime rows are 4736-B windows at 4736-B strides from file
+// offset 3912 with cross-tensor 824/3912 splice rows; down uses an 8-window
+// [1,3,5,0,2,4,6,7] order). Do not build the 35B engine packer on this.
+static int npu_pack_moe_experts(uint8_t* bo, const uint8_t* tiles, int n_tiles) {
+    if (!bo || !tiles || n_tiles <= 0 || (n_tiles % NPU_MOE_BLOCK_ROWS) != 0)
+        return 0;
+    int nblocks = n_tiles / NPU_MOE_BLOCK_ROWS;
+    for (int blk = 0; blk < nblocks; blk++) {
+        const uint8_t* src = tiles + (size_t)blk * NPU_MOE_BLOCK_ROWS * NPU_TILE_BYTES;
+        uint8_t* dst = bo + (size_t)blk * NPU_MOE_BLOCK_BYTES;
+        for (int o = 0; o < NPU_MOE_BLOCK_ROWS; o++) {
+            int ti = o / 2 + (NPU_MOE_BLOCK_ROWS / 2) * (o % 2);
+            memcpy(dst + (size_t)o * NPU_MOE_ROW_BYTES,
+                   src + (size_t)ti * NPU_TILE_BYTES, NPU_MOE_ROW_BYTES);
+        }
+    }
+    return nblocks * NPU_MOE_BLOCK_BYTES;
+}
+
+// ===========================================================================
+// 35B MoE weight-BO packing — Round 50 layout (byte-verified).
+// tools/verify_moe_current_layout.py is the reference implementation; these
+// C functions reproduce it byte-for-byte (see docs/35b-forward-integration.md
+// Round 50 and the checksums in the test below).
+// ===========================================================================
+
+// Copy one 4736-B window (j) from tensor bytes (file-offset-0 convention).
+static void moe_copy_win(uint8_t* dst, const uint8_t* src, int64_t j) {
+    memcpy(dst, src + (size_t)j * NPU_MOE_ROW_BYTES, NPU_MOE_ROW_BYTES);
+}
+
+// Pack one linear layer's expert pool (up+gate+down). The pool BO is 512 MB
+// but only rows 0..100959 are packed (478,146,560 B); the caller zeroes the
+// rest (gate_proj rows 100960..102623 are documented but not yet packed).
+int64_t npu_pack_moe_expert_pool(uint8_t* bo, ModelWeights* mw, int layer) {
+    if (!bo || !mw || layer < 0 || layer >= mw->config.num_layers) return 0;
+    LayerWeights* lw = &mw->layers[layer];
+    if (lw->up_exps_weight.ndim == 0 || lw->gate_exps_weight.ndim == 0 ||
+        lw->down_exps_weight.ndim == 0) return 0;
+    const uint8_t* up   = (const uint8_t*)model_tensor_data(mw, &lw->up_exps_weight);
+    const uint8_t* gate = (const uint8_t*)model_tensor_data(mw, &lw->gate_exps_weight);
+    const uint8_t* down = (const uint8_t*)model_tensor_data(mw, &lw->down_exps_weight);
+    if (!up || !gate || !down) return 0;
+
+    uint8_t* dst = bo;
+    // rows 0..65535: alternating 32-row up/gate blocks (1024 each);
+    // window order within a block: j = base + 8*(i%4) + i/4.
+    for (int blk = 0; blk < 1024; blk++) {
+        int base = blk * 32;
+        for (int i = 0; i < 32; i++)
+            moe_copy_win(dst, up, base + 8 * (i % 4) + i / 4), dst += NPU_MOE_ROW_BYTES;
+        for (int i = 0; i < 32; i++)
+            moe_copy_win(dst, gate, base + 8 * (i % 4) + i / 4), dst += NPU_MOE_ROW_BYTES;
+    }
+    // rows 65536..100959: down, all 35424 windows in 8-window groups
+    // [0,2,4,6,1,3,5,7] (+8 per group).
+    static const int DORD[8] = {0, 2, 4, 6, 1, 3, 5, 7};
+    for (int g = 0; g < 35424 / 8; g++)
+        for (int o = 0; o < 8; o++)
+            moe_copy_win(dst, down, g * 8 + DORD[o]), dst += NPU_MOE_ROW_BYTES;
+    return (int64_t)(dst - bo);   // 478,146,560
+}
+
+// ===========================================================================
+// 35B MoE region-B packing (the layer ELF's arg-0 weight BO, desc-logical
+// offsets relative to 0x1bc00000).
+//
+// REPAIRED (goal mtusoiy1, on-box oracle): the runtime's own
+// qwen3_6_reorder_cpy was called on the live model (tools/verify_moe_reorder_qkv)
+// and its output is byte-exact for 221/221 windows as:
+//     out[o] = in[o/2 + 8*(o%2)]     per 16-window block
+// where `in` are 4736-B windows read at a **4736-B stride** from the Q8_0
+// tensor (NOT row-aligned 8704-B trims — that convention matches only 1/221).
+// There is NO re-quantisation: the Q8_0 bytes (scales + int8) are preserved.
+// The previous version read at 8704 stride (row-aligned trim), which is the
+// bug that made the layer produce NaN.
+//
+// Desc offsets (windows, relative to region-B base):
+//   share_up   0     128  [16,8,8704]
+//   share_gate 128   128  [16,8,8704]
+//   share_down 256   128  [64,2,8704]
+//   qkv        384  2048  [256,8,8704]
+//   gate_proj  2432 1024  [128,8,8704]
+// Total 3456 rows x 4736 B = 16,367,616 B (the layer ELF reads via 4736-B
+// LINEAR BDs at 16-row strides, Round 72).
+// ===========================================================================
+
+// A/B-interleave of 4736-B windows, byte-verified against the runtime's
+// qwen3_6_reorder_cpy (tools/verify_moe_reorder_qkv.cpp) on the live model:
+//     out[blk*B + i] = in[blk*B + i/2 + H*(i%2)],   B = 2*H,  H = n_tiles/256
+// Verified: qkv n=2048 -> H=8 (2048/2048), gate_proj n=1024 -> H=4 (1024/1024),
+// and for n<=256 the interleave degenerates to the identity (n=256 test).
+// `in` windows are 4736-B slices at a 4736-B stride from `tensor` (NOT
+// row-aligned 8704-B trims), and there is NO re-quantisation.
+static void npu_pack_8704_tiles(uint8_t* bo, const uint8_t* tensor, int n_tiles,
+                                int row_start) {
+    if (n_tiles <= 0) return;
+    int H = n_tiles / 256;
+    if (H < 1) H = 1;
+    int B = 2 * H;
+    for (int blk = 0; blk * B < n_tiles; blk++) {
+        for (int i = 0; i < B; i++) {
+            int o = blk * B + i;
+            if (o >= n_tiles) break;
+            int j = blk * B + i / 2 + H * (i % 2);
+            memcpy(bo + (size_t)(row_start + o) * NPU_MOE_ROW_BYTES,
+                   tensor + (size_t)j * NPU_MOE_ROW_BYTES,
+                   NPU_MOE_ROW_BYTES);
+        }
+    }
+}
+
+// Pack one linear layer's region-B weight content (share_* + qkv + gate_proj)
+// into a 3456-row buffer. Returns bytes written (16,367,616) or 0 on error.
+int64_t npu_pack_moe_region_b(uint8_t* bo, ModelWeights* mw, int layer) {
+    if (!bo || !mw || layer < 0 || layer >= mw->config.num_layers) return 0;
+    LayerWeights* lw = &mw->layers[layer];
+    TensorDesc* tens[5] = { &lw->share_up_exps_weight, &lw->share_gate_exps_weight,
+                            &lw->share_down_exps_weight, &lw->qkv_proj_weight,
+                            &lw->self_attn_gate_proj_weight };
+    const int tiles[5]  = { 128, 128, 128, 2048, 1024 };
+    const int rowstart[5] = { 0, 128, 256, 384, 2432 };
+    for (int i = 0; i < 5; i++) {
+        if (tens[i]->ndim == 0) return 0;   // all five must exist (linear layer)
+        const uint8_t* d = (const uint8_t*)model_tensor_data(mw, tens[i]);
+        if (!d) return 0;
+        npu_pack_8704_tiles(bo, d, tiles[i], rowstart[i]);
+    }
+    return (int64_t)3456 * NPU_MOE_ROW_BYTES;   // 16,367,616
+}
+
+// Pack one layer's router BO (arg-2): input_layernorm @0, post_attention_layernorm
+// @0x1000, shared_expert_gate @0x2000 (BF16), moe_router @0x3000 (BF16 [H,
+// N_EXPERTS], stride-8 interleaved). The layernorm offsets are the best-effort
+// region-A placement (R37 desc: shared_gate @0x2000, moe_router @0x3000; the
+// arg-2 BD decode shows a 3072-B read @0 — the layernorms).
+int64_t npu_pack_moe_router_bo(uint8_t* bo, ModelWeights* mw, int layer) {
+    if (!bo || !mw || layer < 0 || layer >= mw->config.num_layers) return 0;
+    LayerWeights* lw = &mw->layers[layer];
+    if (lw->moe_router_weight.ndim != 2) return 0;
+    const uint8_t* rt = (const uint8_t*)model_tensor_data(mw, &lw->moe_router_weight);
+    const uint8_t* seg = (const uint8_t*)model_tensor_data(mw, &lw->shared_expert_gate_weight);
+    const uint8_t* iln = (const uint8_t*)model_tensor_data(mw, &lw->input_layernorm_weight);
+    const uint8_t* paln = (const uint8_t*)model_tensor_data(mw, &lw->post_attention_layernorm_weight);
+    if (!rt || !seg) return 0;
+    const int64_t n_in = lw->moe_router_weight.shape[0];      // H = 2048
+    const int64_t n_out = lw->moe_router_weight.shape[1];     // N_EXPERTS = 256
+    const size_t seg_bytes = (size_t)lw->shared_expert_gate_weight.data_size;
+    memset(bo, 0, 0x3000);
+    if (iln && lw->input_layernorm_weight.ndim == 1)
+        memcpy(bo + 0x0000, iln, (size_t)lw->input_layernorm_weight.data_size);
+    if (paln && lw->post_attention_layernorm_weight.ndim == 1)
+        memcpy(bo + 0x1000, paln, (size_t)lw->post_attention_layernorm_weight.data_size);
+    if (seg_bytes) memcpy(bo + 0x2000, seg, seg_bytes);
+    // e-major TRANSPOSE (addendum 155): the layer ELF reads the router at
+    // @12288 as dst[e*2048 + h] = router[h][e], i.e. transposed [256 experts]
+    // [2048 hidden], read [2048h x 32e] per DMA. The old stride-8 interleave
+    // (dst[(i%8)*blk + j*in8 + i/8]) was a guess and contradicts this read.
+    const uint16_t* src = (const uint16_t*)rt;
+    uint16_t* dst = (uint16_t*)(bo + 0x3000);
+    for (int64_t j = 0; j < n_out; j++)
+        for (int64_t i = 0; i < n_in; i++)
+            dst[j * n_in + i] = src[i * n_out + j];
+    return (int64_t)(0x3000 + n_in * n_out * 2);   // 0x3000 + 1 MB
+}
+
+// Pack one linear layer's 5 MB linear-attn BO: 328,192-B head (ssm_conv1d,
+// ssm_norm, ssm_a, ssm_dt.bias, ssm_alpha_proj, ssm_beta_proj) then ssm_out
+// windows in 32-row blocks (order j = base + 16*(i%2) + i/2).
+int64_t npu_pack_moe_linear5_bo(uint8_t* bo, ModelWeights* mw, int layer) {
+    if (!bo || !mw || layer < 0 || layer >= mw->config.num_layers) return 0;
+    LayerWeights* lw = &mw->layers[layer];
+    if (lw->ssm_conv1d_weight.ndim == 0 || lw->ssm_out_proj_weight.ndim == 0) return 0;
+    const size_t BO5 = 5242880;
+    memset(bo, 0, BO5);
+    uint8_t* dst = bo;
+
+    TensorDesc* head[6] = { &lw->ssm_conv1d_weight, &lw->ssm_norm_weight,
+                            &lw->ssm_a,             &lw->ssm_dt_bias,
+                            &lw->ssm_alpha_proj_weight, &lw->ssm_beta_proj_weight };
+    for (int h = 0; h < 6; h++) {
+        if (head[h]->ndim == 0) return 0;   // all six must exist on a linear layer
+        const uint8_t* s = (const uint8_t*)model_tensor_data(mw, head[h]);
+        if (!s) return 0;
+        size_t n = (size_t)head[h]->data_size;
+        memcpy(dst, s, n);
+        dst += n;
+    }
+
+    const uint8_t* ssm = (const uint8_t*)model_tensor_data(mw, &lw->ssm_out_proj_weight);
+    int64_t ssm_len = lw->ssm_out_proj_weight.data_size;   // 8,912,896
+    // region-B H=n/256 interleave (addendum 155): the ELF reads ssm_out @328192
+    // CONTIGUOUSLY in 4736-B rows, so the host writes the same reorder the other
+    // 4736-row tensors use -- H = n_tiles/256 (1024 -> H=4), out[blk*2H+i] =
+    // in[blk*2H + i/2 + H*(i%2)]. The old 16*(i%2)+i/2 order was the down_exps
+    // family order, not this one.
+    const int n_tiles = 1024;              // 64 x 16 logical rows
+    int H = n_tiles / 256; if (H < 1) H = 1;
+    int B = 2 * H;
+    int blk = 0;
+    while ((size_t)(dst - bo) < BO5) {
+        for (int i = 0; i < B; i++) {
+            int64_t j = (int64_t)blk * B + i / 2 + H * (i % 2);
+            if (j * NPU_MOE_ROW_BYTES + NPU_MOE_ROW_BYTES <= ssm_len) {
+                size_t n = NPU_MOE_ROW_BYTES;
+                if ((size_t)(dst - bo) + n > BO5) n = BO5 - (size_t)(dst - bo);
+                memcpy(dst, ssm + (size_t)j * NPU_MOE_ROW_BYTES, n);
+                dst += n;
+            }
+            if ((size_t)(dst - bo) >= BO5) break;
+        }
+        blk++;
+    }
+    return (int64_t)(dst - bo);   // 5,242,880
+}
+
+// Pack the lm_head weight (tied embedding) into the runtime's 98,566,144 B BO.
+// The q4nx stores lm_head as [18992 tiles x 5120B] (8 vocab rows per tile);
+// the runtime BO = the same tiles reordered with G=8 (npu_reorder_tiles) —
+// byte-verified against the captured runtime lm_head BO (Round 36).
+// The tensor's own data_offset (metadata, relative to data_base) points at
+// the physical data. Returns bytes written or 0 on error.
+#ifdef __cplusplus
+extern "C"
+#endif
+int npu_pack_lmhead_bo(uint8_t* bo_buffer, ModelWeights* mw, const ModelConfig* config) {
+    (void)config;
+    if (!bo_buffer || !mw || mw->lm_head_weight.ndim != 2) return 0;
+    const int TILE = 5120;
+    // SAME RULE AS THE LAYER PACKING: shape[0] is a ROW count and shape[1] is a row width IN
+    // BYTES, so a row is one tile only when shape[1] == 5120. Gemma3-1B's lm_head tensor has
+    // shape[1] == 1280, which made this read 4x the tensor and fault -- the same defect as
+    // npu_pack_layer_bo, in the lm_head path. The caller sizes the BO with the same helper, so
+    // the two stay consistent.
+    int n_tiles = npu_desc_tiles(&mw->lm_head_weight);
+    if (n_tiles <= 0) return 0;
+    const uint8_t* data = (const uint8_t*)model_tensor_data(mw, &mw->lm_head_weight);
+    if (!data) return 0;
+    npu_reorder_tiles(bo_buffer, data, n_tiles, config->hidden_size / 128);
+    return n_tiles * TILE;
 }
 
 // ========= Simple JSON Parser =========
@@ -251,6 +728,14 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
 static int parse_json_metadata(const uint8_t* json_data, uint64_t json_len,
                                 TensorDesc* tensors, int max_tensors);
 static int find_tensor(const char* name, TensorDesc* tensors, int count);
+// find a per-layer tensor by name with both layer namings
+static int find_layer_tensor(const char* name_plural, const char* name_singular,
+                             TensorDesc* tensors, int count, TensorDesc* out) {
+    int idx = find_tensor(name_plural, tensors, count);
+    if (idx < 0 && name_singular) idx = find_tensor(name_singular, tensors, count);
+    if (idx >= 0) { memcpy(out, &tensors[idx], sizeof(TensorDesc)); return 1; }
+    return 0;
+}
 
 // ========= Model Loader =========
 
@@ -290,7 +775,7 @@ ModelWeights* model_load(const char* path, ModelConfig config) {
     const char* json_start = (const char*)(mw->file_data + 8);
     size_t json_len = header_size;
     
-    int max_tensors = 512;
+    int max_tensors = 2048;
     TensorDesc* tensors = calloc(max_tensors, sizeof(TensorDesc));
     int num_tensors = parse_json_metadata((const uint8_t*)json_start, json_len,
                                            tensors, max_tensors);
@@ -299,69 +784,244 @@ ModelWeights* model_load(const char* path, ModelConfig config) {
     
     // Embed tokens
     int idx_emb = find_tensor("model.embed_tokens.weight", tensors, num_tensors);
+    // LFM2 names the embedding model.token_embd.weight (everything else it names the
+    // canonical way), so accept both.
+    if (idx_emb < 0) idx_emb = find_tensor("model.token_embd.weight", tensors, num_tensors);
     if (idx_emb >= 0) memcpy(&mw->embed_tokens, &tensors[idx_emb], sizeof(TensorDesc));
+    
+    // ── Derive the actual model config from the parsed tensors, overriding
+    //    the hardcoded 0.6B profile when they disagree (40-layer MoE, etc.).
+    {
+        int max_layer = -1;
+        for (int t = 0; t < num_tensors; t++) {
+            const char* n = tensors[t].name;
+            if (!n || !strstr(n, ".input_layernorm.weight")) continue;
+            const char* p = strstr(n, "model.layer");
+            if (!p) continue;
+            p += strlen("model.layer");
+            if (*p == 's') p++;          // "model.layers." vs "model.layer."
+            if (*p == '.') p++;
+            int ln = atoi(p);
+            if (ln > max_layer) max_layer = ln;
+        }
+        if (max_layer >= 0) {
+            int derived = max_layer + 1;
+            if (derived != config.num_layers) {
+                LOG_INFO("Derived %d layers from metadata (was %d)", derived, config.num_layers);
+                config.num_layers = derived;
+                mw->config = config;
+            }
+        }
+    }
+    if (mw->embed_tokens.shape[0] > 0 &&
+        ((int)mw->embed_tokens.shape[0] != config.vocab_size ||
+         (int)mw->embed_tokens.shape[1] != config.hidden_size)) {
+        LOG_INFO("Derived vocab=%lld hidden=%lld from embed_tokens",
+                 (long long)mw->embed_tokens.shape[0], (long long)mw->embed_tokens.shape[1]);
+        config.vocab_size = (int)mw->embed_tokens.shape[0];
+        config.hidden_size = (int)mw->embed_tokens.shape[1];
+        mw->config = config;
+    }
     
     // Allocate per-layer weights
     mw->layers = calloc(config.num_layers, sizeof(LayerWeights));
     
     char name_buf[128];
+    char name_buf2[128];
     for (int l = 0; l < config.num_layers; l++) {
         LayerWeights* layer = &mw->layers[l];
         
-        snprintf(name_buf, sizeof(name_buf),
+                snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.input_layernorm.weight", l);
-        int idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->input_layernorm_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.input_layernorm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->input_layernorm_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.post_attention_layernorm.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->post_attention_layernorm_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.post_attention_layernorm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->post_attention_layernorm_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.q_norm.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->q_norm_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.q_norm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->q_norm_weight);
+
+        // ---- LFM2 gated short convolution (present only on conv layers) ------
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.shortconv.in_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.shortconv.in_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors,
+                          &layer->shortconv_in_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.shortconv.conv.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.shortconv.conv.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors,
+                          &layer->shortconv_conv_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.shortconv.out_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.shortconv.out_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors,
+                          &layer->shortconv_out_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.k_norm.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->k_norm_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.k_norm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->k_norm_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.q_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->q_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.q_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->q_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.k_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->k_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.k_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->k_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.v_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->v_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.v_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->v_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.o_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->o_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.o_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->o_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.mlp.gate_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->gate_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.gate_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->gate_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.mlp.up_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->up_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.up_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->up_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.mlp.down_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->down_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.down_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->down_proj_weight);
+
+        // ---- MoE routed + shared expert tensors ----
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.up_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.up_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->up_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.gate_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.gate_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->gate_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.down_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.down_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->down_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.share_up_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.share_up_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->share_up_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.share_gate_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.share_gate_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->share_gate_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.share_down_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.share_down_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->share_down_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.moe_router.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.moe_router.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->moe_router_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.shared_expert_gate.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.shared_expert_gate.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->shared_expert_gate_weight);
+
+        // ---- linear-attn (GateDeltaNet) tensors ----
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.self_attn.gate_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.gate_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->self_attn_gate_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.qkv_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.qkv_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->qkv_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_out_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_out_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_out_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_conv1d.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_conv1d.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_conv1d_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_norm.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_norm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_norm_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_a", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_a", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_a);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_dt.bias", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_dt.bias", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_dt_bias);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_alpha_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_alpha_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_alpha_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_beta_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_beta_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_beta_proj_weight);
     }
     
     // Final norm
@@ -422,8 +1082,13 @@ static int parse_json_metadata(const uint8_t* json_data, uint64_t json_len,
         
         bool ends_with_weight = (key_len > 7 && memcmp(key_end - 7, ".weight", 7) == 0);
         bool is_lm_head = (key_len == 12 && memcmp(key_str, "lm_head.weight", 12) == 0);
+        // Hybrid MoE small F32/BF16 tensors without a .weight suffix:
+        //   linear_attn.ssm_a  (F32[32]) and  linear_attn.ssm_dt.bias  (F32[32])
+        // are part of the 5 MB linear-attn BO head (Round 50) and must load.
+        bool ends_with_ssm_a = (key_len > 5 && memcmp(key_end - 5, "ssm_a", 5) == 0);
+        bool ends_with_bias  = (key_len > 5 && memcmp(key_end - 5, ".bias", 5) == 0);
         
-        if (!ends_with_weight && !is_lm_head) {
+        if (!ends_with_weight && !is_lm_head && !ends_with_ssm_a && !ends_with_bias) {
             p = key_end + 1;
             continue;
         }

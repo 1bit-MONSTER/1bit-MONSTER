@@ -124,6 +124,16 @@ struct I8Ctx {
                                        XRT_BO_FLAGS_HOST_ONLY, grp_c);
         Am = (int8_t*)bA->map();
         Cm = (int32_t*)bC->map();
+        // Both BOs are XRT_BO_FLAGS_HOST_ONLY and NOTHING zeroed them. Am is fully written by
+        // quantize_async (memset(Am,0,MD*KD)) before every launch, so bA was safe -- but Cm is
+        // the GEMM OUTPUT: the kernel writes only the valid rows of each launch, while the host
+        // reads MD rows. On the FIRST launch the rows the kernel did not write were whatever the
+        // device allocator handed back, which is why Nanbeige's boot token was nondeterministic
+        // (1214 / 131718 / 145029 / 42438 ... for one command, RESULTS-coverage-multifamily 59,
+        // 62). Zeroing makes the initial contents defined; section 61 made the same fix on the
+        // bf16 path's KV BO, which is a different set of buffers.
+        memset(Am, 0, (size_t)MD * KD);
+        memset(Cm, 0, (size_t)MD * ND * 4);
 
         layerB.resize(NL);
         layerInstr.resize(NL);
@@ -217,6 +227,11 @@ struct I8Ctx {
                                        XRT_BO_FLAGS_HOST_ONLY, grp_c);
         Am = (int8_t*)bA->map();
         Cm = (int32_t*)bC->map();
+        // See the note in the first init overload: neither BO was zeroed, and Cm is the GEMM
+        // output, so rows the kernel did not write on the first launch were uninitialized
+        // device memory -- the source of the nondeterministic boot token.
+        memset(Am, 0, (size_t)MD * KD);
+        memset(Cm, 0, bc_bytes);
 
         // Per-layer weight BOs + instruction BOs
         layerB.resize(NL);
@@ -265,7 +280,11 @@ struct I8Ctx {
             else if (v == 1) fl = XRT_BO_FLAGS_CACHEABLE;
             else if (v == 2) fl = XRT_BO_FLAGS_SVM;
         }
-        return std::make_unique<xrt::bo>(d, (size_t)KD * ND, fl, grp_w);
+        auto bo = std::make_unique<xrt::bo>(d, (size_t)KD * ND, fl, grp_w);
+        // packB_into memsets the mapped buffer before packing, so this BO is covered in practice;
+        // zeroing at allocation as well costs one memset and removes the ordering assumption.
+        if (void* m = bo->map()) memset(m, 0, (size_t)KD * ND);
+        return bo;
     }
 
     // Pack weights into an arbitrary (already-allocated) weight BO.
@@ -317,6 +336,17 @@ struct I8Ctx {
     // K×N are the logical (unpadded) weight dims; the BO is KD×ND (padded to 128).
     // Zero-init ensures padded regions contribute zero to the GEMM output.
     void packB(int l, const float* w, int K, int N, float& sout) {
+        // Weight-content checksum (NPU_DBG=1), placed INSIDE the implementation so it fires for
+        // whichever context FLM_PACKB selects. My previous two attempts sat at call sites and never
+        // fired, because Nanbeige packs through a branch I misread. This checks the DEQUANTIZED
+        // weights -- the last host input not yet proven stable across runs.
+        // RESULTS-coverage-multifamily 67.
+        if (getenv("NPU_DBG") && l < 3) {
+            unsigned long long hh = 1469598103934665603ULL;
+            const unsigned char* pp = (const unsigned char*)w;
+            for (size_t i = 0; i < (size_t)K * N * sizeof(float); i++) { hh ^= pp[i]; hh *= 1099511628211ULL; }
+            fprintf(stderr, "[WCHK i8] l=%d K=%d N=%d fnv=%016llx\n", l, K, N, hh);
+        }
         // Per-output-column weight scales: each column j is quantized with its
         // own amax_j/127 and dequantized with group_scales[l][j]. A single
         // per-tensor scale packed low-magnitude columns (Qwen3 v_proj rms
@@ -377,6 +407,21 @@ struct I8Ctx {
     // use the matching per-row scale (dequant_only_rows).
     inline int8_t* quantize_async_rows(const float* A, int am, int ak,
                                        const float* ascales) {
+        // bA holds exactly MD rows. The i8 ("fallback") prefill passes am == npt with no cap
+        // (the bf16 path caps at 'cap'; this one does not), so any prompt longer than MD wrote
+        // PAST the end of bA -- and the kernel, launched for MD rows, never processed rows
+        // MD..npt-1 at all. The boot token is taken from h_b[npt-1], which is therefore still the
+        // RAW EMBEDDING, never passed through the layers: a context-free prediction, which is why
+        // this path returns small scattered tokens (12-19 for 0.6B, 151 for Nanbeige) instead of
+        // the reference. The overrun is also the second, independent source of nondeterminism.
+        // RESULTS-coverage-multifamily 82. Refuse loudly instead of corrupting memory silently.
+        if (am > MD) {
+            fprintf(stderr,
+                    "quantize_async_rows: am=%d exceeds bA capacity MD=%d -- refusing to write "
+                    "past the activation BO (see RESULTS-coverage-multifamily 82: the prefill "
+                    "must walk the prompt in MD-row blocks)\n", am, MD);
+            return Am;
+        }
         memset(Am, 0, (size_t)MD * KD);
         for (int m = 0; m < am; m++) {
             float ais = 1.0f / ascales[m];
@@ -397,7 +442,25 @@ struct I8Ctx {
 
     // ── Launch kernel for layer l ──
     // Kernel signature: (opcode, instr_bo, ninstr, bo0, bo1, bo2, bo3, bo4)
+    // BOCHK: checksum the three BOs this kernel reads, immediately before the launch. Two independent
+    // facts pin this as the live path -- I8Ctx::packB is what fires (so cq is the selected context),
+    // and the banner reports GU_split=1 (so the single-launch fused FFN is not used). Section 68
+    // exonerated every host INPUT, so whichever of these three differs across runs is a buffer the
+    // kernel reads without anyone writing it.
+    inline void bochk(int l) {
+        if (!getenv("NPU_DBG")) return;
+        // Layers 0-1 and the LAST four. The first two proved every pre-launch byte identical across runs
+        // (8/8 checksums) while the boot token varied, so the divergence begins somewhere later -- and
+        // covering the tail is what localizes it. RESULTS-coverage-multifamily 68.
+        if (!(l <= 1 || l >= (int)layerB.size() - 4)) return;
+        static int n = 0;
+        if (n >= 40) return;
+        n++;
+        fprintf(stderr, "[BOCHK] l=%d bA=%016llx W=%016llx bC=%016llx\n",
+                l, bo_fnv(*bA), bo_fnv(*layerB[l]), bo_fnv(*bC));
+    }
     inline xrt::run launch(int l) {
+        bochk(l);
         return (*k)((unsigned)3,
                     *layerInstr[0],
                     (unsigned)(layerInstrData[0].size()),
@@ -406,6 +469,7 @@ struct I8Ctx {
 
     inline xrt::run sync_and_launch(int l) {
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        bochk(l);
         return (*k)((unsigned)3,
                     *layerInstr[0],
                     (unsigned)(layerInstrData[0].size()),
@@ -476,7 +540,18 @@ struct I8Ctx {
     }
 
     // ── Readback + dequantize output ──
-    inline void readback() { bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE); }
+    // readback() is the ONE point where the host takes the kernel's result. Section 68 and the BOCHK
+    // sweep localized the divergence exactly here: across runs the weight BO is ALWAYS identical, bC
+    // is identical immediately before each launch, and yet the dequantized bA -- the host's reading of
+    // that same bC -- differs. So the kernel's output buffer is the same and what the host gets back
+    // from it is not. Checksumming right AFTER the sync isolates the transfer.
+    inline void readback() {
+        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        if (getenv("NPU_DBG")) {
+            static int n = 0;
+            if (n < 8) { n++; fprintf(stderr, "[RBCHK] bC=%016llx\n", bo_fnv(*bC)); }
+        }
+    }
 
     inline void dequant_only(float* C, int am, int an, float ascale,
                              float Bscale, int layer = -1) {
@@ -553,11 +628,22 @@ struct I8Ctx {
     inline bool go_rows(int l, const float* A, int am, int ak,
                         const float* ascales_q, const float* ascales_d,
                         float Bscale, float* C, int an) {
+        auto t0 = std::chrono::steady_clock::now();
         quantize_async_rows(A, am, ak, ascales_q);
+        auto t1 = std::chrono::steady_clock::now();
         auto r = sync_and_launch(l);
+        auto t2 = std::chrono::steady_clock::now();
         r.wait();
+        auto t3 = std::chrono::steady_clock::now();
         readback();
         dequant_only_rows(C, am, an, ascales_d, Bscale, l);
+        auto t4 = std::chrono::steady_clock::now();
+        if (getenv("NPU_GO_STATS"))
+            fprintf(stderr, "[go_rows] q=%.2f sync+launch=%.2f wait=%.2f readback+deq=%.2f ms\n",
+                    std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                    std::chrono::duration<double, std::milli>(t2 - t1).count(),
+                    std::chrono::duration<double, std::milli>(t3 - t2).count(),
+                    std::chrono::duration<double, std::milli>(t4 - t3).count());
         return true;
     }
 
@@ -659,14 +745,26 @@ struct I8Ctx {
         }
         size_t sz = (size_t)KD * n_cols + FUSED_AIE_COLS * FUSED_GS_TILE
                     + FUSED_GS_SLACK;
-        return std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+        auto bo = std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+        // The gs region [KD*n_cols, sz) is READ BY THE KERNEL as per-column scales, and the
+        // packer that fills the weight part memsets only KD*ND -- so the scale tail was whatever
+        // the allocator returned. A per-column scale that is read but never written scales the
+        // output arbitrarily, which is exactly the symptom: identical input and identical norm
+        // weights, yet a hidden state after 32 layers that differs across runs
+        // (RESULTS-coverage-multifamily 62, 64, 65).
+        if (void* m = bo->map()) memset(m, 0, sz);
+        return bo;
     }
 
     // h2 scratch BO for the fused kernel (bo4; D-phase A source — same memory
     // group as bA, since the A2 shim DMA reads it like an activation).
     std::unique_ptr<xrt::bo> make_scratch_bo(xrt::device& d, size_t bytes) {
         int grp_a = k->group_id(3);
-        return std::make_unique<xrt::bo>(d, bytes, XRT_BO_FLAGS_HOST_ONLY, grp_a);
+        auto bo = std::make_unique<xrt::bo>(d, bytes, XRT_BO_FLAGS_HOST_ONLY, grp_a);
+        // The comment above says the A2 shim DMA READS this like an activation. Nothing wrote it
+        // before that read, so the kernel consumed allocator contents.
+        if (void* m = bo->map()) memset(m, 0, bytes);
+        return bo;
     }
 
     // Pack the INTERLEAVED GU weights (already transposed to [H, 2·n_ff] with
@@ -781,7 +879,16 @@ struct I8Ctx {
             else if (v == 2) fl = XRT_BO_FLAGS_SVM;
         }
         size_t sz = gu_i4_bo_size(K, (int)n_cols) + FUSED_AIE_COLS * FUSED_GS_TILE + FUSED_GS_SLACK;
-        return std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+        auto bo = std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+        // Same uninitialized tail as make_fused_weight_bo above, and this is the BO the RAW-Q4NX
+        // (int4) GU path uses -- which is the path Nanbeige takes (the convention probe reports
+        // "UNSIGNED nibbles", i.e. q4). The gs region beyond the packed A/B/C regions is read by
+        // the kernel as per-column scales but written by no one, so every layer's GU output was
+        // scaled by allocator contents. That is the shape of the symptom: identical input and
+        // identical norm weights, yet a hidden state after 32 layers that differs across runs
+        // (RESULTS-coverage-multifamily 62, 64, 65, 66).
+        if (void* m = bo->map()) memset(m, 0, sz);
+        return bo;
     }
 
     // Pack one expert's interleaved GU from RAW Q4NX into the int4 regions.
@@ -910,11 +1017,33 @@ struct I8Ctx {
                 FUSED_AIE_COLS * FUSED_GS_TILE, (size_t)KD * N);
     }
 
+    // FNV-1a over a BO's FULL extent. Section 68 exonerated every host INPUT (the dequantized weights
+    // are byte-identical across runs while the boot token varies), so what remains is the kernel
+    // reading a buffer nobody writes. Checking a prefix would miss exactly that, since the unwritten
+    // regions in this code are the gs scale TAILS.
+    static inline unsigned long long bo_fnv(xrt::bo& b) {
+        const unsigned char* p = (const unsigned char*)b.map();
+        size_t n = b.size();
+        unsigned long long h = 1469598103934665603ULL;
+        for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ULL; }
+        return h;
+    }
+
     // One-launch fused MoE FFN (issue #1759): GU → on-core SiLU → D.
     inline xrt::run launch_fused(xrt::bo& gu_bo, xrt::bo& d_bo, xrt::bo& h2_bo,
                                  const float* A, int am, int ak, float ascale) {
         quantize_async(A, am, ak, ascale);
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // Check ALL FIVE BOs this kernel takes, immediately before the launch (NPU_DBG=1). Whichever
+        // one differs across runs is a buffer being read without being written.
+        if (getenv("NPU_DBG")) {
+            static int chk_n = 0;
+            if (chk_n < 6) {
+                chk_n++;
+                fprintf(stderr, "[BOCHK] bA=%016llx gu=%016llx bC=%016llx d=%016llx h2=%016llx (am=%d ak=%d)\n",
+                        bo_fnv(*bA), bo_fnv(gu_bo), bo_fnv(*bC), bo_fnv(d_bo), bo_fnv(h2_bo), am, ak);
+            }
+        }
         return (*k)((unsigned)3, *layerInstr[0],
                     (unsigned)(layerInstrData[0].size()),
                     *bA, gu_bo, *bC, d_bo, h2_bo);

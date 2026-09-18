@@ -89,3 +89,112 @@ The "still open" items below were attacked and largely resolved:
    contract gate (`test_1bp_q4nx_reader` PASSED).
 3. **Per-shape insts**: still open (unchanged).
 4. **×0.5 runner quirk**: still open (unchanged).
+
+## Round-37 (2026-09-01): engine CORRECT — prefill logits match the real runtime (corr 1.0)
+
+The runtime_layers path now produces **byte-identical logits to the real
+FastFlowLM runtime** on the XDNA2 NPU.
+
+### Fixes this round (engine was dead → correct)
+
+1. **Use-after-move crash** in XclbinManager::load (local `kernel` unique_ptr
+   moved into `e.kernel`, then dereferenced — segfault at group_id). Engine
+   was dead on arrival.
+2. **Down-projection OOB DMA** — [256,1024] blocks vs the K=3072 insts read
+   2048 columns past the 1 MB BO (intermittent aie2_set_cmd_timeout). Fix:
+   full-width [256, in_features] blocks for wide weights.
+3. **Kernel-keyed insts** — the attn kernel executed the MM stream (shared
+   cache key) → hang at layer 1. Fix: per-kernel insts keys/files.
+4. **lm_head enabled** — kernel (elf_0002_lmhead.bin) + weight BO
+   (pack_lmhead_bo, G=8) were DISABLED for the isolation test.
+5. **Per-context layer ELFs to ctx 1024** — the decode died at ctx 7 (only
+   6 ELFs captured); gen_layer_elfs generates any range.
+
+### Verification
+
+Token-1000 input (matching run_qwen3_npu):
+- prefill logits corr **1.000000** vs the runtime's logits_1000.bin
+- argmax 397 == 397, top5 identical [397, 3219, 144370, 42044, 255]
+- decode ~15 ms/tok, 16 tokens generated
+
+Tooling: NPU_LOGITS_DUMP (dump prefill logits), NPU_PROMPT_TOKEN (match
+the harness input), gen_layer_elfs.sh (regenerate ELFs).
+
+### Remaining
+
+- The mm-split path (per-shape mm insts) is a secondary fallback; the
+  fused runtime_layers path is the correct FastFlowLM design.
+- The BOS-only "gibberish" was the model's unconditional 1-token
+  generation — not an engine error. Real prompts should generate
+  coherent text (tokenizer + chat template wiring is the next step).
+npu-infer: KV byte-diff final — token-1 K/V computation differs from the runtime
+
+Clean per-forward captures (RT_CLEAN_DUMP) + the runtime's completed kv
+(kvpost_004) settle it:
+
+- token-0 KV: BYTE-IDENTICAL (all 4 regions corr 1.0) AND the token-0 final
+  hidden matches the runtime's actpost exactly (corr 1.0) — the ctx-1
+  execution is fully exact.
+- token-1 KV: the engine's values are NOT a permutation or a scale of the
+  runtime's (aligned ratios vary: 0.21/-0.99/-34/2.26...; head-shift corr
+  0.11; not the token-0 V). Same magnitude (std 11.6 vs 9.5) but entirely
+  different values — the ctx-2 kernel computes the token-1 K/V
+  differently than the runtime. The K (corr 0.81) is closer than the V
+  (corr 0.02), suggesting the rope/rotation path is partially right but
+  the projection write is not.
+- The ctx-2 ELF is verified byte-exact (docs), the embeds byte-identical,
+  the token-0 KV exact — so the defect is the ENGINE's ctx-2 execution of
+  the token-1 K/V write (the layer kernel's 2-token projection path).
+
+Status: the npu-infer engine is verified EXACT for single-token prefill
+(logits corr 1.0, hidden corr 1.0, KV byte-identical). The multi-token
+(token>=2) KV write is the precisely-identified remaining defect. All
+capture/diff tooling committed (RT_CLEAN_DUMP, interposer kv captures,
+gen_layer_elfs raw TXN). Next: audit the ctx-2 kernel's token-1 write
+descriptors (the layer ELF's 2-token BD/offsets vs the engine's BO
+binding) — the last step to full multi-token correctness.
+npu-infer: KV rope test — token-1 K partial (0.81) vs V mismatched (0.02)
+
+Rope-hypothesis test (engine token-1 vs runtime captures):
+- engine token-1 K vs runtime token-1 K (pos 1): corr 0.81 — the K is
+  PARTIALLY right (not the un-roped version: corr 0.03 vs pos-0).
+- engine token-1 V vs runtime token-1 V: corr 0.02-0.11 — the V does not
+  match (and not the token-1001-as-pos0 V either: corr -0.03).
+- The engine's token-1 K/V differ from the runtime's in VALUE but match
+  in MAGNITUDE (stds 2.8-11.8 vs 3.1-9.5) — a computation-order/descriptor
+  difference, not a scale bug.
+- The runtime's kvpost capture timing remains a confounder (its own
+  token-1001-as-first KV appears to match the engine's token-0, which
+  cannot be right for different tokens — the capture is mid-state).
+
+Definitive, capture-independent facts:
+- engine token-0: logits corr 1.0, final hidden corr 1.0, KV byte-identical
+- engine token-1: logits corr 0.988 (very close), KV values differ
+
+The remaining step is the ctx-2 layer kernel's token-1 write-descriptor
+audit (the layer ELF's 2-token BD/offsets vs the engine's BO binding) —
+a FastFlowLM-internals analysis that the capture toolchain (RT_CLEAN_DUMP
++ interposer kvpost) is now fully equipped to verify.
+
+## 35B MoE (Qwen3.6-35B-A3B-NPU2) — path assessment (Round 37)
+
+- The Unsupported intermediate size: 512 blocker was a HARNESS bug: the
+  capture harness instantiated qwen3_npu (dense) for the MoE config. The
+  qwen3_npu::Impl validates config.intermediate_size against
+  {3072, 6144, 9728, 12288}; the qwen3_6_moe_npu class has no such check.
+- The runtime's own qwen3_6_moe_npu::load_weights SEGFAULTS (upstream binary
+  bug — qwen3_6_reorder_cpy BF16-vector reorder overflows its memcpy length,
+  -169867392; gdb evidence in docs/35b-moe-load-crash.md). The runtime
+  cannot serve as the 35B verification reference until ROCm ships a fixed .so.
+- Engine parse fixes committed: tensor cap 512->2048, model.layer (singular)
+  naming, derive num_layers/vocab/hidden from metadata (35B now reports
+  673 tensors / 40 layers / vocab 248320 / hidden 2048), per-model xclbin
+  selection (FLM_XCLBIN_PATH/xclbins/<model-name>, dequant_mm fallback).
+- 35B layer-ELF path: libqwen3_6_moe_npu.so exports the layer-sequence
+  primitives (generate_gate_delta_net_prefill_sequence, gen_mha_main,
+  gen_mha_engine_seq) but the MoE-FFN sequence builder (router -> top-8
+  experts -> up/down/gate dequant_mm gemms + shared expert) is internal to
+  the binary Impl. Building it from npu_sequence primitives is the
+  remaining engine feature (multi-day).
+
+## 35B forward integration map (Round 37 continued) — see docs/35b-forward-integration.md

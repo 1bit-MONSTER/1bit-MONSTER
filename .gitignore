@@ -226,3 +226,29 @@ build100/
 
 # ── Generated docs site (built by scripts/gen_docs_site.py) ──
 /docs-site/
+
+# gen_layer_elfs binary (built by gen_layer_elfs.sh)
+npu-infer/tools/gen_layer_elfs
+npu-infer/tools/capture/run_qwen3_npu
+npu-infer/tools/capture/run_qwen3_prefill
+npu-infer/tools/capture/gen_mm_seq
+
+# capture/decode tool binaries (built from the tracked .cpp sources)
+npu-infer/tools/capture/dump_kv_offsets
+npu-infer/tools/capture/gen_mha_dump
+npu-infer/tools/capture/gen_mha_dump2
+npu-infer/tools/capture/gen_mha_mha
+npu-infer/tools/capture/replay_attn
+npu-infer/tools/capture/test_attn
+npu-infer/tools/capture/test_attn2
+npu-infer/tools/capture/test_attn3
+npu-infer/tools/decode_txn
+
+# Generated capture artifacts: 2.3 GB of per-context ELFs/TXNs and BO dumps.
+# They are REGENERABLE (gen_layer_elfs, ~0.9s per 1100 contexts) and the runtime already
+# defaults NPU_LAYER_ELF_DIR to a per-model cache the moment the caller does not set it
+# (ensure_elf_gen_env), so the shipped set here was only ever a seeding convenience.
+# Tracking them made the branch a 17,347-file change of which 16,998 contributed 88
+# insertions between them, and the in-checkout set stops at ctx 2200 -- it IS the cliff
+# RESULTS-ctx2200-cliff describes.
+npu-infer/captures/
