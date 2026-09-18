@@ -30,12 +30,12 @@ int prism_gemv_f32(const void*, const float*, float*, int, int, int, void*);
 int prism_gemv_row4_f32(const void*, const float*, float*, int, int, int, void*);
 int prism_gemv_tile_f32(const void*, const float*, float*, int, int, int, void*);
 int prism_gemv_dense_f32(const float*, const float*, float*, int, int, void*);
-int prism_quant_q8_f32(const float*, int, int8_t*, void*, void*);
-int prism_gemv_dp4a_f32(const void*, const int8_t*, const void*, float*, int, int, int, void*);
+int prism_quant_q8_f32(const float*, int, int8_t*, void*, int*, void*);
+int prism_gemv_dp4a_f32(const void*, const int8_t*, const void*, float*, int, int, int, const int*, void*);
 int prism_gemv_dp4a_multi4_f32(const void*, const void*, const void*, const void*,
                                float*, float*, float*, float*,
                                int, int, int, int, int, int, int, int, int, int,
-                               const int8_t*, const void*, void*);
+                               const int8_t*, const void*, const int*, void*);
 int prism_conv1d_silu_f32(const float*, const float*, float*, float*, int, int, void*);
 int prism_l2norm_heads_f32(float*, int, int, void*);
 int prism_gbeta_f32(const float*, const float*, const float*, const float*, float*, float*, int, void*);
@@ -113,6 +113,7 @@ public:
         alloc(d_logits_, (size_t)V * 4);
         alloc(d_q8_, (size_t)32768);            // int8 activation scratch (max cols 17408)
         alloc(d_ds_, (size_t)4096);             // fp16 per-32 scales
+        alloc(d_x32_, (size_t)1024);            // per-32 int8 activation sums (cols/32 max 544)
         h_.assign(H, 0.0f); logits_.assign(V, 0.0f);
         sgH_ = sg(H); sgV_ = sg(VD); sgF_ = sg(NF);
         loaded_ = true;
@@ -242,13 +243,13 @@ private:
             return;
         }
         const int cols = G[0]->cols;
-        if (prism_quant_q8_f32(x, cols, d_q8_, d_ds_, nullptr)) { std::fprintf(stderr, "PrismEngine: quant failed\n"); std::abort(); }
+        if (prism_quant_q8_f32(x, cols, d_q8_, d_ds_, d_x32_, nullptr)) { std::fprintf(stderr, "PrismEngine: quant failed\n"); std::abort(); }
         const int rc = prism_gemv_dp4a_multi4_f32(
             G[0]->p, n > 1 ? G[1]->p : nullptr, n > 2 ? G[2]->p : nullptr, n > 3 ? G[3]->p : nullptr,
             ys[0], n > 1 ? ys[1] : nullptr, n > 2 ? ys[2] : nullptr, n > 3 ? ys[3] : nullptr,
             G[0]->rows, n > 1 ? G[1]->rows : 0, n > 2 ? G[2]->rows : 0, n > 3 ? G[3]->rows : 0,
             n, cols, G[0]->nb, n > 1 ? G[1]->nb : 0, n > 2 ? G[2]->nb : 0, n > 3 ? G[3]->nb : 0,
-            d_q8_, d_ds_, nullptr);
+            d_q8_, d_ds_, d_x32_, nullptr);
         if (rc) { std::fprintf(stderr, "PrismEngine: multi-gemv failed\n"); std::abort(); }
     }
 
@@ -288,8 +289,8 @@ private:
             int rc;
             if (G.nb == 18 || G.nb == 34 || G.nb == 28) {
                 // Prism-extracted int8 dp4a path: quantize the activation row once, then dot.
-                rc = prism_quant_q8_f32(x, G.cols, d_q8_, d_ds_, nullptr);
-                if (!rc) rc = prism_gemv_dp4a_f32(G.p, d_q8_, d_ds_, y, G.rows, G.cols, G.nb, nullptr);
+                rc = prism_quant_q8_f32(x, G.cols, d_q8_, d_ds_, d_x32_, nullptr);
+                if (!rc) rc = prism_gemv_dp4a_f32(G.p, d_q8_, d_ds_, y, G.rows, G.cols, G.nb, d_x32_, nullptr);
             } else {
                 rc = prism_gemv_tile_f32(G.p, x, y, G.rows, G.cols, G.nb, nullptr);
             }
@@ -312,7 +313,7 @@ private:
           *d_q_ = nullptr, *d_kb_ = nullptr, *d_vb_ = nullptr, *d_attn_ = nullptr, *d_ar_ = nullptr,
           *d_qs_ = nullptr, *d_gt_ = nullptr, *d_logits_ = nullptr;
     int8_t *sgH_ = nullptr, *sgV_ = nullptr, *sgF_ = nullptr;
-    int8_t* d_q8_ = nullptr; void* d_ds_ = nullptr;
+    int8_t* d_q8_ = nullptr; void* d_ds_ = nullptr; int* d_x32_ = nullptr;
     std::vector<float> h_, logits_;
     int pos_ = 0;
     bool loaded_ = false;

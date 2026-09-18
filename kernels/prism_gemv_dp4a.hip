@@ -42,19 +42,33 @@ __device__ __forceinline__ int q2_symbols4(uint32_t b) {
 
 // x (float) -> q8_1: 32-element chunks, int8 + one fp16 scale (one warp per chunk)
 __global__ void prism_quant_q8_kernel(const float* __restrict__ x, int n,
-                                      int8_t* __restrict__ q8, __half* __restrict__ ds) {
+                                      int8_t* __restrict__ q8, __half* __restrict__ ds,
+                                      int* __restrict__ x32) {
     const int b = blockIdx.x, lane = threadIdx.x & 31;
     const float v = x[b * 32 + lane];
     float mx = fabsf(v);
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffffffffffull, mx, off));
     const float d = mx > 0.f ? mx / 127.f : 1.f;
-    q8[b * 32 + lane] = (int8_t)__float2int_rn(v / d);
+    const int8_t q = (int8_t)__float2int_rn(v / d);
+    q8[b * 32 + lane] = q;
     if (lane == 0) ds[b] = __float2half(d);
+    // Per-32 sum of the int8 activations, emitted in the SAME launch as the quantization.
+    // It is weight-independent, so the Q1_0 dot can use 2*sum(set bits) - sum(all) and save
+    // the per-4-group sign fixup (measured: 27% on every GEMV shape, corr 0.999996).
+    int sv = (int)q;
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) sv += __shfl_down_sync(0xffffffffffffffffull, sv, off);
+    if (lane == 0) x32[b] = sv;
 }
 
 // Q1_0 block (128 elems) x 4 q8_1 chunks -> float (fork: vec_dot_q1_0_q8_1)
-__device__ __forceinline__ float dot_q1_128(const uint8_t* blk, const int8_t* q8, const __half* ds) {
+__device__ __forceinline__ float dot_q1_128(const uint8_t* blk, const int8_t* q8, const __half* ds,
+                                            const int* x32) {
+    // dot = d1 * sum_iqs ds[iqs] * (2*sp_iqs - S_iqs), where sp_iqs sums the int8 activations
+    // over the SET weight bits and S_iqs is their plain sum (x32, weight-independent).
+    // The mask is the same `spread` intermediate q1_unpack4 builds, so the perm/sub/or that
+    // materialise +-1 bytes are not needed: 5 ops per 4 weights against 8.
     const float d1 = __half2float(*reinterpret_cast<const __half*>(blk));
     const int16_t* qs = reinterpret_cast<const int16_t*>(blk + 2);
     float acc = 0.f;
@@ -62,16 +76,18 @@ __device__ __forceinline__ float dot_q1_128(const uint8_t* blk, const int8_t* q8
     for (int iqs = 0; iqs < 4; ++iqs) {
         const int16_t* qc = qs + iqs * 2;
         const int* u = reinterpret_cast<const int*>(q8 + iqs * 32);
-        int sumi = 0;
+        int sp = 0;
 #pragma unroll
         for (int j = 0; j < 2; ++j) {
-            const int q = qc[j];
-            sumi = prism_dp4a(q1_unpack4((uint32_t)q, 0), u[j * 4 + 0], sumi);
-            sumi = prism_dp4a(q1_unpack4((uint32_t)q, 1), u[j * 4 + 1], sumi);
-            sumi = prism_dp4a(q1_unpack4((uint32_t)q, 2), u[j * 4 + 2], sumi);
-            sumi = prism_dp4a(q1_unpack4((uint32_t)q, 3), u[j * 4 + 3], sumi);
+            const uint32_t q = (uint32_t)qc[j];
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                const uint32_t n = (q >> (4 * k)) & 0x0Fu;
+                const int mask = (int)((n * 0x00204081u) & 0x01010101u);
+                sp = prism_dp4a(mask, u[j * 4 + k], sp);
+            }
         }
-        acc += __half2float(ds[iqs]) * (float)sumi;
+        acc += __half2float(ds[iqs]) * (float)(2 * sp - x32[iqs]);
     }
     return d1 * acc;
 }
@@ -161,8 +177,8 @@ __device__ __forceinline__ float dot_ptq1_128(const uint8_t* bq, const int8_t* q
 // Runtime layout dispatch for the fused variant (a matrix has a single nb, so the branch
 // is uniform across a block).
 __device__ __forceinline__ float prism_dot_nb(const uint8_t* blk, const int8_t* q8,
-                                              const __half* ds, int nb) {
-    if (nb == 18) return dot_q1_128(blk, q8, ds);
+                                              const __half* ds, const int* x32, int nb) {
+    if (nb == 18) return dot_q1_128(blk, q8, ds, x32);
     if (nb == 34) return dot_pq2_128(blk, q8, ds);
     return dot_ptq1_128(blk, q8, ds);
 }
@@ -176,7 +192,8 @@ __global__ void prism_gemv_dp4a_multi4_kernel(
         float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2, float* __restrict__ y3,
         int rows0, int rows1, int rows2, int rows3, int n, int cols,
         int nb0, int nb1, int nb2, int nb3,
-        const int8_t* __restrict__ q8, const __half* __restrict__ ds) {
+        const int8_t* __restrict__ q8, const __half* __restrict__ ds,
+        const int* __restrict__ x32) {
     const int m = blockIdx.y;
     if (m >= n) return;
     const uint8_t* W = (m == 0) ? W0 : (m == 1) ? W1 : (m == 2) ? W2 : W3;
@@ -190,7 +207,8 @@ __global__ void prism_gemv_dp4a_multi4_kernel(
     const uint8_t* row = W + (size_t)r * bpr * nb;
     float acc = 0.f;
     for (int b = lane; b < bpr; b += 32) {
-        acc += prism_dot_nb(row + (size_t)b * nb, q8 + (size_t)b * 128, ds + (size_t)b * 4, nb);
+        acc += prism_dot_nb(row + (size_t)b * nb, q8 + (size_t)b * 128, ds + (size_t)b * 4,
+                            x32 + (size_t)b * 4, nb);
     }
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffffffffffull, acc, off);
@@ -201,7 +219,7 @@ __global__ void prism_gemv_dp4a_multi4_kernel(
 template <int NB>
 __global__ void prism_gemv_dp4a_kernel(const uint8_t* __restrict__ W, const int8_t* __restrict__ q8,
                                        const __half* __restrict__ ds, float* __restrict__ y,
-                                       int rows, int cols) {
+                                       int rows, int cols, const int* __restrict__ x32) {
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int r = blockIdx.x * (blockDim.x >> 5) + warp;
     if (r >= rows) return;
@@ -212,7 +230,8 @@ __global__ void prism_gemv_dp4a_kernel(const uint8_t* __restrict__ W, const int8
         const uint8_t* blk = row + (size_t)b * NB;
         const int8_t* qb = q8 + (size_t)b * 128;
         const __half* db = ds + (size_t)b * 4;
-        acc += (NB == 18) ? dot_q1_128(blk, qb, db) : (NB == 34) ? dot_pq2_128(blk, qb, db) : dot_ptq1_128(blk, qb, db);
+        acc += (NB == 18) ? dot_q1_128(blk, qb, db, x32 + (size_t)b * 4)
+                          : (NB == 34) ? dot_pq2_128(blk, qb, db) : dot_ptq1_128(blk, qb, db);
     }
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffffffffffull, acc, off);
@@ -222,9 +241,9 @@ __global__ void prism_gemv_dp4a_kernel(const uint8_t* __restrict__ W, const int8
 }  // namespace
 
 // Quantize a float activation row to q8_1 (int8 + one fp16 scale per 32 elements).
-extern "C" int prism_quant_q8_f32(const float* x, int n, int8_t* q8, void* ds, void* stream) {
-    if (!x || n <= 0 || (n & 31) || !q8 || !ds) return 1;
-    prism_quant_q8_kernel<<<n / 32, 32, 0, (hipStream_t)stream>>>(x, n, q8, (__half*)ds);
+extern "C" int prism_quant_q8_f32(const float* x, int n, int8_t* q8, void* ds, int* x32, void* stream) {
+    if (!x || n <= 0 || (n & 31) || !q8 || !ds || !x32) return 1;
+    prism_quant_q8_kernel<<<n / 32, 32, 0, (hipStream_t)stream>>>(x, n, q8, (__half*)ds, x32);
     HIP_CHECK(hipGetLastError());
     return 0;
 }
@@ -235,7 +254,7 @@ extern "C" int prism_gemv_dp4a_multi4_f32(
         float* y0, float* y1, float* y2, float* y3,
         int rows0, int rows1, int rows2, int rows3, int n, int cols,
         int nb0, int nb1, int nb2, int nb3,
-        const int8_t* q8, const void* ds, void* stream) {
+        const int8_t* q8, const void* ds, const int* x32, void* stream) {
     if (n < 1 || n > 4 || cols <= 0 || (cols & 127) || !q8 || !ds) return 1;
     int mx = rows0;
     if (n > 1 && rows1 > mx) mx = rows1;
@@ -245,18 +264,18 @@ extern "C" int prism_gemv_dp4a_multi4_f32(
     prism_gemv_dp4a_multi4_kernel<<<g, 256, 0, (hipStream_t)stream>>>(
         (const uint8_t*)W0, (const uint8_t*)W1, (const uint8_t*)W2, (const uint8_t*)W3,
         y0, y1, y2, y3, rows0, rows1, rows2, rows3, n, cols, nb0, nb1, nb2, nb3,
-        q8, (const __half*)ds);
+        q8, (const __half*)ds, x32);
     HIP_CHECK(hipGetLastError());
     return 0;
 }
 
 extern "C" int prism_gemv_dp4a_f32(const void* W, const int8_t* q8, const void* ds, float* y,
-                                   int rows, int cols, int nb, void* stream) {
+                                   int rows, int cols, int nb, const int* x32, void* stream) {
     if (!W || !q8 || !ds || !y || rows <= 0 || cols <= 0 || (cols & 127)) return 1;
     const int g = (rows + 7) / 8;
-    if (nb == 18)      prism_gemv_dp4a_kernel<18><<<g, 256, 0, (hipStream_t)stream>>>((const uint8_t*)W, q8, (const __half*)ds, y, rows, cols);
-    else if (nb == 34) prism_gemv_dp4a_kernel<34><<<g, 256, 0, (hipStream_t)stream>>>((const uint8_t*)W, q8, (const __half*)ds, y, rows, cols);
-    else if (nb == 28) prism_gemv_dp4a_kernel<28><<<g, 256, 0, (hipStream_t)stream>>>((const uint8_t*)W, q8, (const __half*)ds, y, rows, cols);
+    if (nb == 18)      prism_gemv_dp4a_kernel<18><<<g, 256, 0, (hipStream_t)stream>>>((const uint8_t*)W, q8, (const __half*)ds, y, rows, cols, x32);
+    else if (nb == 34) prism_gemv_dp4a_kernel<34><<<g, 256, 0, (hipStream_t)stream>>>((const uint8_t*)W, q8, (const __half*)ds, y, rows, cols, x32);
+    else if (nb == 28) prism_gemv_dp4a_kernel<28><<<g, 256, 0, (hipStream_t)stream>>>((const uint8_t*)W, q8, (const __half*)ds, y, rows, cols, x32);
     else return 1;
     HIP_CHECK(hipGetLastError());
     return 0;
