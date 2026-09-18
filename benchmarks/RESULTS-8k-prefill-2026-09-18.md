@@ -1,3 +1,12 @@
+> **CORRECTION 2026-09-18 — read `RESULTS-8k-campaign-variance-2026-09-18.md` first.** The
+> table below is ONE run per model. An interleaved repeated campaign
+> (native, FLM, native, FLM in one window, then five more native runs for 1.7B) puts 0.6B and
+> 1.7B at **parity** with FLM at 8k (0.6B 2009–2028 vs 1988–2010 t/s; 1.7B 1145–1473 vs
+> 1193–1374), with FLM slightly faster to first token, and shows a 3.6x native outlier
+> (20.0 s vs 5.6–7.2 s) that did not recur on a quiet device. **The "1.01–1.24x native" column
+> below is not established**; the older record's 0.62–0.71x inversion is still not reproduced
+> either. 8k needs a contention-guarded repeated campaign.
+
 # Criterion (c) at 8k: the recorded prefill inversion does NOT reproduce — 2026-09-18
 
 Goal `mu35shsg-i3hlyi`. One window on the current binary, 8k context (8192-token prompt),
