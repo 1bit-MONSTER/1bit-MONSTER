@@ -44,6 +44,14 @@ FLM_PREFILL_BRIDGE="$SRCDIR/src/flm_prefill_bridge.cpp"
 FLM_PREFILL_BRIDGE_O="$BUILDDIR/flm_prefill_bridge.o"
 RUNLIST_RT="$REPO_ROOT/npu-infer/src/runtime_layer.cpp"
 RUNLIST_RT_O="$BUILDDIR/npu_runlist_runtime.o"
+# MoE whole-layer single-launch path (Qwen3.6-35B-A3B): MoERuntimeLayerEngine.
+# Its own TU beside the dense runtime_layer.cpp. It includes only npu-infer's
+# model.h and XRT — no FLM headers — so it needs the same two -I paths as the
+# dense one. It was written for the 35B and, until now, was in NO build file and
+# in no object list, which is why the shipped 35B binary carries the dense
+# RuntimeLayerEngine and zero MoERuntimeLayerEngine symbols.
+RUNLIST_MOE="$REPO_ROOT/npu-infer/src/runtime_layer_moe.cpp"
+RUNLIST_MOE_O="$BUILDDIR/npu_runlist_moe.o"
 NPU_MODEL_C="$REPO_ROOT/npu-infer/src/model.c"
 NPU_MODEL_O="$BUILDDIR/npu_model.o"
 NPU_INFER_INC="$REPO_ROOT/npu-infer/include"
@@ -111,6 +119,10 @@ if stale "$RUNLIST_RT_O" "$RUNLIST_RT" "${NPU_INFER_HEADERS[@]}"; then
     echo "g++ -c -std=c++17 -O3 -o $RUNLIST_RT_O $RUNLIST_RT"
     g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_RT_O" "$RUNLIST_RT" || die "runtime_layer.cpp failed to compile"
 fi
+if stale "$RUNLIST_MOE_O" "$RUNLIST_MOE" "${NPU_INFER_HEADERS[@]}"; then
+    echo "g++ -c -std=c++17 -O3 -fopenmp -o $RUNLIST_MOE_O $RUNLIST_MOE"
+    g++ -c -std=c++17 -O3 -fopenmp -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_MOE_O" "$RUNLIST_MOE" || die "runtime_layer_moe.cpp failed to compile"
+fi
 if stale "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE" "${NPU_INFER_HEADERS[@]}" "${SRC_HEADERS[@]}"; then
     echo "g++ -c -std=c++17 -O3 -o $RUNLIST_BRIDGE_O $RUNLIST_BRIDGE"
     g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE" || die "npu_runlist_bridge.cpp failed to compile"
@@ -162,7 +174,7 @@ fi
 # XRT uses shared libs (must come AFTER source on command line)
 LIBS=("${XRT_LIBS[@]}" -laiebu -luuid -lm -ldl -L"$FLM_LIB" -lgemm -ldequant -lqwen3_npu -lqwen3_6_moe_npu -lqwen3_5vl_npu -lq4_npu_eXpress -lmha -llm_head -lllama_npu -lgemma4e_npu -lphi4_npu -lnanbeige_npu -llfm2_npu "-Wl,-rpath,$FLM_LIB")
 CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$SRCDIR/generators" -I"$REPO_ROOT/include" -I"$XRT_INC")
-ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_BRIDGE_O" "$BF16MM_BRIDGE_O" "$FLM_PREFILL_BRIDGE_O")
+ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_MOE_O" "$RUNLIST_BRIDGE_O" "$BF16MM_BRIDGE_O" "$FLM_PREFILL_BRIDGE_O")
 
 echo "=== Building NPU engine variants ==="
 
