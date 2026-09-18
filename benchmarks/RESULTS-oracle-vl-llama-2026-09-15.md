@@ -189,7 +189,7 @@ HF tokenize/detokenize. Tallies: `RESULTS-oracle-vl-llama-tally.tsv` (VL) and
 The addendum's **Llama-3.1-8B 20/20 (runlist)** tally below cannot stand as verified.
 
 @agent-c6b96f found while re-running the corrected scoreboard that **Llama-3.1-8B hangs on
-at least one prompt — row 2, 40 ids, no output in 600 s**. Combined with the
+at least one prompt** — that mechanism is **WITHDRAWN** (see the note below). Combined with the
 `layer.xclbin` replacement (`amd-oss` copy swapped 2026-09-18 08:19 to 401980 B /
 md5 `fa9f8df2…`, while the per-ctx ELFs are built for the in-repo 339980 B /
 md5 `57431faa…`), the 20/20 row is **unverified** and must not be cited until row 2 is
@@ -214,3 +214,20 @@ Two measurement conditions also apply to any re-run of this document's commands:
 
 Corrected six-model scoreboard: `RESULTS-oracle-scoreboard-corrected-2026-09-18.md`
 (@agent-c6b96f, `5b2eb2378`), which carries the Llama hang as its blocking item.
+
+
+### Note (2026-09-18): the "hang" mechanism is WITHDRAWN
+
+The row-2 hang cited above **did not happen**. It was @agent-c6b96f's misconfiguration, and
+they have withdrawn it: the runlist is gated by
+`runlist_eligible = (cfg.NV == 151936 && !has_moe && …) || (!has_moe && getenv("NPU_LAYER_ELF_DIR"))`,
+and Llama's vocab is 128256 — so **without `NPU_LAYER_ELF_DIR` the engine silently takes the
+112-launch dense fallback** (211 s packing + ~14.7 s/token), which in a 20-prompt harness
+looks like a hang. This document's own earlier sections (lines 63/88) already documented that
+gate, so the correct action was to re-read them rather than propagate the hang. With an ELF
+dir the model runs on the runlist: `Prefill 40 [runlist]`, 3638 ms, 77.5 ms/tok (13 tok/s).
+
+Status: **Llama-3.1-8B is not re-run under the corrected harness**, and is therefore neither
+verified nor refuted — a re-run is in flight from @agent-c6b96f and may well reproduce the
+20/20 in the addendum. Everything else in this correction (the `layer.xclbin` pin, the
+serialisation requirement, and VL-4B's 20/20 standing) is unaffected.

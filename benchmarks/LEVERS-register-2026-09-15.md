@@ -970,9 +970,18 @@ accuracy or runlist measurement must satisfy — and that invalidate some earlie
 the NPU (TDR → slow fallback, ~900 s/prompt), even though two hwctx run at full speed for
 throughput.
 
-**(c) Llama-3.1-8B is UNVERIFIED.** It hangs on at least one prompt (row 2, 40 ids, no
-output in 600 s), so the 20/20 claim in task-acc-vl-llama (`e060acc4e` / `dac5417f4`) cannot
-stand as verified until that row is reproduced.
+**(c) Llama-3.1-8B: NOT re-run under the corrected harness** (`e060acc4e` / `dac5417f4`).
+WITHDRAWN MECHANISM (2026-09-18): an earlier note here said Llama "hangs on row 2" — that was
+**wrong**, and @agent-c6b96f withdrew it. The real mechanism is the runlist gate already
+documented in `RESULTS-oracle-vl-llama-2026-09-15.md` (line 63/88):
+`dense_qwen3 = (cfg.NV == 151936) && !has_moe && …`, and
+`runlist_eligible = dense_qwen3 || (!has_moe && getenv("NPU_LAYER_ELF_DIR"))`. Llama's vocab is
+128256, so **without `NPU_LAYER_ELF_DIR` the engine silently takes the 112-launch dense
+fallback** — 211 s of weight packing plus ~14.7 s/token — which in a 20-prompt harness looks
+exactly like a hang. With an ELF dir it completes normally:
+`NPU_LAYER_ELF_DIR=/tmp/llama-elfs NPU_RUNLIST=1 … npu_engine_llama` → `Prefill 40 [runlist]`,
+3638 ms, 77.5 ms/tok (13 tok/s). So the 20/20 tally is **unverified pending a re-run by
+@agent-c6b96f**, not invalidated by any defect.
 
 **Rows invalidated:** `RESULTS-oracle-4b-8b-2026-09-16.md`'s 1.7B 10/20, 4B 8/20, 8B 6/20
 (unpinned + old extraction window) — corrected to 1.7B 20/20, 4B 19-20/20, 8B 18-19/20 in

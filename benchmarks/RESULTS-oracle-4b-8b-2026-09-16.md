@@ -95,6 +95,11 @@ and the corrected runs, and the assertion is now enforced per row.
 - **Runs must be SERIAL.** Two concurrent harness runs plus a third engine stall the NPU
   (TDR → slow fallback, ~900 s/prompt), even though two hwctx run at full speed for
   throughput.
-- **Llama-3.1-8B is UNVERIFIED.** It hangs on at least one prompt (row 2, 40 ids, no
-  output in 600 s), so the earlier 20/20 claim for it (task-acc-vl-llama, `e060acc4e` /
-  `dac5417f4`) cannot stand as verified.
+- **Llama-3.1-8B: NOT re-run under the corrected harness** (`e060acc4e` / `dac5417f4`).
+  WITHDRAWN MECHANISM (2026-09-18): an earlier note here said Llama "hangs on row 2" — that
+  was **wrong** and @agent-c6b96f withdrew it. The runlist is gated by
+  `dense_qwen3 = (cfg.NV == 151936) || (!has_moe && getenv("NPU_LAYER_ELF_DIR"))`; Llama's
+  vocab is 128256, so **without `NPU_LAYER_ELF_DIR` the engine silently takes the 112-launch
+  dense fallback** (~211 s packing, ~14.7 s/token), which looks like a hang in a 20-prompt
+  run. With an ELF dir it completes: `Prefill 40 [runlist]`, 3638 ms, 77.5 ms/tok. The 20/20
+  tally is unverified pending a re-run, not invalidated.
