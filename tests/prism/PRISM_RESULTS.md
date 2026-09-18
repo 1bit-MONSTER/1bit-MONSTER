@@ -77,7 +77,8 @@ Prompt `760 6511 314 9338 369` ("The capital of France is") throughout this sect
 
 ## 4b. Measurement-hygiene incident (2026-09-18) - caused by this lane, recorded with its impact
 
-Two leaked processes (`/tmp/attrib`, a Prism kernel-attribution harness: it carries this lane's kernel symbols and
+Two leaked processes (`/tmp/attrib`, a Prism kernel-attribution harness by symbol set and working directory - specific build
+unconfirmed, see the correction below: it carries this lane's kernel symbols and
 ran with this worktree as its working directory) held the NPU device and shared LPDDR while spinning - tens of
 minutes of CPU against **zero device I/O**, so it was neither producing results nor releasing anything. A peer
 measured large inflation of NPU prefill alongside it and discarded those runs (the peer's own report carries the factor); it is also the most probable
@@ -88,11 +89,54 @@ Both processes were terminated once the provenance was established - verified af
 holder of that device is the FLM server. The box triad recovered to at or above the quiet threshold immediately,
 which confirms the mechanism and re-licenses quiet windows (see the recovery row in section 4).
 
+**Provenance corrected (peer reply): unconfirmed beyond "this lane's tooling".** The symbol set and the working
+directory support the lane attribution, but the specific build is not accounted for, and the timestamps argue
+against the attribution I made. Facts on both sides: the two processes started at 14:32:44 and 14:47:45, the
+binary's mtime is 14:53:11 - so an older build of the same harness was already running when the file was rebuilt -
+and the peer's first *successful* build of their harness is reported at around 15:00-15:03, which is after that
+mtime. Their earlier attempts failed to compile, and failed compiles write no binary. So their build history
+neither accounts for the file as it stands nor clears them, and I have recorded it as unconfirmed rather than
+attributed. One reading correction: the symbol I quoted as `prism_gemv_warp4_kernel<18>` is probably
+`prism_gemv_dp4a_kernel<18>` demangled; the other two (`prism_fwht_kernel`, `prism_ssmout_perm_kernel`) are
+unambiguous lane symbols, so the "this lane's tooling" conclusion survives the correction. What does not depend on
+attribution at all: tens of minutes of CPU with zero device I/O is a leftover rather than an experiment, and the
+decision to kill it was right without waiting for an owner.
+
 Two independent detectors caught this, which is the part worth keeping: the peer's run guard discarded the
 contaminated measurements, and this lane's own rule refused the quiet tag on the drifted window. Neither was
 looking for a leak; both were looking for evidence that the instrument was sound. Rules added: **no long-lived
 device probe runs without the device lock**, and a probe that spins for tens of minutes with no device I/O is a
 bug to kill, not a measurement in flight.
+
+## 4c. Gate integrity - a skipped gate is not a green gate (defect class, reported by the peer and fixed)
+
+**The defect, self-reported by the peer and confirmed here.** `run_prism_tests.sh` builds several optional device
+gates. When one of those builds failed it printed "(hipcc present but X failed to build - skipping)" and carried
+on, and nothing incremented any counter, so the final line still read ALL PRISM GATES PASSED. The full device
+forward gate (P3.3) was therefore SKIPPED rather than passing through several reports of a green suite, including
+reports of mine, because my host-only runs skipped every device gate silently through a guard that printed
+nothing at all. The summary alone was never evidence.
+
+**The fix, and it is structural rather than a promise to read carefully.** `run_prism_tests.sh` now counts passes
+and skips, converts every optional-build failure into a counted skip, prints a `gates: passed=N failed=M
+skipped=K` line, and can no longer claim an unqualified green over a skip: a skip with no declaration ends the run
+as "N GATE(S) SKIPPED - THIS IS NOT A GREEN RUN" and a non-zero exit. Declared skips are named explicitly
+(host-only runs report "GATES PASSED WITH N DECLARED SKIPS"), so the legitimate mode stays usable and stays
+honest. `tests/prism/check_suite_log.py` adds the same rule at the log level, with a self-test of seven fixtures,
+for anyone who captures suite output.
+
+**Verified by reproducing the defect rather than by asserting the fix.** With the original defect re-created
+exactly - the dp4a translation unit absent from the device-forward build list - the suite now reports
+`passed=47 failed=0 skipped=1`, names the cause (`SKIPPED: hipcc present but the full device forward failed to
+build`), ends with "1 GATE(S) SKIPPED - THIS IS NOT A GREEN RUN", and exits non-zero; the log checker
+independently rejects the same log for an undeclared skip. On the real tree, P3.3 now PASSES on all three packs,
+so the gate is green because it ran, not because nobody noticed it was absent.
+
+**One flake observed and not reproduced.** One run under a heavily loaded box reported `failed=1` with P3.3
+passing on all three packs; three subsequent runs on the same tree were clean at `passed=53 failed=0 skipped=0`.
+The failing gate's name is unknown because I deleted that log before examining it - a process error of mine, and
+the same class of mistake as destroying an instrument's output - so it is recorded as an unexplained flake to
+watch rather than as a resolved item. The counts line is what surfaced it, which is the argument for the change.
 
 ## 5. P3 gate - MEASURED: PQ2_0 **MET**; Q1_0 and PTQ1_0 still short (2026-09-18)
 

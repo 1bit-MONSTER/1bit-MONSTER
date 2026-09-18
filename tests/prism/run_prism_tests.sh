@@ -14,11 +14,15 @@ MDIR="${1:-$HOME/models/prism}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fails=0
+passes=0
+skips=0
+skip() { printf "  (SKIPPED: %s)\n" "$1"; skips=$((skips + 1)); }
 run() {  # run <name> <cmd...>
   local name="$1"; shift
   local out
   if out="$("$@" 2>&1)"; then
     printf "%-52s PASS\n" "$name"
+    passes=$((passes + 1))
   else
     printf "%-52s FAIL\n" "$name"
     printf '%s\n' "$out" | tail -20 | sed 's/^/    /'
@@ -55,13 +59,14 @@ g++ -O2 -std=c++17 -I "$REPO/include" -I "$REPO/src" -I "$REPO/engine/npu/includ
 PGEMV=""
 HIPCC=/opt/rocm-therock/bin/hipcc
 if [ -n "${PRISM_NO_DEVICE:-}" ]; then HIPCC=/nonexistent-skipping-device-gates; fi
+if [ ! -x "$HIPCC" ]; then skip "hipcc not available at $HIPCC - device gates are skipped, host gates only"; fi
 if [ -x "$HIPCC" ]; then
   if "$HIPCC" --offload-arch=gfx1151 -O3 -std=c++17 -I "$REPO/include" -I "$REPO/src" \
       "$REPO/tests/prism/prism_gemv_hip.hip" "$REPO/src/onebp_model.cpp" -o "$TMP/pgemv" \
       >/dev/null 2>&1; then
     PGEMV="$TMP/pgemv"
   else
-    echo "  (hipcc present but the GPU parity tool failed to build — skipping)"
+    skip "hipcc present but the GPU parity tool failed to build"
   fi
 fi
 
@@ -73,7 +78,7 @@ if [ -x "$HIPCC" ]; then
       "$REPO/src/onebp_model.cpp" -o "$TMP/pgemvp" >/dev/null 2>&1; then
     PGEMVP="$TMP/pgemvp"
   else
-    echo "  (hipcc present but the production GEMV gate failed to build — skipping)"
+    skip "hipcc present but the production GEMV gate failed to build"
   fi
 fi
 
@@ -85,7 +90,7 @@ if [ -x "$HIPCC" ]; then
       -o "$TMP/phadm" >/dev/null 2>&1; then
     PHADM="$TMP/phadm"
   else
-    echo "  (hipcc present but the Prism FWHT parity tool failed to build — skipping)"
+    skip "hipcc present but the Prism FWHT parity tool failed to build"
   fi
 fi
 
@@ -97,7 +102,7 @@ if [ -x "$HIPCC" ]; then
       -o "$TMP/pgdn" >/dev/null 2>&1; then
     PGDN="$TMP/pgdn"
   else
-    echo "  (hipcc present but the GDN gate failed to build — skipping)"
+    skip "hipcc present but the GDN gate failed to build"
   fi
 fi
 
@@ -109,7 +114,7 @@ if [ -x "$HIPCC" ]; then
       -o "$TMP/pattn" >/dev/null 2>&1; then
     PATTN="$TMP/pattn"
   else
-    echo "  (hipcc present but the attention gate failed to build — skipping)"
+    skip "hipcc present but the attention gate failed to build"
   fi
 fi
 
@@ -121,7 +126,7 @@ if [ -x "$HIPCC" ]; then
       -o "$TMP/pops" >/dev/null 2>&1; then
     POPS="$TMP/pops"
   else
-    echo "  (hipcc present but the ops gate failed to build — skipping)"
+    skip "hipcc present but the ops gate failed to build"
   fi
 fi
 
@@ -134,7 +139,7 @@ if [ -x "$HIPCC" ]; then
       "$REPO/src/onebp_model.cpp" -o "$TMP/pgdnl" >/dev/null 2>&1; then
     PGDNL="$TMP/pgdnl"
   else
-    echo "  (hipcc present but the layer-0 device driver failed to build — skipping)"
+    skip "hipcc present but the layer-0 device driver failed to build"
   fi
 fi
 
@@ -150,7 +155,7 @@ if [ -x "$HIPCC" ]; then
       "$REPO/src/onebp_model.cpp" -o "$TMP/pfhip" >/dev/null 2>&1; then
     PFHIP="$TMP/pfhip"
   else
-    echo "  (hipcc present but the full device forward failed to build — skipping)"
+    skip "hipcc present but the full device forward failed to build"
   fi
 fi
 
@@ -236,5 +241,14 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
 done
 
 echo
-if [ "$fails" -eq 0 ]; then echo "ALL PRISM GATES PASSED"; else echo "$fails GATE(S) FAILED"; fi
-exit "$fails"
+echo "gates: passed=$passes failed=$fails skipped=$skips"
+if [ "$fails" -eq 0 ] && [ "$skips" -eq 0 ]; then
+  echo "ALL PRISM GATES PASSED"; rc=0
+elif [ "$fails" -gt 0 ]; then
+  echo "$fails GATE(S) FAILED"; rc="$fails"
+elif [ -n "${PRISM_NO_DEVICE:-}" ] || [ ! -x "${HIPCC:-/nonexistent}" ]; then
+  echo "GATES PASSED WITH $skips DECLARED SKIPS (device gates not built)"; rc=0
+else
+  echo "$skips GATE(S) SKIPPED - THIS IS NOT A GREEN RUN"; rc=1
+fi
+exit "$rc"
