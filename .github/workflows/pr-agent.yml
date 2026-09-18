@@ -22,9 +22,17 @@ jobs:
     # `.../pull/${{ github.event.issue.number }}`. On an issue that is not a PR that URL
     # cannot resolve, so the run had nothing to review and could only fail — while still
     # occupying one of the two self-hosted runners, which is the same pool the NPU
-    # benchmark needs (#2552). Measured over 70 minutes on 2026-09-18: 14 of 22 PR-Agent
-    # runs were `issue_comment`, all with head_branch `main` (i.e. issue comments), and
-    # none of them had completed — the queue was 8 deep on `main` alone.
+    # benchmark needs (#2552).
+    #
+    # How often, measured — and how to measure it. `head_branch` and `pull_requests` cannot
+    # separate the two cases: both read `main` and `[]` for a comment on a PR as well as for
+    # one on a plain issue, so counting by them overstates this. The discriminator is the job
+    # log's `PR_URL` resolved against `GET /pulls/<n>` (a 404 means the number is an issue).
+    # Over the eight `issue_comment` runs between 04:31:51Z and 04:52:23Z on 2026-09-18, two
+    # targeted plain issues, and each ran a six-step job that ended by printing the CLI's own
+    # usage text (`--pr_url PR_URL  The URL of the PR to review`). After this guard the same
+    # two shapes report `completed/skipped` with `runner_name` empty and 0 steps, while a
+    # comment on a real PR still runs (#2562).
     #
     # What this does NOT change: a trusted comment on a real PR still runs, including the
     # `*)` fallback in the CLI step that turns a non-command comment into a full review.
