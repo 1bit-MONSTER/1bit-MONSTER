@@ -12,7 +12,24 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MDIR="${1:-$HOME/models/prism}"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+
+# Host-etiquette: the oracle-agreement gate runs the OpenMP CPU floor (`pf`), which otherwise takes every
+# core on the box (observed at 26-31 of 32) and inflates any peer measuring host-bound work - a peer saw a
+# factor of 2.4 on 8k prefill. These are *correctness* gates, so a small cap costs nothing and the box
+# stays usable by others. Raise it with PRISM_CPU_THREADS when a single core-count-sensitive number is
+# wanted, and record that it was raised.
+export OMP_NUM_THREADS="${PRISM_CPU_THREADS:-4}"
+
+# Declare the run in the shared advisory device lock, if no other lane holds it, and release on exit.
+LOCK=/tmp/1bit-npu-device.lock
+LOCK_TAKEN=0
+if [ ! -s "$LOCK" ]; then
+  printf 'prism-suite pid=%s start=%s cpu_threads=%s\n' "$$" "$(date +%H:%M:%S)" "$OMP_NUM_THREADS" > "$LOCK" 2>/dev/null && LOCK_TAKEN=1
+fi
+trap 'rm -rf "$TMP"; if [ "$LOCK_TAKEN" = 1 ] && grep -q "prism-suite pid=$$ " "$LOCK" 2>/dev/null; then : > "$LOCK"; fi' EXIT
+if [ "$LOCK_TAKEN" = 1 ]; then LOCK_NOTE="declared in $LOCK"; else LOCK_NOTE="held by another lane - this run may contend"; fi
+echo "== prism suite: CPU floor capped at $OMP_NUM_THREADS thread(s) (PRISM_CPU_THREADS to change); device lock $LOCK_NOTE =="
+
 fails=0
 passes=0
 skips=0

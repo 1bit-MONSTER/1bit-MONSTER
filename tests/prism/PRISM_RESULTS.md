@@ -119,6 +119,20 @@ the lock for its duration, prints its own holder set and the box load, and is ti
 (`benchmarks/c8k_guarded.sh`, plain /proc/<pid>/fd scanning) and their engine's contention warning with the
 strict and allow-contended knobs are available to copy; both live in their tree, not ours.
 
+**Third contamination, and this one was this lane's own test harness *by design*.** A peer's guard traced a
+`pf` process to `run_prism_tests.sh`'s oracle-agreement gate: the OpenMP CPU floor ran at 26-31 of 32 cores, and
+the suite is relaunched whenever a gate is re-validated, so it saturated the host for minutes at a time and cost
+the peer their last three 8k attempts (their guard's new top-consumer-with-parent print is what self-attributed
+it). This was not a leak but a design choice with no defence: the CPU floor is a **correctness** gate and had no
+reason to take the whole machine. Fix in the runner: `OMP_NUM_THREADS` defaults to 4 (`PRISM_CPU_THREADS` to
+raise it), verified by observing `pf` at 4 threads during a live run; the suite also declares itself in the shared
+device lock when that lock is free, releases it on exit, and prints a startup banner naming the thread cap and the
+lock state - so a peer sees us rather than inferring us from /proc. Note the lock logic is advisory and refuses to
+clobber: the verification run correctly reported "held by another lane" while the kernel owner held it.
+
+**Operating rules this lane now carries, all three earned today:** cap the CPU for every parallel gate, declare
+the device for every device run, and print the load with every host-bound number.
+
 **Host-side note, theirs and applicable to us:** a foreign `pf` at several thousand percent CPU plus clang builds
 inflated the host-bound side of their measurements by a factor of roughly three at load 23 against load 17. Any
 host-bound measurement in this lane records the load alongside the number.
