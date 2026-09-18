@@ -49,6 +49,27 @@ re-run-and-eyeball: all 32 emitted tokens match exactly.
 Against FLM that puts the default unified decode at **1.04–1.10x** (78–80 vs 72.3–75.3
 tok/s) at 1k, with prefill already 1.33x and TTFT faster.
 
+## The H=2560 pair (Qwen3-4B, Qwen3-VL-4B) at 1k, same change
+
+| model | schedule | decode ms/tok | tok/s |
+|---|---|---:|---:|
+| Qwen3-4B | **overlapped** (2 runs) | 52.2, 52.3 | **19.2, 19.1** |
+| Qwen3-4B | serial (earlier window, 2 runs) | 54.1 | 18.5 |
+| Qwen3-4B | FLM on-box (earlier window) | — | 18.70 |
+| Qwen3-VL-4B | **overlapped** (2 runs) | 52.3, 52.6 | **19.1, 19.0** |
+| Qwen3-VL-4B | serial (earlier window, 2 runs) | 54.1 | 18.5 |
+| Qwen3-VL-4B | FLM on-box (earlier window) | — | 18.63 |
+
+The gain here is smaller than 0.6B's (~0.7 ms/token, ~3.6%) but it is the same direction, and
+it moves both H=2560 models from decode 0.99x FLM to **~1.03x**. With prefill already 1.33x
+(4B) and 1.21x (VL-4B) and TTFT faster at 1k, **both now clear all three criterion-(c)
+clauses at 1k** — the first rows in the goal to do so beyond 0.6B.
+
+Caveat, and it matters: only Qwen3-0.6B got a *same-window* serial-vs-overlapped A/B. For
+4B/VL-4B the serial and FLM figures are from an earlier window (same day), so those two rows
+are cross-window comparisons and inherit the known up-to-~27% session variance. They are
+evidence, not a parity claim; a same-window A/B is the check before any claim.
+
 ## Bounds
 
 - One window, two runs per arm, one model, one context (1024 tokens), 32 decode tokens.
