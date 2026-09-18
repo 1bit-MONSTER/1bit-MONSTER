@@ -27,7 +27,16 @@ concurrency:
 
 jobs:
   benchmark:
-    runs-on: self-hosted
+    # [self-hosted, strix-halo], not bare `self-hosted`, because this repo has TWO
+    # self-hosted runners and only one of them has the NPU. Bare `self-hosted` matched
+    # ryzen-pr-agent too, where `ldconfig` finds no XRT, so `Check XRT` set XRT_OK=false,
+    # every step below it was SKIPPED by its `if: env.XRT_OK == 'true'`, and the job
+    # reported SUCCESS having built and benchmarked nothing — measured on runs
+    # 35299194441 and 35298939536 (runner=ryzen-pr-agent, "Build engine: skipped",
+    # "Benchmark: skipped", conclusion=success). That is the false green in #2508, and it
+    # was 42 of the last 60 runs. end-to-end-smoke.yml already pins this label for the
+    # same reason; this workflow was the only one still on the bare label.
+    runs-on: [self-hosted, strix-halo]
     timeout-minutes: 60
     if: github.event.repository.owner.login == '1bit-MONSTER'
     steps:
