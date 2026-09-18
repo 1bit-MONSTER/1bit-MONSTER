@@ -58,6 +58,18 @@ if [ -x "$HIPCC" ]; then
   fi
 fi
 
+# Optional P3.2 gate: production Prism GEMV launchers (needs hipcc + the device).
+PGEMVP=""
+if [ -x "$HIPCC" ]; then
+  if "$HIPCC" --offload-arch=gfx1151 -O3 -std=c++17 -I "$REPO/include" -I "$REPO/src" \
+      "$REPO/tests/prism/test_prism_gemv_prod.hip" "$REPO/kernels/prism_gemv.hip" \
+      "$REPO/src/onebp_model.cpp" -o "$TMP/pgemvp" >/dev/null 2>&1; then
+    PGEMVP="$TMP/pgemvp"
+  else
+    echo "  (hipcc present but the production GEMV gate failed to build — skipping)"
+  fi
+fi
+
 # Optional P3.1 gate: Prism signed FWHT device parity (needs hipcc + the device).
 PHADM=""
 if [ -x "$HIPCC" ]; then
@@ -94,6 +106,10 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
   if [ -n "$PGEMV" ] && [ -f "$bp" ]; then
     run "$base: HIP GEMV decode parity on device" \
         "$PGEMV" "$bp" blk.0.ffn_gate.weight 10
+  fi
+  if [ -n "$PGEMVP" ] && [ -f "$bp" ]; then
+    run "$base: production GEMV launcher parity (P3.2)" \
+        "$PGEMVP" "$bp" blk.0.ffn_gate.weight
   fi
     run "$base: per-position oracle agreement" \
         python3 "$REPO/tests/prism/check_oracle_agreement.py" "$TMP/pf" "$bp" "$base"
