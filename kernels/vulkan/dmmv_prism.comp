@@ -1,0 +1,122 @@
+#version 460
+// ZINC — Prism ML block-128 dequantize + matrix-vector multiply (decode, single token)
+// RDNA4-optimized: wave64 (64 threads/workgroup), 2 output rows per workgroup.
+//
+// Prism packs are FLAT row-major 128-blocks (not the 32x256 tile grid):
+//   Q1_0   (18 B): [f16 d][16 B sign bits]      value = bit ? +d : -d
+//   PQ2_0  (34 B): [f16 d][32 B 2-bit codes]    value = code*d - d  (code 3 never emitted)
+//   PTQ1_0 (28 B): [24 B qs][2 B qh][f16 d]     base-3, NON-positional element order
+// The folded Hadamard basis is applied to the activation on the host/other pass (P3.1),
+// not here: weight packing is basis-agnostic.
+
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_16bit_storage : require
+
+layout(local_size_x = 64) in;
+
+layout(constant_id = 0) const uint SPEC_M = 4096;
+layout(constant_id = 1) const uint SPEC_K = 4096;
+layout(constant_id = 2) const uint SPEC_NB = 18;    // block bytes: 18 / 34 / 28
+layout(constant_id = 3) const uint SPEC_Q = 11;     // ONEBP id: 11 Q1_0 / 12 PQ2_0 / 13 PTQ1_0
+
+layout(push_constant) uniform PushConstants {
+    uint M;           // output rows
+    uint K;           // input columns (elements)
+    uint a_offset;    // byte offset into matrix A
+    uint x_offset;    // byte offset into vector x
+    uint y_offset;    // byte offset into vector y
+    uint acc_mode;    // 0 = overwrite, 1 = accumulate
+};
+
+layout(set = 0, binding = 0) readonly buffer MatrixA { uint8_t a_data[]; };
+layout(set = 0, binding = 1) readonly buffer VectorX { float   x_data[]; };
+layout(set = 0, binding = 2) buffer VectorY { float y_data[]; };
+
+shared float s_sum0[4];  // max 4 subgroups for workgroup size 64
+shared float s_sum1[4];
+
+float f16_to_f32(uint bits) {
+    uint sign = (bits >> 15u) & 1u;
+    uint exp  = (bits >> 10u) & 0x1Fu;
+    uint mant = bits & 0x3FFu;
+    uint outb;
+    if (exp == 0u) {
+        if (mant == 0u) { outb = sign << 31u; }
+        else {
+            int e = -1; uint m = mant;
+            do { m <<= 1u; e++; } while ((m & 0x400u) == 0u);
+            m &= 0x3FFu;
+            outb = (sign << 31u) | (uint(127 - 15 - e) << 23u) | (m << 13u);
+        }
+    } else if (exp == 0x1Fu) {
+        outb = (sign << 31u) | 0x7F800000u | (mant << 13u);
+    } else {
+        outb = (sign << 31u) | ((exp - 15u + 127u) << 23u) | (mant << 13u);
+    }
+    return uintBitsToFloat(outb);
+}
+
+// One weight value from a block payload at byte offset `blk`.
+float prism_w(uint blk, uint e) {
+    if (SPEC_Q == 11u) {                                  // Q1_0
+        uint d = uint(a_data[blk]) | (uint(a_data[blk + 1u]) << 8u);
+        uint bit = (uint(a_data[blk + 2u + (e >> 3u)]) >> (e & 7u)) & 1u;
+        float dv = f16_to_f32(d);
+        return bit == 1u ? dv : -dv;
+    }
+    if (SPEC_Q == 12u) {                                  // PQ2_0
+        uint d = uint(a_data[blk]) | (uint(a_data[blk + 1u]) << 8u);
+        uint c = (uint(a_data[blk + 2u + (e >> 2u)]) >> (2u * (e & 3u))) & 3u;
+        return c == 3u ? 0.0 : (float(c) - 1.0) * f16_to_f32(d);
+    }
+    // PTQ1_0: map element -> (byte, n-stage), then the base-3 chain.
+    uint b; uint n;
+    if (e < 80u)       { b = e & 15u;               n = e >> 4u; }
+    else if (e < 120u) { uint t = e - 80u;  b = 16u + (t & 7u); n = t >> 3u; }
+    else               { uint t = e - 120u; b = 24u + (t & 1u); n = t >> 1u; }
+    uint v = uint(a_data[blk + b]);
+    for (uint k = 0u; k < n; k++) v = (v * 3u) & 0xFFu;
+    float dv = f16_to_f32(uint(a_data[blk + 26u]) | (uint(a_data[blk + 27u]) << 8u));
+    return (float(int((v * 3u) >> 8u)) - 1.0) * dv;
+}
+
+void main() {
+    uint row0 = gl_WorkGroupID.x * 2u;
+    uint row1 = row0 + 1u;
+    uint tid = gl_LocalInvocationID.x;   // 0..63
+
+    uint a_elem = a_offset;              // byte offset; block stride is SPEC_NB
+    uint x_elem = x_offset / 4u;
+    uint blk_per_row = K >> 7u;
+
+    float acc0 = 0.0;
+    float acc1 = 0.0;
+    for (uint col = tid; col < K; col += 64u) {
+        uint blk = col >> 7u;
+        uint e = col & 127u;
+        float xv = x_data[x_elem + col];
+        if (row0 < M) {
+            uint a0 = a_elem + (row0 * blk_per_row + blk) * SPEC_NB;
+            acc0 += prism_w(a0, e) * xv;
+        }
+        if (row1 < M) {
+            uint a1 = a_elem + (row1 * blk_per_row + blk) * SPEC_NB;
+            acc1 += prism_w(a1, e) * xv;
+        }
+    }
+
+    float sum0 = subgroupAdd(acc0);
+    float sum1 = subgroupAdd(acc1);
+    uint sg = gl_SubgroupID;
+    if (subgroupElect()) { s_sum0[sg] = sum0; s_sum1[sg] = sum1; }
+    barrier();
+
+    if (tid == 0u) {
+        float t0 = 0.0, t1 = 0.0;
+        for (uint i = 0u; i < gl_NumSubgroups; i++) { t0 += s_sum0[i]; t1 += s_sum1[i]; }
+        if (row0 < M) y_data[y_offset / 4u + row0] = (acc_mode == 1u) ? (y_data[y_offset / 4u + row0] + t0) : t0;
+        if (row1 < M) y_data[y_offset / 4u + row1] = (acc_mode == 1u) ? (y_data[y_offset / 4u + row1] + t1) : t1;
+    }
+}

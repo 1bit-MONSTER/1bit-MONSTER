@@ -300,6 +300,8 @@ reported as a delta, not a replacement.
 
 ### P5 — Vulkan/ZINC (fallback + honest cross-backend number) (3–5 days)
 
+> **Progress (2026-09-18):** `kernels/vulkan/dmmv_prism.comp` implements the three flat-128-block layouts (Q1_0 nb=18 / PQ2_0 nb=34 / PTQ1_0 nb=28, selected by specialization constants) as a wave64, 2-rows-per-workgroup DMMV matching `dmmv_{q1,tq2}_bonsai.comp`; `glslc --target-env=vulkan1.2` compiles it clean (15.3 KB SPIR-V) and it is added to `VK_SHADER_SOURCES`. The folded basis stays on the activation side (P3.1), so weight packing is basis-agnostic. **Open:** a ZINC/Vulkan run for the third honest tok/s column.
+
 Ternary/binary DMMV shaders + Hadamard shader; the GDN shaders already exist. Deliverable is a
 third honest tok/s column, not a priority path.
 

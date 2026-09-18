@@ -898,7 +898,7 @@ set_target_properties(bench_cb_compare PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP
 if(RCPP_HAVE_VULKAN)
     set(VK_SHADER_DIR "${CMAKE_BINARY_DIR}/shaders")
     file(MAKE_DIRECTORY "${VK_SHADER_DIR}")
-    set(VK_SHADER_SOURCES kernels/vulkan/dmmv_tq2_bonsai.comp kernels/vulkan/dmmv_q1_bonsai.comp)
+    set(VK_SHADER_SOURCES kernels/vulkan/dmmv_tq2_bonsai.comp kernels/vulkan/dmmv_q1_bonsai.comp kernels/vulkan/dmmv_prism.comp)
     set(VK_SHADER_SPVS "")
     foreach(_vk_src ${VK_SHADER_SOURCES})
         get_filename_component(_vk_name "${_vk_src}" NAME_WE)
