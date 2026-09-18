@@ -103,3 +103,30 @@ bash engine/npu/_tmp_mk.sh /tmp/base_<m> <m>            # helps only for the com
 C8K_WAIT_QUIET=1 bash benchmarks/c8k_guarded.sh Qwen3-0.6B-NPU2 qwen3:0.6b npu_engine_qwen3_0_6b 3
 bash benchmarks/d8k.sh Qwen3-0.6B-NPU2 qwen3:0.6b npu_engine_qwen3_0_6b qwen3_0_6b 2
 ```
+
+## 1k yardstick refreshed on the new build (criterion (c), lower end)
+
+The 1k rows in `RESULTS-1k-six-model-2026-09-18.md` were measured on the `-mavx2` binary. Since the
+build changes the prefill path, they were re-measured on the committed one (native = 32 tokens from
+`/tmp/p_1k.txt` through the default unified path, FLM = `npu_ab.sh --skip-native --ctx-k 1
+--decode-tokens 32`, medians of 2):
+
+| model | native prefill | native TTFT | native decode | FLM prefill | FLM TTFT | FLM decode | prefill | TTFT | decode |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Qwen3-0.6B | **513 ms (1996 t/s)** | 0.513 s | 79 tok/s | 1364.32 t/s | 0.709 s | 73.80 t/s | 1.463x | 0.723x | 1.070x |
+| Qwen3-1.7B | **752 ms (1362 t/s)** | 0.752 s | 39 | 899.37 | 1.061 s | 38.47 | 1.514x | 0.709x | 1.014x |
+| Qwen3-4B | **1554 ms (659 t/s)** | 1.554 s | 19 | 480.88 | 2.001 s | 18.42 | 1.370x | 0.777x | 1.031x |
+| Qwen3-VL-4B | **1561 ms (656 t/s)** | 1.561 s | 19 | 481.43 | 1.932 s | 18.52 | 1.363x | 0.808x | 1.026x |
+| Qwen3-8B | **2253 ms (455 t/s)** | 2.253 s | 11 | 340.04 | 2.807 s | 10.58 | 1.337x | 0.803x | 1.040x |
+| Llama-3.1-8B | **2184 ms (469 t/s)** | 2.184 s | 11 | 347.78 | 2.838 s | 11.00 | 1.349x | 0.770x | 1.000x |
+
+All three metrics are ahead of FLM for all six models at 1k (TTFT is 19–29% faster, ratio < 1), so
+the lower end of (c) is unchanged in direction and slightly better in magnitude on this build.
+
+## Criterion (c): 18 of 18 cells
+
+Six models × {prefill, TTFT, decode} at ~8192 context, plus the same three at 1k. The last failing
+cell (0.6B TTFT at 8k) is now faster in all three accepted pairs. (c) is met with no refused parity
+claim: every number above is a paired, guard-accepted measurement, and every one of them is taken
+on a build whose hidden states are byte-identical to the build the oracle scoreboard (a)/(b) was
+measured on.

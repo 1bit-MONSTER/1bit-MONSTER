@@ -170,3 +170,14 @@ source that bounds it, as of this date:
 
 The un-routed families' ≤1024 path remains correct-but-slow (CPU attention), which is the honest
 verdict `RESULTS-family-attention-shape-2026-09-14.md` records.
+
+### Addendum 2026-09-18 (fourth) — criterion (c) is 18 of 18
+
+`RESULTS-avx512-prefill-2026-09-18.md` closes the last cell. The engine TU is now built 512-wide
+(`-mavx512*` plus **`-ffp-contract=off`**, without which FMA contraction moves the 8k boot token
+576 -> 785). The build is bit-identical to the previous one (same hidden-state sha256 on all six
+models), so (a)/(b) carry over, and 8k prefill drops 4.5%/3.2% on 0.6B/1.7B. Guard-accepted 8k
+TTFT is now faster than FLM on **all six** models (0.7-5.9%), and the 1k rows were refreshed on the
+same build (TTFT 19-29% faster, all six). Cell count: 6 models x {prefill, TTFT, decode} at 1k and
+at ~8192 = 36 of 36 measured cells ahead of FLM or at parity, with the phase-2 bound stated
+separately (`ctx<=8192` is hard; `>8192` is outside the set).
