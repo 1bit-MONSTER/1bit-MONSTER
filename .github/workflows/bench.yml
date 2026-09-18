@@ -104,12 +104,22 @@ jobs:
           NPU_XCLBIN_DIR: ${{ github.workspace }}/engine/npu/xclbins
         run: |
           # Candidate models. The list is ordered, but "the file exists" is NOT the property
-          # that decides whether this job can measure anything: a model whose shape has no
-          # xclbin in the artifact set cannot init at all (#2484 - 28 of 85 slots are empty),
-          # and the first candidate here, Qwen3-0.6B (H=1024 -> QKV K=1024 N=4096), has no
-          # committed artifact. Selecting by file existence alone therefore picked a model that
-          # cannot run on this runner - which is how this job spent its life concluding success
-          # without a measurement (#2508), and why the honest version of it goes red.
+          # that decides whether this job can measure anything: the engine resolves xclbins
+          # through NPU_XCLBIN_DIR, then a CWD-RELATIVE repo path, then the installed layout, and
+          # a model whose artifacts are not in whichever of those wins cannot init at all.
+          #
+          # Measured before the fix (run 35299693789, runner=strixhalo-pr-agent): all four
+          # candidates died at FAIL QKV. The step does `cd engine/npu/build-cmake`, so the
+          # repo-relative fallback missed, and the installed layout it fell back to holds 0 files.
+          # Selecting by file existence alone therefore picked a model that could not run on this
+          # runner - which is how this job spent its life concluding success without a measurement
+          # (#2508), and why the honest version of it goes red.
+          #
+          # The artifacts were never missing: this repo tracks the tag-keyed set for every
+          # candidate below (final_i8_QKV_qwen3_0_6b.xclbin and friends - it is the
+          # DIMENSION-keyed spelling final_i8_QKV_K1024_N4096.xclbin that does not exist, which is
+          # what a `grep K1024` finds). A search path, not a coverage gap: #2484 is a separate
+          # question, and the fix is one environment variable rather than a build.
           candidates=()
           if [ -n "$MODEL_PATH" ]; then
             candidates+=("$MODEL_PATH")      # explicit request: one attempt, no fallback
