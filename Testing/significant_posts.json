@@ -272,6 +272,13 @@
   "file": "1bit-post-significant-jjarvinen-qwen3-5-2b-eu-tool-jarvis-compact-v1-1.html",
   "mode": "covered"
  },
+ "covered:Jeesup/svd-safety-l2_swift_remove30": {
+  "arch": "llama",
+  "date": "2026-09-16",
+  "family": "Llama",
+  "file": "1bit-post-significant-jeesup-svd-safety-l2-swift-remove30.html",
+  "mode": "covered"
+ },
  "covered:Jkatdare/gemma-3-4b-it-tulumix-30k": {
   "arch": "gemma3",
   "date": "2026-09-02",
@@ -286,11 +293,25 @@
   "file": "1bit-post-significant-joyfulxp-deepseek-v4-flash-vision-exp-abliterated.html",
   "mode": "covered"
  },
+ "covered:LLADIGA/Qwen3.5-4B-full_turn_imagegame_player2": {
+  "arch": "qwen3_5",
+  "date": "2026-09-16",
+  "family": "Qwen",
+  "file": "1bit-post-significant-lladiga-qwen3-5-4b-full-turn-imagegame-player2.html",
+  "mode": "covered"
+ },
  "covered:LibertAIDAI/DeepSeek-V4.1-Flash-NVFP4": {
   "arch": "deepseek",
   "date": "2026-09-02",
   "family": "Deepseek",
   "file": "1bit-post-significant-libertaidai-deepseek-v4-1-flash-nvfp4.html",
+  "mode": "covered"
+ },
+ "covered:McG-221/Solar-Griffin-26B-A4B-mlx-8Bit": {
+  "arch": "gemma4",
+  "date": "2026-09-16",
+  "family": "Gemma",
+  "file": "1bit-post-significant-mcg-221-solar-griffin-26b-a4b-mlx-8bit.html",
   "mode": "covered"
  },
  "covered:MidnightPhreaker/Qwen3.8-Flash-Next-REAP-384-exl3-4.00bpw-ORIGINAL-MTP": {
@@ -440,6 +461,20 @@
   "file": "1bit-post-significant-arefehrajabian-phi-finetune-reasoning-plus-16bit.html",
   "mode": "covered"
  },
+ "covered:ayoubkirouane/Sophea-Nemo-3.5-Lightning-v1": {
+  "arch": "nemotronh",
+  "date": "2026-09-16",
+  "family": "Nemotron",
+  "file": "1bit-post-significant-ayoubkirouane-sophea-nemo-3-5-lightning-v1.html",
+  "mode": "covered"
+ },
+ "covered:ayoubkirouane/Sophea-Qwen3.6-v1": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-16",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ayoubkirouane-sophea-qwen3-6-v1.html",
+  "mode": "covered"
+ },
  "covered:brennercruvinel/truw-rwkv7-2.9b-v3": {
   "arch": "rwkv",
   "date": "2026-09-02",
@@ -578,6 +613,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-just1nseo-qwen3-4b-ifrlvr-grpo-judge-30ba3b.html",
+  "mode": "covered"
+ },
+ "covered:lwaekfjlk/jin10-sdft-qwen2.5-7b": {
+  "arch": "qwen2",
+  "date": "2026-09-16",
+  "family": "Qwen",
+  "file": "1bit-post-significant-lwaekfjlk-jin10-sdft-qwen2-5-7b.html",
   "mode": "covered"
  },
  "covered:madiaxa/granite-4.2-3b-openvino": {

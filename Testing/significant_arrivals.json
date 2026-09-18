@@ -60,7 +60,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "hariharasudhan/en-indic-translate-26b"
+  "model": "McG-221/Solar-Griffin-26B-A4B-mlx-8Bit"
  },
  "gemma4unified": {
   "arch": "gemma4unified",
@@ -123,7 +123,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Llama",
-  "model": "Raghav-Singhal/1pp-1.7b-ua-seed42-sft"
+  "model": "Jeesup/svd-safety-l2_swift_remove30"
  },
  "llama3forcausallm_polysurgery": {
   "arch": "llama3forcausallm_polysurgery",
@@ -179,7 +179,7 @@
   "covered": true,
   "date": "2026-09-09",
   "family": "Nemotron",
-  "model": "Spangler3000/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp"
+  "model": "ayoubkirouane/Sophea-Nemo-3.5-Lightning-v1"
  },
  "olmo3": {
   "arch": "olmo3",
@@ -207,7 +207,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO"
+  "model": "lwaekfjlk/jin10-sdft-qwen2.5-7b"
  },
  "qwen2_5_vl": {
   "arch": "qwen2_5_vl",
@@ -249,14 +249,14 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "YueLinHu/GAC-Qwen3.5-4B"
+  "model": "LLADIGA/Qwen3.5-4B-full_turn_imagegame_player2"
  },
  "qwen3_5moe": {
   "arch": "qwen3_5moe",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "mlx-community/BigBang-v1-MLX-oQ4e"
+  "model": "ayoubkirouane/Sophea-Qwen3.6-v1"
  },
  "qwen3next": {
   "arch": "qwen3next",
