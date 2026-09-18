@@ -29,7 +29,7 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build build-essential python3 python3-venv \
+          sudo apt-get install -y -qq cmake ninja-build build-essential python3 python3-venv ccache \
             libcurl4-openssl-dev libzstd-dev libwebsockets-dev \
             libvulkan-dev glslc uuid-dev libdrm-dev spirv-headers  # zinc_cpp (Vulkan) + lockfile (-luuid) + lemonade amdxdna (libdrm) + llama.cpp ggml-vulkan (SPIRV)
           # XRT (Xilinx Runtime) — backend_fused.cpp/backend_fused_npu.cpp need
@@ -45,6 +45,32 @@ jobs:
         with:
           path: /opt/rocm-therock
           key: rocm-therock-${{ runner.os }}-${{ steps.rocm-week.outputs.week }}
+      # ccache for the two build steps below. Measured on run 35292288821: this job is
+      # 15.8 min, of which "Build llama.cpp ggml-vulkan libs" is 3.9 and "CMake configure
+      # + build" is 9.2. Every other step is under a minute, and the TheRock cache above
+      # already HITS (0.5 min restore, 0.0 min install), so the remaining cost is
+      # compilation - re-done from scratch for every speculative merge-queue build. The
+      # key is per-run with a restore-key so the newest cache wins; caches written on the
+      # default branch are visible to the queue's ephemeral refs, the same mechanism the
+      # TheRock cache already relies on.
+      - name: ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: ccache-${{ runner.os }}-
+      - name: Configure ccache
+        run: |
+          # 1 GB keeps this inside the repo's cache budget beside TheRock. The hit rate
+          # is printed at the end of each build, so a cache that stops helping shows up
+          # in the log instead of being assumed.
+          ccache --max-size=1G
+          ccache --zero-stats
+          ccache --version | head -1
+          # Persist for the build steps: compressed entries are what keep this inside
+          # the repo's 10 GB cache budget beside TheRock.
+          echo "CCACHE_COMPRESS=1" >> "$GITHUB_ENV"
+
       - name: Install TheRock ROCm (nightly, native gfx1151)
         if: steps.cache-rocm.outputs.cache-hit != 'true'
         run: |
@@ -67,9 +93,11 @@ jobs:
           sed -i '/llama-onnx\.cpp/d' src/CMakeLists.txt
           cmake -B build -G Ninja -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON \
             -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
-            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build -j8 --target ggml-vulkan llama llama-common
           ls -la build/ggml/src/ggml-vulkan/libggml-vulkan.a build/src/libllama.a
+          ccache --show-stats | sed -n '1,12p' || echo "(ccache stats unavailable)"
       - name: Verify CMakeLists references resolve
         run: |
           set -e
@@ -145,7 +173,9 @@ jobs:
         run: |
           if [ -x /opt/rocm-therock/bin/amdclang++ ]; then
             echo "TheRock detected — full cmake configure + build."
-            cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
+            cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_HIP_COMPILER_LAUNCHER=ccache
             # Build the server AND every test_* target so a dropped source or a
             # compile break fails CI (issue #236).
             # Also build all new C++ tools to catch compile errors.
@@ -170,6 +200,9 @@ jobs:
               exit 1
             fi
           fi
+          # Printed on both paths: the hit rate is the evidence that this cache does
+          # something, and it is the number this change is judged on.
+          ccache --show-stats | sed -n '1,12p' || echo "(ccache stats unavailable)"
       - name: CLI entry points reachable (built binary)
         run: |
           # The static list checks live in Testing/dispatch_selfcheck.py, in the
