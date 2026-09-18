@@ -231,8 +231,15 @@ jobs:
           rc=0
           # Scope: the exclusions the sibling lint job now declares
           # (`ignore_paths: build _deps third_party`). Without them this step lints
-          # third_party/, which is 62,694 of the 236,340 diagnostics on this tree -
-          # 27% of the output it asks a reader to interpret.
+          # third_party/, which was 62,694 of the 236,340 diagnostics this tree
+          # reported when the exclusions were added - 27% of the output it asks a
+          # reader to interpret.
+          # Current figure, measured rather than carried over: run 35305021462 (2026-09-18
+          # 03:56Z, clang-format 18.1.3) reports 184,118 diagnostics in 740 of the 744
+          # first-party files this step's find/grep selects. That 740-of-744 coverage is
+          # the number #2486's decision turns on: making this step blocking reformats
+          # essentially every file rather than tidying a few, so the two figures above are
+          # history and should not be quoted as the size of the current work.
           # `packaging/` is deliberately NOT excluded: #2491 established it is
           # first-party (packaging/binary/server.cpp), not vendored, and removed it
           # from the other job for exactly that reason.

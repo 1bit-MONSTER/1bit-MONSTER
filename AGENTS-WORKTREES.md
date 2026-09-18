@@ -9,19 +9,34 @@ working directory.
 
 ```
 /home/bcloud/1bit-MONSTER          # shared checkout (git home) — read-mostly
-/home/bcloud/1bit-MONSTER-<agent>  # one worktree per agent, own branch
+/home/bcloud/wt/<branch-or-agent>  # one worktree per agent, own branch (most in use)
+/home/bcloud/1bit-MONSTER-<agent>  # the same thing under the older naming
 ```
+
+Either form works — the rule that matters is one worktree per branch. Measured
+2026-09-18: of **104** registered worktrees, **79** live under `/home/bcloud/wt/`, **15**
+under `/home/bcloud/1bit-MONSTER-*`, and **9** inside the checkout at
+`/home/bcloud/1bit-MONSTER/wt/`. `git worktree list` is the authority; this section only
+tells you where the others are.
+
+The inner form (inside the checkout) needs one local accommodation: those worktrees are
+embedded repositories in the shared checkout's working tree, so without an ignore rule
+`git status` there reports the whole directory and a `git add -A` would stage them as
+gitlinks. This clone has `wt/` in `.git/info/exclude` for that reason.
 
 Create a worktree for an agent or branch with:
 
 ```bash
 git -C /home/bcloud/1bit-MONSTER fetch origin
 git -C /home/bcloud/1bit-MONSTER worktree add -b <branch> \
-    /home/bcloud/1bit-MONSTER-<agent> origin/main
+    /home/bcloud/wt/<branch> origin/main
 ```
 
-Example in use today: `/home/bcloud/1bit-MONSTER-agent` on
-`feat/rocm-therock-7.14-lane-pin`.
+Corrected 2026-09-18: this section previously showed only the
+`/home/bcloud/1bit-MONSTER-<agent>` form and cited an example "in use today"
+(`/home/bcloud/1bit-MONSTER-agent` on `feat/rocm-therock-7.14-lane-pin`) whose directory
+does not exist and which no worktree is registered at — so a reader had no way to tell a
+live example from a stale one, and the layout most worktrees actually use was undocumented.
 
 ## Rules
 
