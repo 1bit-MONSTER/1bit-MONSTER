@@ -4,6 +4,7 @@
 #include "backend.h"
 #include "gguf_reader.h"
 #include "../engine/npu/src/onebp_loader.cpp"
+#include "prism_engine.h"
 #include "rocm_cpp/ck_gemm.h"
 #include <hip/hip_runtime_api.h>
 #include <hip/hip_fp16.h>
@@ -162,6 +163,7 @@ struct Hip1bpBackend : Backend {
     std::vector<PL> P;
     int quant2 = 0;               // 0 = f32 path, 1 = TQ2NZ bf16, 2 = TQ2NZ_E4M3, 3 = Q4NX packed
     std::unique_ptr<NpuOnebpModel> model_;
+    std::unique_ptr<PrismEngine> prism_;
     std::unique_ptr<GgufReader> gguf_;  // GGUF-direct mode (lossless f32, no 1BP conversion)
 
     // qwen35moe (Qwen3.6-35B-A3B) device weights — GGUF-direct, Q8_0 raw tiles
@@ -332,10 +334,20 @@ struct Hip1bpBackend : Backend {
         // dequant produce plausible garbage (R15: never serve folded weights as plain).
         if (!gguf_ && (q == ONEBP_Q1_0_G128 || q == ONEBP_PQ2_0_G128 || q == ONEBP_PTQ1_0_G128 ||
                        model_->has_prism_transform())) {
-            fprintf(stderr, "[hip1bp] Prism ML pack (quant %u, folded=%d): the Prism HIP lane is not "
-                            "wired into this backend yet (plan P3.5) -- refusing.\n",
-                    q, (int)model_->has_prism_transform());
-            return false;
+            // P3.5: the Prism lane owns the whole forward via PrismEngine, using exactly the
+            // kernels the fork-oracle gate validates. PrismEngine::init fails closed when a
+            // folded pack manifest cannot be honoured (R15), so no folded weights are ever
+            // served as plain. The standard 1BP state below is not allocated on this path.
+            prism_ = std::make_unique<PrismEngine>();
+            if (!prism_->init(cfg.model_path.c_str(), 4096)) {
+                fprintf(stderr, "[hip1bp] Prism ML pack (quant %u): PrismEngine init failed -- refusing\n", q);
+                prism_.reset();
+                return false;
+            }
+            initialized = true;
+            printf("[hip1bp] Prism ML pack (quant %u, folded=%d): PrismEngine ready (H=%d NL=%d V=%d)\n",
+                   q, (int)prism_->has_transform, prism_->H, prism_->NL, prism_->V);
+            return true;
         }
         // #1627: only quants the loader dequantizes (dequant_tile/dequant_tile_tq2)
         // or the packed path (TQ2NZ family) are supported here. TQ1/TQ2BS/I8/F16/F32
@@ -1051,6 +1063,7 @@ struct Hip1bpBackend : Backend {
 
     bool reset()override{
         pos=0;
+        if (prism_) prism_->reset();
         if (q35_loaded) { qwen35_zero_state(); return true; }
         HIP_CHECK(hipMemset(dK,0,kvb));HIP_CHECK(hipMemset(dV,0,kvb));return true;
     }
@@ -1329,6 +1342,7 @@ struct Hip1bpBackend : Backend {
     // generate() == forward() + lm_head() — argmax semantics unchanged.
     // Phase 2: when graph_ok, the whole step replays from the captured graph.
     int generate_fast(int token_id){
+        if (prism_) return prism_->forward(token_id);   // Prism lane: engine owns the forward
         if (q35_loaded) {
             // #2139: replay the captured q35 step (pos/token re-read on device)
             if (q35_graph_ok) {
@@ -1676,7 +1690,7 @@ struct Hip1bpBackend : Backend {
         hf(q35_sc_exp8); hf(q35_sc_expw8); hf(q35_sc_expd8); hf(dpart8);
         hf(q35_conv_state); hf(q35_rec_state); hf(q35_kvc); hf(q35_kv_scores); hf(q35_gate_flat);
         q35_loaded = false;
-        L.clear();P.clear();model_.reset();
+        L.clear();P.clear();model_.reset();prism_.reset();
         hf(dh);hf(datt);hf(dgate);hf(dup);hf(dsilu);hf(doproj);hf(dffn);hf(dlogits);hf(dpart);
         hf(datt2);hf(dK);hf(dV);hf(dQ);hf(dAttn);
         hf(d_argmax);hf(d_amx);hf(d_ami);
