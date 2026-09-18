@@ -472,6 +472,16 @@ fi
 
 run rni-bf16 Testing/aie2p_bf16_rni_selfcheck.cpp --
 
+echo "== census alias autopr: branch base (#2498) =="
+if autopr_out=$(python3 Testing/census_autopr_selfcheck.py 2>&1); then
+    printf '%s\n' "$autopr_out" | sed 's/^/  /'
+    echo "✓ census_autopr_selfcheck"
+else
+    echo "✗ census_autopr_selfcheck"
+    printf '%s\n' "$autopr_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 echo "======================================"
 echo "$((total-fail-skip))/$total passed, $skip skipped"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }

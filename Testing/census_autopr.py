@@ -179,15 +179,29 @@ def _open_draft_pr(arch, target, models):
     orig_branch = _git_out(["git", "symbolic-ref", "-q", "--short", "HEAD"])
     orig_head = _git_out(["git", "rev-parse", "HEAD"])
     try:
+        # Base the proposal on the tip of main, not on whatever HEAD this checkout
+        # happens to carry. A run in a tree 51 commits behind main opened an 18-file
+        # draft PR for a one-line alias: 17 of those files were byte-identical to main
+        # and appeared only because the merge base was old, which buried the line that
+        # needed review and made the PR read as if it rewrote NPU artifacts and
+        # PROVENANCE.json (#2498). A squash merge makes that permanent - main has the
+        # content but not the commit objects - so rebasing afterwards is not enough
+        # either: it replays the stale base's own commits, which do conflict with main
+        # on PROVENANCE.json (measured on census/auto-map-picolm). Fetch first, cut the
+        # branch from origin/main, and the diff can only ever be the alias.
+        for base_cmd in (["git", "fetch", "origin", "main"],
+                         ["git", "switch", "-C", branch, "origin/main"]):
+            r = subprocess.run(base_cmd, cwd=ROOT, capture_output=True, text=True)
+            if r.returncode != 0:
+                text = (r.stderr or r.stdout).strip()
+                print(f"[autopr] {arch}: cannot base the branch on origin/main: "
+                      f"{' '.join(base_cmd)}\n{text[:300]}", file=sys.stderr)
+                return None
         if not _apply_alias(arch, target):
             print(f"[autopr] {arch}: already mapped in bitnet_model.h — "
                   f"nothing to propose", file=sys.stderr)
             return None
         cmds = [
-            # -C: create the branch, or rebuild it from the current HEAD when a
-            # previous run left one behind (that case used to fall through to a
-            # commit with nothing staged and fail).
-            ["git", "switch", "-C", branch],
             ["git", "add", os.path.relpath(ENGINE, ROOT)],
             ["git", "commit", "-m", f"fix(census): auto-propose {arch} -> {target}"],
             ["git", "push", "-u", "origin", branch],
