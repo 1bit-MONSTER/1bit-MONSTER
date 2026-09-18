@@ -178,6 +178,10 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
   fi
     run "$base: per-position oracle agreement" \
         python3 "$REPO/tests/prism/check_oracle_agreement.py" "$TMP/pf" "$bp" "$base"
+    if [ -n "$PFHIP" ]; then
+      run "$base: DEVICE 64-layer forward vs fork oracle (P3.3)" \
+        python3 "$REPO/tests/prism/check_oracle_agreement.py" "$PFHIP" "$bp" "$base"
+    fi
     # Per-layer cosine vs the in-repo streaming numpy reference (P2 gate, clause 2).
     # Expensive (~6 min/pack): the folded pack by default; PRISM_LAYER_COSINE=all for
     # all three, =0 to skip.
@@ -199,10 +203,6 @@ for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit
     if [ -n "$PGDNL" ]; then
       run "$base: layer-0 DEVICE driver vs CPU reference" bash -c \
         "\"$PGDNL\" \"$bp\" 1000 > \"$TMP/drv.txt\" 2>&1 && python3 \"$REPO/tests/prism/compare_prism_layer0.py\" \"$TMP/drv.txt\" \"$TMP/l0_cpp.txt\""
-    fi
-    if [ -n "$PFHIP" ]; then
-      run "$base: DEVICE 64-layer forward vs fork oracle" \
-        python3 "$REPO/tests/prism/check_oracle_agreement.py" "$PFHIP" "$bp" "$base"
     fi
   fi
   if [ -f "$bp" ]; then

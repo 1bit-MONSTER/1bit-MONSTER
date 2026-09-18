@@ -74,12 +74,18 @@ struct M {
         return nullptr;
     }
     int8_t* sg(int width) {
+        if (!has_transform) return nullptr;
         auto it = signs.find((unsigned)width);
         if (it != signs.end()) return it->second;
         const int8_t* s = tv.signs_for_width((uint32_t)width);
         if (!s) { std::fprintf(stderr, "no signs for width %d\n", width); std::exit(3); }
         int8_t* d = nullptr; HC(hipMalloc(&d, width)); HC(hipMemcpy(d, s, width, hipMemcpyHostToDevice));
         signs[(unsigned)width] = d; return d;
+    }
+    // Folded-basis rotation; a no-op copy for unfolded packs (their weights are plain).
+    void rot(const float* in, int8_t* sgn, float* out, int width, int inverse) {
+        if (!has_transform) { if (in != out) HC(hipMemcpy(out, in, (size_t)width * 4, hipMemcpyDeviceToDevice)); return; }
+        if (prism_hadamard_fwht_f32(in, sgn, out, width, block, inverse, nullptr)) { std::fprintf(stderr, "fwht fail w=%d\n", width); std::exit(2); }
     }
     // Upload one weight: Prism-packed -> raw payload; 2-D F16 tile -> f32; 1-D -> raw f32.
     void up(const std::string& n) {
@@ -122,10 +128,12 @@ struct M {
         if (!m.load(path)) return false;
         const OnebpTensor* et = t("__onebp_ext_prism_transform");
         const OnebpTensor* es = t("__onebp_ext_prism_signs");
-        if (!et || !es) { std::fprintf(stderr, "unfolded pack only? this driver needs the folded transform\n"); return false; }
-        if (!onebp_prism_transform_parse(m.tensor_data(*et), (size_t)et->bytes,
-                                         (const int8_t*)m.tensor_data(*es), (size_t)es->bytes, tv)) return false;
-        has_transform = true; block = (int)tv.hdr->block_size;
+        has_transform = false;
+        if (et && es) {
+            if (!onebp_prism_transform_parse(m.tensor_data(*et), (size_t)et->bytes,
+                                             (const int8_t*)m.tensor_data(*es), (size_t)es->bytes, tv)) return false;
+            has_transform = true; block = (int)tv.hdr->block_size;
+        }
         H = m.header.hidden_size; NL = m.header.num_layers;
         NH = m.header.num_attention_heads; NKV = m.header.num_kv_heads;
         HD = m.header.head_dim; NF = m.header.intermediate_size; V = m.header.vocab_size;
@@ -201,12 +209,11 @@ int main(int argc, char** argv) {
             if (!prism::dequant_flat(emb->quant, p, h.data(), (size_t)H)) return 1;
         }
         HC(hipMemcpy(d_h, h.data(), H * 4, hipMemcpyHostToDevice));
-        if (prism_hadamard_fwht_f32(d_h, sgH, d_h, H, mm.block, 1, nullptr)) return 2;
-
+        if (mm.has_transform && prism_hadamard_fwht_f32(d_h, sgH, d_h, H, mm.block, 1, nullptr)) return 2;
         for (int l = 0; l < NL; l++) {
             HC(hipMemcpy(d_xn, d_h, H * 4, hipMemcpyDeviceToDevice));
             if (prism_rmsnorm_f32(d_xn, mm.vec(M::L(l, "blk.%d.attn_norm.weight")), H, nullptr)) return 2;
-            if (prism_hadamard_fwht_f32(d_xn, sgH, d_xr, H, mm.block, 0, nullptr)) return 2;
+            mm.rot(d_xn, sgH, d_xr, H, 0);
 
             if (mm.linear[l]) {
                 mm.matvec(M::L(l, "blk.%d.attn_qkv.weight"), d_xr, d_qkv);
@@ -223,8 +230,12 @@ int main(int argc, char** argv) {
                 if (prism_gdn_recurrence_f32(d_conv, d_conv + KD, d_conv + 2 * KD, d_g, d_beta,
                                              mm.vec(M::L(l, "blk.%d.ssm_norm.weight")), d_z, rec_state[l], d_core,
                                              NK, NV, HK, HV, nullptr)) return 2;
-                if (prism_ssmout_perm_f32(d_core, d_perm, NV, NK, HV, nullptr)) return 2;
-                if (prism_hadamard_fwht_f32(d_perm, sgV, d_cr, VD, mm.block, 0, nullptr)) return 2;
+                const float* core_src = d_core;
+                if (mm.has_transform) {
+                    if (prism_ssmout_perm_f32(d_core, d_perm, NV, NK, HV, nullptr)) return 2;
+                    core_src = d_perm;
+                }
+                mm.rot(core_src, sgV, d_cr, VD, 0);
                 mm.matvec(M::L(l, "blk.%d.ssm_out.weight"), d_cr, d_out);
                 if (prism_add_f32(d_h, d_out, H, nullptr)) return 2;
             } else {
@@ -240,25 +251,25 @@ int main(int argc, char** argv) {
                 HC(hipMemcpy(v_cache[l] + (size_t)pos * kvrow, d_vb, kvrow * 4, hipMemcpyDeviceToDevice));
                 if (prism_gqa_decode_f32(d_qs, k_cache[l], v_cache[l], d_gt, d_attn,
                                          NH, NKV, HD, pos + 1, 0, nullptr)) return 2;
-                if (prism_hadamard_fwht_f32(d_attn, sgV, d_ar, NH * HD, mm.block, 0, nullptr)) return 2;
+                mm.rot(d_attn, sgV, d_ar, NH * HD, 0);
                 mm.matvec(M::L(l, "blk.%d.attn_output.weight"), d_ar, d_out);
                 if (prism_add_f32(d_h, d_out, H, nullptr)) return 2;
             }
 
             HC(hipMemcpy(d_yn, d_h, H * 4, hipMemcpyDeviceToDevice));
             if (prism_rmsnorm_f32(d_yn, mm.vec(M::L(l, "blk.%d.post_attention_norm.weight")), H, nullptr)) return 2;
-            if (prism_hadamard_fwht_f32(d_yn, sgH, d_yr, H, mm.block, 0, nullptr)) return 2;
+            mm.rot(d_yn, sgH, d_yr, H, 0);
             mm.matvec(M::L(l, "blk.%d.ffn_gate.weight"), d_yr, d_gate);
             mm.matvec(M::L(l, "blk.%d.ffn_up.weight"), d_yr, d_up);
             if (prism_silu_mul_f32(d_gate, d_up, NF, nullptr)) return 2;
-            if (prism_hadamard_fwht_f32(d_gate, sgF, d_gr, NF, mm.block, 0, nullptr)) return 2;
+            mm.rot(d_gate, sgF, d_gr, NF, 0);
             mm.matvec(M::L(l, "blk.%d.ffn_down.weight"), d_gr, d_down);
             if (prism_add_f32(d_h, d_down, H, nullptr)) return 2;
         }
 
         HC(hipMemcpy(d_yn, d_h, H * 4, hipMemcpyDeviceToDevice));
         if (prism_rmsnorm_f32(d_yn, mm.vec("output_norm.weight"), H, nullptr)) return 2;
-        if (prism_hadamard_fwht_f32(d_yn, sgH, d_yr, H, mm.block, 0, nullptr)) return 2;
+        mm.rot(d_yn, sgH, d_yr, H, 0);
         mm.matvec("output.weight", d_yr, d_logits);
         HC(hipMemcpy(logits.data(), d_logits, (size_t)V * 4, hipMemcpyDeviceToHost));
 
