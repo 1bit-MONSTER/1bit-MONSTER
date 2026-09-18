@@ -64,6 +64,33 @@ FLM at equal windows, while prefill is ahead.** That is a different and more act
 statement than "0.6B satisfies it" — it says the remaining work is decode throughput, not
 prefill.
 
+
+## CORRECTION (2026-09-18, later the same session): the 1k decode gap is parity within variance
+
+The 1k native decode figures above (69.9 tok/s for 0.6B) were taken in a window where the
+unified path's device exec measured 15.5–15.9 ms/token. That does not reproduce: after a
+rebuild the same configuration measures 12.5 ms exec, and the decode is faster:
+
+| Qwen3-0.6B, 1k, 32 decode tokens, current binary | decode |
+|---|---:|
+| native unified (bf16 prefill + runlist decode), 3 runs | 72, 72, 71 tok/s |
+| native pure runlist, 2 runs | 78, 77 tok/s |
+| FLM on-box | 72.33 tok/s (75.25 in the earlier window) |
+
+So the 0.6B 1k decode clause is **0.98–1.00x FLM — parity within measurement variance — not
+the 0.93x deficit recorded above**, and FLM's own figure moved 4% between windows. The 8k row
+(33.4 vs 33.63 ≈ 0.99x) is unchanged in substance.
+
+The 8-vs-32-token warm-up finding is unaffected: it is a within-window, within-binary
+comparison (80 → 69.9 on the same binary), and the 32-token figures are the ones to cite —
+but they must be **repeated**, because runlist exec time varies up to ~27% between
+builds/sessions. See `RESULTS-unified-decode-penalty-2026-09-18.md` for the mechanism
+investigation that was withdrawn with it.
+
+Consequence for criterion (c): the decode clause is **not decisively failed** for Qwen3-0.6B
+at 1k on this evidence; the honest reading is parity within variance, with prefill ahead
+(1.33x) and TTFT faster. A decisive verdict needs repeated runs on a quiet device.
+
 ## Bounds and open items
 
 - **The 8k native rows are clamped**: Qwen3-0.6B prefilled **8161** of 8192 tokens and
