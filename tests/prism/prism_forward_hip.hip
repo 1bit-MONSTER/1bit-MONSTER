@@ -157,9 +157,11 @@ struct M {
 int main(int argc, char** argv) {
     if (argc < 3) { std::fprintf(stderr, "usage: %s <model.1bp> <tok0> [tok1 ...] [--topk]\n", argv[0]); return 2; }
     bool topk = false;
+    int predict = 0;
     std::vector<int> toks;
     for (int i = 2; i < argc; i++) {
         if (!std::strcmp(argv[i], "--topk")) { topk = true; continue; }
+        if (!std::strcmp(argv[i], "--predict") && i + 1 < argc) { predict = std::atoi(argv[++i]); continue; }
         toks.push_back(std::atoi(argv[i]));
     }
     if (toks.empty()) return 2;
@@ -200,12 +202,20 @@ int main(int argc, char** argv) {
 
     int8_t* sgH = mm.sg(H), * sgV = mm.sg(VD), * sgF = mm.sg(NF);
 
-    for (int pos = 0; pos < (int)toks.size(); pos++) {
+    std::vector<int> seq = toks;
+    if (predict > 0) seq.resize(toks.size() + (size_t)predict, 0);
+    int last_tok = toks.back();
+    hipEvent_t te0, te1; HC(hipEventCreate(&te0)); HC(hipEventCreate(&te1));
+    double gen_ms = 0.0; int gen_n = 0;
+    for (int pos = 0; pos < (int)seq.size(); pos++) {
+        const int tok = (pos < (int)toks.size()) ? toks[pos] : last_tok;
+        const bool gen = (pos >= (int)toks.size());
+        if (gen) HC(hipEventRecord(te0));
         // embedding row -> inverse fwht
         const OnebpTensor* emb = mm.t("token_embd.weight");
         {
             const uint32_t nb = prism::block_bytes(emb->quant);
-            const uint8_t* p = mm.m.tensor_data(*emb) + (size_t)toks[pos] * (H / 128) * nb;
+            const uint8_t* p = mm.m.tensor_data(*emb) + (size_t)tok * (H / 128) * nb;
             if (!prism::dequant_flat(emb->quant, p, h.data(), (size_t)H)) return 1;
         }
         HC(hipMemcpy(d_h, h.data(), H * 4, hipMemcpyHostToDevice));
@@ -275,6 +285,8 @@ int main(int argc, char** argv) {
 
         int am = 0; float best = logits[0];
         for (int i = 1; i < V; i++) if (logits[i] > best) { best = logits[i]; am = i; }
+        last_tok = am;
+        if (gen) { HC(hipEventRecord(te1)); HC(hipEventSynchronize(te1)); float ms = 0.0f; HC(hipEventElapsedTime(&ms, te0, te1)); gen_ms += ms; gen_n++; }
         if (topk) {
             std::vector<int> idx(V); for (int i = 0; i < V; i++) idx[i] = i;
             std::partial_sort(idx.begin(), idx.begin() + 5, idx.end(),
@@ -283,9 +295,12 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 5; i++) std::printf("%s%d", i ? "," : "", idx[i]);
             std::printf("\n");
         } else {
-            std::printf("pos=%d in=%d argmax=%d logit=%.6f\n", pos, toks[pos], am, (double)best);
+            std::printf("pos=%d in=%d argmax=%d logit=%.6f\n", pos, tok, am, (double)best);
         }
         std::fflush(stdout);
     }
+    if (gen_n > 0)
+        std::printf("generated %d tokens in %.2f ms = %.2f tok/s (greedy decode)\n",
+                    gen_n, gen_ms, 1000.0 * gen_n / gen_ms);
     return 0;
 }
