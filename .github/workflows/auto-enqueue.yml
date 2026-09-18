@@ -1,0 +1,85 @@
+name: Auto-enqueue
+
+# Intent: on this repo a green PR does NOT merge itself. The `main` ruleset
+# (id 19117606) enforces a merge queue (SQUASH / ALLGREEN, batch <= 5), so a PR
+# only lands once it is explicitly added to that queue. GitHub never enqueues
+# on its own, and `autoMergeRequest` was null on every one of the 58 open PRs —
+# which is how 44 CLEAN, fully-green PRs sat unmerged while the merge queue held
+# zero entries on 2026-09-17. The runner was healthy the whole time; nothing was
+# wrong with CI, and nothing was putting PRs into the queue.
+#
+# This closes that gap: every non-draft, same-repo PR enables auto-merge as soon
+# as it is opened, pushed to, or marked ready for review, so the queue picks it
+# up the moment its own checks go green.
+#
+# Opt out by leaving the PR a DRAFT — drafts are skipped, which is how
+# significant-post.yml's daily draft PRs stay parked for review.
+#
+# Token: the GitHub App installation token, deliberately NOT GITHUB_TOKEN. A
+# merge attributed to github-actions[bot] does not trigger `push` workflows on
+# main, which would silently disable the bench / deploy / badge automation that
+# runs on push. seo-sync.yml and census-sweep.yml mint the App token for
+# exactly this reason.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-enqueue-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enqueue:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    if: |
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Mint GitHub App installation token
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          { [ -n "$APP_ID" ] && [ -n "$APP_PRIVATE_KEY" ]; } || { echo "::error::APP_ID / APP_PRIVATE_KEY secrets not set — cannot enqueue PRs"; exit 1; }
+          B64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          NOW=$(date +%s)
+          HEADER=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | B64)
+          PAYLOAD=$(printf '{"iat":%s,"exp":%s,"iss":%s}' "$((NOW-60))" "$((NOW+540))" "$APP_ID" | B64)
+          SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign <(printf '%s' "$APP_PRIVATE_KEY") -binary | B64)
+          JWT="$HEADER.$PAYLOAD.$SIG"
+          AUTH="Authorization: Bearer $JWT"
+          INSTALL_ID=$(curl -s -H "$AUTH" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations" | \
+            jq -r --arg o "$GITHUB_REPOSITORY_OWNER" '.[] | select(.account.login == $o) | .id' | head -1)
+          { [ -n "$INSTALL_ID" ]; } || { echo "::error::GitHub App not installed on $GITHUB_REPOSITORY_OWNER"; exit 1; }
+          TOKEN=$(curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations/$INSTALL_ID/access_tokens" | jq -r '.token // empty')
+          { [ -n "$TOKEN" ]; } || { echo "::error::Could not mint installation token — check app permissions (Contents + Pull requests R/W)"; exit 1; }
+          echo "TOKEN=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Enqueue PR into the merge queue
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # A `synchronize`/`ready_for_review` event can race a PR that just got
+          # merged or closed; that is not an error worth failing on.
+          state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
+          if [ "$state" != "OPEN" ]; then
+            echo "PR #$PR is $state — nothing to enqueue."
+            exit 0
+          fi
+          # --auto enables auto-merge, which on a queue-ruled branch means
+          # "enqueue this PR once its required checks pass". Idempotent: a
+          # re-run on synchronize is a no-op if it is already enabled.
+          # Intentionally NOT wrapped in `|| echo` — a silent enqueue failure is
+          # the exact failure mode this workflow exists to prevent.
+          gh pr merge "$PR" --auto --repo "$GITHUB_REPOSITORY"

@@ -45,7 +45,18 @@
 | `backup-minisforum.sh` | 04:00 daily | Windows SMB `//192.168.50.61/C$/Users/bcloud` → `ZFSPool/backups/minisforum/home/bcloud/` |
 
 - **Append-only by design** — rsync runs have no `--delete`; the backup server never auto-deletes.
+  (Amended 2026-09-17: a one-off operator-authorized `--delete` pass was run on 2026-09-15 to free a
+   full pool — see #2333. Nightly runs are still append-only.)
 - **Weekly ZFS snapshots** every Monday (`ZFSPool/backups@<dataset>-YYYY-MM-DD`), 90-day retention.
+  - ⚠️ **Corrected 2026-09-17 — this does not currently protect anything.** The syntax above is the
+    bug: `ZFSPool/backups` is the **parent filesystem** and `strixhalo`/`ryzen`/`minisforum` are
+    separate **child** filesystems, so a non-recursive snapshot of the parent excludes them. All nine
+    snapshots the pool holds report `referenced 166K / used 0B`, and
+    `zfs list -t snapshot -r ZFSPool/backups/strixhalo` returns *no datasets available* — i.e. the
+    ~2.2 TB of backup data is in **no snapshot**. Fix is `zfs snapshot -r` or snapshotting the child
+    explicitly. Tracked in #2460. Until that lands, treat this line as an **absence** of
+    point-in-time history, not a guarantee: the nightly rsync recovers files *deleted* on a source,
+    but there is no way to recover an earlier *version* of a file modified in place.
 - Logs: `~/backup.log`, `~/backup-ryzen.log`, `~/backup-minisforum.log`.
 
 ## How the dump maps to this repo

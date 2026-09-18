@@ -24,8 +24,8 @@ as systemd services):
 ```bash
 # Start the LLM + VLM inference server
 cd /path/to/1bit-monster
-cmake -B build -G Ninja && cmake --build build --target unified_server -j$(nproc)
-./build/unified_server -w /path/to/models/ -p 8088
+cmake -B build -G Ninja && cmake --build build --target onebin -j$(nproc)
+./build/1bit unified -w /path/to/models/ -p 8088
 
 # Start the image generation server (requires stable-diffusion.cpp)
 # cmake -B build -DUSE_DIFFUSION=ON

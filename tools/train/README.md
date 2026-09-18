@@ -20,7 +20,7 @@ make train-sft
 make export
 
 # 4. Run on 1bit's engine
-./build/zaya_server --model export/qwen3-0.6b-lora-r16/model.q4_k_m.gguf
+./build/1bit zaya --model export/qwen3-0.6b-lora-r16/model.q4_k_m.gguf
 ```
 
 ## Pipeline
