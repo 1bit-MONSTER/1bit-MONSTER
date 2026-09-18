@@ -30,6 +30,8 @@ int prism_gemv_f32(const void*, const float*, float*, int, int, int, void*);
 int prism_gemv_row4_f32(const void*, const float*, float*, int, int, int, void*);
 int prism_gemv_tile_f32(const void*, const float*, float*, int, int, int, void*);
 int prism_gemv_dense_f32(const float*, const float*, float*, int, int, void*);
+int prism_quant_q8_f32(const float*, int, int8_t*, void*, void*);
+int prism_gemv_dp4a_f32(const void*, const int8_t*, const void*, float*, int, int, int, void*);
 int prism_conv1d_silu_f32(const float*, const float*, float*, float*, int, int, void*);
 int prism_l2norm_heads_f32(float*, int, int, void*);
 int prism_gbeta_f32(const float*, const float*, const float*, const float*, float*, float*, int, void*);
@@ -105,6 +107,8 @@ public:
         alloc(d_vb_, (size_t)NKV * HD * 4); alloc(d_attn_, (size_t)NH * HD * 4);
         alloc(d_ar_, (size_t)NH * HD * 4); alloc(d_qs_, (size_t)NH * HD * 4); alloc(d_gt_, (size_t)NH * HD * 4);
         alloc(d_logits_, (size_t)V * 4);
+        alloc(d_q8_, (size_t)32768);            // int8 activation scratch (max cols 17408)
+        alloc(d_ds_, (size_t)4096);             // fp16 per-32 scales
         h_.assign(H, 0.0f); logits_.assign(V, 0.0f);
         sgH_ = sg(H); sgV_ = sg(VD); sgF_ = sg(NF);
         loaded_ = true;
@@ -247,9 +251,14 @@ private:
         up(n);
         const PrismGpuTensor& G = g_[n];
         if (G.nb) {
-            const int rc = (G.nb == 18 || G.nb == 34 || G.nb == 28)
-                         ? prism_gemv_tile_f32(G.p, x, y, G.rows, G.cols, G.nb, nullptr)
-                         : prism_gemv_row4_f32(G.p, x, y, G.rows, G.cols, G.nb, nullptr);
+            int rc;
+            if (G.nb == 18 || G.nb == 34 || G.nb == 28) {
+                // Prism-extracted int8 dp4a path: quantize the activation row once, then dot.
+                rc = prism_quant_q8_f32(x, G.cols, d_q8_, d_ds_, nullptr);
+                if (!rc) rc = prism_gemv_dp4a_f32(G.p, d_q8_, d_ds_, y, G.rows, G.cols, G.nb, nullptr);
+            } else {
+                rc = prism_gemv_tile_f32(G.p, x, y, G.rows, G.cols, G.nb, nullptr);
+            }
             if (rc) { std::fprintf(stderr, "PrismEngine: gemv %s failed\n", n.c_str()); std::abort(); }
         } else if (prism_gemv_dense_f32((const float*)G.p, x, y, G.rows, G.cols, nullptr)) {
             std::fprintf(stderr, "PrismEngine: dense %s failed\n", n.c_str()); std::abort();
@@ -269,6 +278,7 @@ private:
           *d_q_ = nullptr, *d_kb_ = nullptr, *d_vb_ = nullptr, *d_attn_ = nullptr, *d_ar_ = nullptr,
           *d_qs_ = nullptr, *d_gt_ = nullptr, *d_logits_ = nullptr;
     int8_t *sgH_ = nullptr, *sgV_ = nullptr, *sgF_ = nullptr;
+    int8_t* d_q8_ = nullptr; void* d_ds_ = nullptr;
     std::vector<float> h_, logits_;
     int pos_ = 0;
     bool loaded_ = false;

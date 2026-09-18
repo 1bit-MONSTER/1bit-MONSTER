@@ -438,6 +438,7 @@ set(RCPP_SOURCES
     kernels/prism_gemv.hip
     kernels/prism_gemv_row4.hip
     kernels/prism_gemv_tile.hip
+    kernels/prism_gemv_dp4a.hip
     kernels/prism_gdn.hip
     kernels/prism_attn.hip
     kernels/prism_ops.hip
