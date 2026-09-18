@@ -252,3 +252,8 @@ npu-infer/tools/decode_txn
 # insertions between them, and the in-checkout set stops at ctx 2200 -- it IS the cliff
 # RESULTS-ctx2200-cliff describes.
 npu-infer/captures/
+
+# CI build dir for the NPU engine: bench.yml and npu-reset.yml both write here,
+# and a 3.6 MB binary plus CMake state landed in a commit during the #2505 fix
+# before this line existed.
+engine/npu/build-cmake/
