@@ -106,6 +106,18 @@ if [ -x "$HIPCC" ]; then
   fi
 fi
 
+# Optional P3.3 gate: thin per-layer ops (needs hipcc + the device).
+POPS=""
+if [ -x "$HIPCC" ]; then
+  if "$HIPCC" --offload-arch=gfx1151 -O3 -std=c++17 -I "$REPO/include" \
+      "$REPO/tests/prism/test_prism_ops_hip.hip" "$REPO/kernels/prism_ops.hip" \
+      -o "$TMP/pops" >/dev/null 2>&1; then
+    POPS="$TMP/pops"
+  else
+    echo "  (hipcc present but the ops gate failed to build — skipping)"
+  fi
+fi
+
 echo "== container / codec gates (no model file needed) =="
 run "1BP v5 transform blob + Prism geometry" "$TMP/t5"
 run "Prism codec round-trip (synthetic)" python3 "$REPO/tests/prism/roundtrip_prism_codec.py"
@@ -116,6 +128,7 @@ run "FWHT vs independent matrix reference" python3 "$REPO/tests/prism/compare_pr
 [ -n "$PHADM" ] && run "Prism FWHT device parity (P3.1, gfx1151)" "$PHADM"
 [ -n "$PGDN" ] && run "Prism GDN kernel parity (P3.3, gfx1151)" "$PGDN"
 [ -n "$PATTN" ] && run "Prism full-attention kernel parity (P3.3, gfx1151)" "$PATTN"
+[ -n "$POPS" ] && run "Prism ops kernel parity (P3.3, gfx1151)" "$POPS"
 
 echo "== per-model gates (source GGUF required) =="
 for g in "$MDIR"/ternary2-gguf/*.gguf "$MDIR"/ternary-gguf/*.gguf "$MDIR"/onebit-gguf/Bonsai-27B-Q1_0.gguf; do
