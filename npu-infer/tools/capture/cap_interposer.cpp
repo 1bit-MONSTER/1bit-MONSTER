@@ -8,6 +8,18 @@
 //   g++ -O2 -fPIC -shared cap_interposer.cpp -o cap_interposer.so -ldl -lxrt_coreutil
 // Run:
 //   LD_PRELOAD=/tmp/txn_decode/cap_interposer.so ./run_qwen3_npu ...
+//
+// GATES: this build reads CAP_DIR and CAP_POSTRUN_ACT. The three dump gates -
+// CAP_NO_SYNC, CAP_SKIP_BIG, CAP_DUMP_BIG - are implemented on
+// goal/runlist-decode-wire, NOT here, and they are REFUSED at load time rather than
+// ignored (see refuse_unimplemented_gates below). That refusal is not cosmetic:
+// docs/AGENT-COORDINATION.md tells the next capture to set CAP_NO_SYNC=1 to keep a 1k
+// bench at 3.3 GB, and without it a verification run wrote 181 GB in five minutes. On a
+// build that ignores the gate, setting it is worse than not setting it: the operator
+// believes they are protected.
+//
+// capture-gates-refused: CAP_NO_SYNC CAP_SKIP_BIG CAP_DUMP_BIG
+// capture-gates-read: CAP_DIR CAP_POSTRUN_ACT
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +38,36 @@ extern "C" {
 }
 
 static const char* CAP_DIR = getenv("CAP_DIR") ? getenv("CAP_DIR") : "/tmp/cap2";
+
+// Refused, not ignored. The names below are the gates this tool's own documentation and
+// the published post tell an operator to set; the implementation lives on
+// goal/runlist-decode-wire (302 lines that rework the capture paths, not a rename).
+// Ignoring them silently is the trap: dump_bo() below writes every BO on every sync,
+// which is the measured 181 GB case, and an operator who set CAP_NO_SYNC=1 would read a
+// completed capture as one that stayed small. Fail at load instead - before a byte is
+// dumped.
+void refuse_unimplemented_gates(void) {
+    static const char* refused[] = {"CAP_NO_SYNC", "CAP_SKIP_BIG", "CAP_DUMP_BIG"};
+    for (const char* name : refused) {
+        const char* v = getenv(name);
+        if (v && *v && strcmp(v, "0") != 0) {
+            fprintf(stderr,
+                    "cap_interposer: %s=%s is NOT implemented on this build (#2528).\n"
+                    "  This interposer reads CAP_DIR and CAP_POSTRUN_ACT only; the dump gates\n"
+                    "  live on goal/runlist-decode-wire. Refusing to capture: ignoring the gate\n"
+                    "  would dump every BO per sync (the measured 181 GB case), and a capture\n"
+                    "  that silently ignores a gate reads as one that honoured it.\n"
+                    "  Either unset %s, or build the interposer from that branch.\n",
+                    name, v, name);
+            _exit(2);
+        }
+    }
+}
+
+// Runs when the .so is loaded, i.e. before the traced program's main().
+__attribute__((constructor)) static void cap_interposer_gate_check(void) {
+    refuse_unimplemented_gates();
+}
 static FILE* g_log = nullptr;
 #include <set>
 #include <vector>
