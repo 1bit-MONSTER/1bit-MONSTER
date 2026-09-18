@@ -266,6 +266,16 @@ fi
 # → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
 # the legacy FLM test harness printed "FLM not installed" as if the NPU were
 # broken. A compiler cannot see a missing install step or a mislabelled lane (#2358).
+echo "== capture interposer build (skips without XRT headers) =="
+if cap_build_out=$(bash Testing/capture_interposer_build_selfcheck.sh 2>&1); then
+    printf '%s\n' "$cap_build_out" | sed 's/^/  /'
+    echo "✓ capture_interposer_build"
+else
+    echo "✗ capture_interposer_build"
+    printf '%s\n' "$cap_build_out" | tail -12 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 echo "== NPU lane contract =="
 total=$((total+1))
 if npu_lane_out=$("$PYTHON" Testing/npu_lane_selfcheck.py 2>&1); then
