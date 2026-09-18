@@ -1511,8 +1511,25 @@ int zaya_decode_main(int argc, char** argv) {
                                 fwrite(c1m, 4, 1024, f); fclose(f);
                             }
                         }
+                        double moe_corr = num / std::sqrt(d1 * d2);
                         fprintf(stderr, "[MoE L1 fused dbg] corr=%.6f maxdiff=%.6f (cpu rms=%.4f npu rms=%.4f) qn_s=%.4f\n",
-                            num/std::sqrt(d1*d2), maxd, std::sqrt(d1/d.H), std::sqrt(d2/d.H), qn_s);
+                            moe_corr, maxd, std::sqrt(d1/d.H), std::sqrt(d2/d.H), qn_s);
+                        // Fail closed (issue #2600): the int8 split's C2gate
+                        // emulates from the NPU's own h2 readback, so it reads
+                        // byte-identical even when the P1 h2 is wrong — only this
+                        // MoE-layer correlation sees it. Continuing emits tokens
+                        // the engine has just proved wrong and exits 0, which is a
+                        // silent wrong-output path: worse than a refusal.
+                        if (moe_corr < 0.99 && !(getenv("NPU_FUSED_SPLIT_ALLOW_BAD") &&
+                                                atoi(getenv("NPU_FUSED_SPLIT_ALLOW_BAD")) == 1)) {
+                            fprintf(stderr,
+                                    "[MoE L1 fused dbg] REFUSING to continue: corr=%.6f — the int8 split "
+                                    "MoE layer is wrong while the C2gate still reads byte-identical (issue #2600). "
+                                    "Use the fused single path (NPU_FUSED=1, no NPU_FUSED_SPLIT) or set "
+                                    "NPU_FUSED_SPLIT_ALLOW_BAD=1 to continue anyway.\n",
+                                    moe_corr);
+                            exit(2);
+                        }
                         fprintf(stderr, "[moecmp] cpu: ");
                         for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", cpu_out[i]);
                         fprintf(stderr, "\n[moecmp] npu: ");
