@@ -113,9 +113,70 @@ __global__ void prism_gemv_tile_pq_kernel(const uint8_t* __restrict__ W, const f
     if (lane == 0) { y[r0] = a0; if (r0 + 1 < rows) y[r0 + 1] = a1; if (r0 + 2 < rows) y[r0 + 2] = a2; if (r0 + 3 < rows) y[r0 + 3] = a3; }
 }
 
+__device__ __forceinline__ void tile_q_map(int e, int& b, int& n) {
+    if (e < 80) { b = e & 15; n = e >> 4; }
+    else if (e < 120) { const int t = e - 80; b = 16 + (t & 7); n = t >> 3; }
+    else { const int t = e - 120; b = 24 + (t & 1); n = t >> 1; }
+}
+
+// PTQ1_0: [24 B qs][2 B qh][2 B d], non-positional element order. A 256x5 int8 lookup
+// table in LDS turns the n-stage base-3 decode into one read per element.
+__global__ void prism_gemv_tile_ptq_kernel(const uint8_t* __restrict__ W, const float* __restrict__ x,
+                                           float* __restrict__ y, int rows, int cols) {
+    constexpr int NB = 28;
+    __shared__ signed char tab[256 * 5];
+    for (int i = threadIdx.x; i < 256 * 5; i += blockDim.x) {
+        const int by = i / 5, n = i % 5;
+        uint32_t v = (uint32_t)by;
+        for (int k = 0; k < n; k++) v = (v * 3u) & 0xFFu;
+        tab[i] = (signed char)((v * 3u) >> 8);
+    }
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int r0 = (blockIdx.x * (blockDim.x >> 5) + warp) * 4;
+    if (r0 >= rows) return;
+    const int bpr = cols >> 7;
+    const uint8_t* R0 = W + (size_t)r0 * bpr * NB;
+    const uint8_t* R1 = (r0 + 1 < rows) ? W + (size_t)(r0 + 1) * bpr * NB : R0;
+    const uint8_t* R2 = (r0 + 2 < rows) ? W + (size_t)(r0 + 2) * bpr * NB : R0;
+    const uint8_t* R3 = (r0 + 3 < rows) ? W + (size_t)(r0 + 3) * bpr * NB : R0;
+    int bm[4], nm[4];
+#pragma unroll
+    for (int k = 0; k < 4; k++) tile_q_map(4 * lane + k, bm[k], nm[k]);
+    float a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    for (int b = 0; b < bpr; b++) {
+        const size_t bo = (size_t)b * NB;
+        const float4 xv = *reinterpret_cast<const float4*>(&x[((size_t)b << 7) + 4 * lane]);
+        const float d0 = tile_d16((uint16_t)(R0[bo + 26] | (R0[bo + 27] << 8)));
+        const float d1 = tile_d16((uint16_t)(R1[bo + 26] | (R1[bo + 27] << 8)));
+        const float d2 = tile_d16((uint16_t)(R2[bo + 26] | (R2[bo + 27] << 8)));
+        const float d3 = tile_d16((uint16_t)(R3[bo + 26] | (R3[bo + 27] << 8)));
+#pragma unroll
+        for (int k = 0; k < 4; k++) {
+            const float xk = (k == 0) ? xv.x : (k == 1) ? xv.y : (k == 2) ? xv.z : xv.w;
+            const int t0 = tab[R0[bo + bm[k]] * 5 + nm[k]] - 1;
+            const int t1 = tab[R1[bo + bm[k]] * 5 + nm[k]] - 1;
+            const int t2 = tab[R2[bo + bm[k]] * 5 + nm[k]] - 1;
+            const int t3 = tab[R3[bo + bm[k]] * 5 + nm[k]] - 1;
+            a0 += (float)t0 * d0 * xk;
+            a1 += (float)t1 * d1 * xk;
+            a2 += (float)t2 * d2 * xk;
+            a3 += (float)t3 * d3 * xk;
+        }
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        a0 += __shfl_down_sync(0xffffffffffffffffull, a0, off);
+        a1 += __shfl_down_sync(0xffffffffffffffffull, a1, off);
+        a2 += __shfl_down_sync(0xffffffffffffffffull, a2, off);
+        a3 += __shfl_down_sync(0xffffffffffffffffull, a3, off);
+    }
+    if (lane == 0) { y[r0] = a0; if (r0 + 1 < rows) y[r0 + 1] = a1; if (r0 + 2 < rows) y[r0 + 2] = a2; if (r0 + 3 < rows) y[r0 + 3] = a3; }
+}
+
 }  // namespace
 
-// nb 18 (Q1_0) / 34 (PQ2_0) only; returns 1 for other layouts so the caller can fall back.
+// nb 18 (Q1_0) / 34 (PQ2_0) / 28 (PTQ1_0).
 extern "C" int prism_gemv_tile_f32(const void* W, const float* x, float* y, int rows, int cols,
                                    int nb, void* stream) {
     if (!W || !x || !y || rows <= 0 || cols <= 0 || (cols & 127)) return 1;
@@ -123,6 +184,7 @@ extern "C" int prism_gemv_tile_f32(const void* W, const float* x, float* y, int 
     dim3 grid(g), block(256);
     if (nb == 18)      hipLaunchKernelGGL((prism_gemv_tile_q1_kernel), grid, block, 0, (hipStream_t)stream, (const uint8_t*)W, x, y, rows, cols);
     else if (nb == 34) hipLaunchKernelGGL((prism_gemv_tile_pq_kernel), grid, block, 0, (hipStream_t)stream, (const uint8_t*)W, x, y, rows, cols);
+    else if (nb == 28) hipLaunchKernelGGL((prism_gemv_tile_ptq_kernel), grid, block, 0, (hipStream_t)stream, (const uint8_t*)W, x, y, rows, cols);
     else return 1;
     HIP_CHECK(hipGetLastError());
     return 0;

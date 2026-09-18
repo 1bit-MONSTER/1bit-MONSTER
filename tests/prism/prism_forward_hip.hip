@@ -124,7 +124,7 @@ struct M {
         up(n);
         const GpuTensor& G = g[n];
         if (G.nb) {
-            const bool tile = (G.nb == 18 || G.nb == 34);   // Q1_0 / PQ2_0 positional layouts
+            const bool tile = (G.nb == 18 || G.nb == 34 || G.nb == 28);   // all three tile kernels
             const int rc = tile ? prism_gemv_tile_f32(G.p, x, y, G.rows, G.cols, G.nb, nullptr)
                                 : prism_gemv_row4_f32(G.p, x, y, G.rows, G.cols, G.nb, nullptr);
             if (rc) { std::fprintf(stderr, "gemv fail %s\n", n.c_str()); std::exit(2); }
