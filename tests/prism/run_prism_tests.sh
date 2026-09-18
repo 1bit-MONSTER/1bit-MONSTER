@@ -48,7 +48,7 @@ g++ -O2 -std=c++17 -I "$REPO/include" -I "$REPO/src" \
     "$REPO/tests/prism/test_prism_failclosed.cpp" "$REPO/src/onebp_model.cpp" \
     -o "$TMP/fc" || exit 1
 g++ -O2 -std=c++17 -I "$REPO/include" -I "$REPO/src" -I "$REPO/engine/npu/include" \
-    "$REPO/tests/prism/test_prism_npu_pack.cpp" "$REPO/engine/npu/src/prism_npu_bridge.cpp" \
+    "$REPO/tests/prism/test_prism_npu_pack.cpp" "$REPO/src/prism_npu_bridge.cpp" \
     "$REPO/src/onebp_model.cpp" -o "$TMP/pnpu" || exit 1
 
 # Optional GPU parity tool: built only when hipcc is present (needs the device).

@@ -52,7 +52,7 @@ TernaryNpuPackResult pack_bst_to_npu_int8(
 
 // Pack a verbatim Prism v5 pack (flat row-major 128-blocks; quant is the ONEBP_*_G128 id:
 // 11 Q1_0 / 12 PQ2_0 / 13 PTQ1_0) to INT8 NPU format.
-// See engine/npu/src/prism_npu_bridge.cpp.
+// See src/prism_npu_bridge.cpp (moved out of engine/npu in P4.1; this header only declares the prototypes).
 TernaryNpuPackResult pack_prism_to_npu_int8(
     const uint8_t* prism_data,
     int rows, int cols,

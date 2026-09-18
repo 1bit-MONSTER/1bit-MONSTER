@@ -5,7 +5,7 @@
 // within one quantization step (scale/2). No NPU hardware needed.
 //
 // Build: g++ -O2 -std=c++17 -I include -I src -I engine/npu/include \
-//          tests/prism/test_prism_npu_pack.cpp engine/npu/src/prism_npu_bridge.cpp \
+//          tests/prism/test_prism_npu_pack.cpp src/prism_npu_bridge.cpp \
 //          src/onebp_model.cpp -o /tmp/pnpu
 // Run:   /tmp/pnpu <model.1bp> <tensor_name>
 
