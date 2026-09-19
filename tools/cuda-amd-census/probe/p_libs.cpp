@@ -130,7 +130,12 @@ static int do_sparse() {
     float yref[3] = {3.f, 3.f, 9.f};
 
     rocsparse_handle h;
-    if (rocsparse_create_handle(&h) != rocsparse_status_success) return r_unsupported("rocsparse_create_handle failed");
+    // Report the ACTUAL status code, not just "failed": step 4 required the specific
+    // ROCSPARSE_STATUS_* value (a bare "failed" is not evidence of which failure).
+    rocsparse_status hst = rocsparse_create_handle(&h);
+    if (hst != rocsparse_status_success)
+        return r_unsupported(fmt("rocsparse_create_handle -> status %d (%s)",
+                                 (int)hst, rocsparse_status_to_string(hst)));
     rocsparse_mat_descr descr;
     rocsparse_create_mat_descr(&descr);
     // ROCm 10's rocsparse_scsrmv takes a rocsparse_mat_info between csr_col_ind
