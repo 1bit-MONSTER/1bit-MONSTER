@@ -1,0 +1,9 @@
+== engine slot identity: N=4 tag=q06 ng=64 launch=simul prompt=/tmp/p_1k.txt ==
+serial reference:  16.9 ms/tok (59 tok/s)  Prefill: 616ms
+reference determinism: IDENTICAL across two serial runs
+  slot 1: tokens=IDENTICAL  55.7 ms/tok (18 tok/s)  Prefill: 5285ms
+  slot 2: tokens=IDENTICAL  61.1 ms/tok (16 tok/s)  Prefill: 6010ms
+  slot 3: tokens=IDENTICAL  48.2 ms/tok (21 tok/s)  Prefill: 5140ms
+  slot 4: tokens=IDENTICAL  57.6 ms/tok (17 tok/s)  Prefill: 5912ms
+== identical=4 differ=0 refused=0 of N=4  |  aggregate decode=72 tok/s ==
+== device errors ==

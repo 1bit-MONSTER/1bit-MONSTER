@@ -1,0 +1,13 @@
+== engine slot identity: N=8 tag=q06 ng=64 launch=stagger prompt=/tmp/p_1k.txt ==
+serial reference:  16.3 ms/tok (61 tok/s)  Prefill: 554ms
+reference determinism: IDENTICAL across two serial runs
+  slot 1: tokens=IDENTICAL  13.8 ms/tok (73 tok/s)  Prefill: 563ms
+  slot 2: tokens=IDENTICAL  14.1 ms/tok (71 tok/s)  Prefill: 604ms
+  slot 3: tokens=IDENTICAL  13.9 ms/tok (72 tok/s)  Prefill: 554ms
+  slot 4: tokens=IDENTICAL  13.8 ms/tok (73 tok/s)  Prefill: 539ms
+  slot 5: tokens=IDENTICAL  13.9 ms/tok (72 tok/s)  Prefill: 546ms
+  slot 6: tokens=IDENTICAL  13.9 ms/tok (72 tok/s)  Prefill: 547ms
+  slot 7: tokens=IDENTICAL  13.6 ms/tok (73 tok/s)  Prefill: 547ms
+  slot 8: tokens=IDENTICAL  13.5 ms/tok (74 tok/s)  Prefill: 542ms
+== identical=8 differ=0 refused=0 of N=8  |  aggregate decode=580 tok/s ==
+== device errors ==

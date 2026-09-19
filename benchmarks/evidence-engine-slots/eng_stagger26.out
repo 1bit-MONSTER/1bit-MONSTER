@@ -1,0 +1,31 @@
+== engine slot stagger: tag=q06 ng=100000000 prompt=/tmp/tiny_ids.txt maxn=26 ==
+== baseline hwctx=0 ==
+  slot 1: SERVING  Prefill: 91ms  hwctx=1
+  slot 2: SERVING  Prefill: 187ms  hwctx=2
+  slot 3: SERVING  Prefill: 276ms  hwctx=3
+  slot 4: SERVING  Prefill: 352ms  hwctx=4
+  slot 5: SERVING  Prefill: 435ms  hwctx=5
+  slot 6: SERVING  Prefill: 519ms  hwctx=6
+  slot 7: SERVING  Prefill: 614ms  hwctx=7
+  slot 8: SERVING  Prefill: 692ms  hwctx=8
+  slot 9: SERVING  Prefill: 782ms  hwctx=9
+  slot 10: SERVING  Prefill: 861ms  hwctx=10
+  slot 11: SERVING  Prefill: 955ms  hwctx=11
+  slot 12: SERVING  Prefill: 1038ms  hwctx=12
+  slot 13: SERVING  Prefill: 1121ms  hwctx=13
+  slot 14: SERVING  Prefill: 1208ms  hwctx=14
+  slot 15: SERVING  Prefill: 1291ms  hwctx=15
+  slot 16: SERVING  Prefill: 1378ms  hwctx=16
+  slot 17: SERVING  Prefill: 1601ms  hwctx=17
+  slot 18: SERVING  Prefill: 1803ms  hwctx=18
+  slot 19: SERVING  Prefill: 1852ms  hwctx=19
+  slot 20: SERVING  Prefill: 1952ms  hwctx=20
+  slot 21: SERVING  Prefill: 2052ms  hwctx=21
+  slot 22: SERVING  Prefill: 2157ms  hwctx=22
+  slot 23: SERVING  Prefill: 2255ms  hwctx=23
+  slot 24: SERVING  Prefill: 2353ms  hwctx=24
+  slot 25: SERVING  Prefill: 2946ms  hwctx=25
+  slot 26: SERVING  Prefill: 2461ms  hwctx=26
+==
+== engine slots serving: 26  |  hwctx now: 26  |  total engine RSS: 114.38 GB ==
+== after cleanup hwctx=0 ==

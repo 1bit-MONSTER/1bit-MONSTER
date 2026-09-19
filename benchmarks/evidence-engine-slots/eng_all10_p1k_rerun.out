@@ -1,0 +1,17 @@
+== engine slot ceiling: N=10 tag=q06 ng=64 prompt=/tmp/p_1k.txt ==
+== baseline hwctx=0 ==
+== after 2x5s: hwctx_now=0 peak_hwctx=39 ==
+  slot 1: SERVED  60.7 ms/tok (16 tok/s)  Prefill: 8744ms  tokens=64
+  slot 2: FAIL  CREATE_HWCTX IOCTL failed (err=-2): No such file or directory
+  slot 3: SERVED  23.6 ms/tok (42 tok/s)  Prefill: 4783ms  tokens=64
+  slot 4: SERVED  73.1 ms/tok (14 tok/s)  Prefill: 9941ms  tokens=64
+  slot 5: SERVED  73.4 ms/tok (14 tok/s)  Prefill: 10120ms  tokens=64
+  slot 6: SERVED  80.5 ms/tok (12 tok/s)  Prefill: 10143ms  tokens=64
+  slot 7: FAIL  CREATE_HWCTX IOCTL failed (err=-2): No such file or directory
+  slot 8: SERVED  46.1 ms/tok (22 tok/s)  Prefill: 8177ms  tokens=64
+  slot 9: SERVED  70.4 ms/tok (14 tok/s)  Prefill: 8941ms  tokens=64
+  slot 10: FAIL  CREATE_HWCTX IOCTL failed (err=-2): No such file or directory
+== SERVED=7 FAIL=3 PENDING=0 (N=10), engine RSS now=0.00 GB ==
+== driver refusals ==
+      3    Bf16Mm::init failed: DRM_IOCTL_AMDXDNA_CREATE_HWCTX IOCTL failed (err=-2): No such file or directory
+== after cleanup hwctx=0 ==

@@ -1,0 +1,19 @@
+  slot 1 (reference) text=OK tps=44.87826769886682 rss=4.46 GB hwctx=4 [deterministic]
+  slot 2 (:8261) text=OK tps=45.579890152464735 rss=4.46 GB hwctx=8 -> IDENTICAL
+  slot 3 (:8262) text=OK tps=45.74460785434917 rss=4.46 GB hwctx=12 -> IDENTICAL
+  slot 4 (:8263) text=OK tps=48.69971754163826 rss=4.46 GB hwctx=16 -> IDENTICAL
+  slot 5 (:8264) text=OK tps=48.77929806590083 rss=4.46 GB hwctx=20 -> IDENTICAL
+  slot 6 (:8265) text=OK tps=43.50379570617537 rss=4.46 GB hwctx=24 -> IDENTICAL
+  slot 7 (:8266) text=OK tps=43.85484047801776 rss=4.46 GB hwctx=28 -> IDENTICAL
+  slot 8 (:8267) text=OK tps=41.20058504830769 rss=4.46 GB hwctx=32 -> IDENTICAL
+  slot 9 (:8268) text=OK tps=41.731001961357094 rss=4.46 GB hwctx=29 -> IDENTICAL
+  slot 10 (:8269) text=OK tps=46.1968447555032 rss=4.46 GB hwctx=39 -> IDENTICAL
+  slot 11 (:8270) text=OK tps=48.0873265850785 rss=4.46 GB hwctx=39 -> IDENTICAL
+  slot 12 (:8271) text=OK tps=49.45598417408506 rss=4.46 GB hwctx=35 -> IDENTICAL
+  slot 13 (:8272) text=OK tps=47.1464604794795 rss=4.46 GB hwctx=41 -> IDENTICAL
+  slot 14 (:8273) text=OK tps=45.96538806278872 rss=4.35 GB hwctx=40 -> IDENTICAL
+  slot 15 (:8274) text=OK tps=49.73021359126737 rss=4.46 GB hwctx=49 -> IDENTICAL
+  slot 16 (:8275) text=OK tps=49.432759089448574 rss=4.46 GB hwctx=48 -> IDENTICAL
+== slots started: 16 | identical to reference: 15 | differ: 0 ==
+== total RSS: 65.3 GB ==
+== after cleanup hwctx=0 ==
