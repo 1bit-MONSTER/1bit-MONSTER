@@ -56,7 +56,7 @@ This guide covers how to build, test, and contribute to the project.
 | Binary | `zaya_server` — **~1.5 MB** (1,578,576 B raw / 1,302,736 B stripped) |
 | Language | **C++23** (NPU engine), **C++20 with HIP** (GPU kernels), C++20 (server) |
 | Build system | **CMake** 3.21+ with **Ninja** |
-| GPU compiler | **HIP** via AMD ROCm **7.15.0a** (TheRock `/ amdclang++`) |
+| GPU compiler | **HIP** via AMD ROCm **7.16** (TheRock `/ amdclang++`) |
 | Target GPU | **gfx1151** — AMD Radeon 8060S (Strix Halo) |
 | Target NPU | **XDNA 2** — 32 tiles, INT8, via C++23 engine + XRT 2.21+ |
 | CPU fallback | Any x86-64 with OpenMP |
@@ -103,12 +103,12 @@ See [docs/guides/building.md](docs/guides/building.md) for full prerequisites an
 | Ubuntu | 24.04 LTS or later (kernel 7.0.0+) | Host OS |
 | CMake | ≥ 3.21 | Build system |
 | Ninja | latest | Fast builds |
-| ROCm | **TheRock 7.15.0a** | HIP compiler (pip) |
+| ROCm | **TheRock 10.1.0a20260910** (pinned) | HIP compiler (pip) |
 | GCC | ≥ 13 | C++20 host compiler |
 | AMD XRT | ≥ 2.21 | NPU runtime (`libxrt_coreutil`) |
 | Git LFS | latest | Model file storage |
 
-**TheRock 7.15.0a installation (pip):**
+**TheRock installation (pip; index + version pinned):**
 ```bash
 pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
   "rocm[libraries,devel]==10.1.0a20260910"   # then rocm-sdk-device-<target>==10.1.0a20260910 per GPU (scripts/detect-gfx-targets.sh)

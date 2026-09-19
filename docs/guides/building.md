@@ -36,7 +36,7 @@ sudo apt install -y cmake ninja-build build-essential git
 
 ---
 
-## TheRock 7.15.0a
+## TheRock (pinned to 10.1.0a20260910)
 
 ```bash
 # Install TheRock HIP SDK — the device package is chosen from YOUR GPU's arch

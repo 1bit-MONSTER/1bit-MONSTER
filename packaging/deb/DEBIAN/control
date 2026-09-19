@@ -13,7 +13,7 @@ Description: One binary, all backends — NPU + GPU + CPU inference engine
  process. 40 models across 16 families in the native 1BP format,
  plus direct GGUF execution. Zero Python, zero Docker at runtime.
  .
- Requires a ROCm 7.15.0a-compatible HIP runtime (libhsa-runtime64)
+ Requires a ROCm 7.16-compatible HIP runtime (libhsa-runtime64)
  for GPU/NPU acceleration — see https://1bit.monster for install
  instructions. CPU-only operation works without it.
  .

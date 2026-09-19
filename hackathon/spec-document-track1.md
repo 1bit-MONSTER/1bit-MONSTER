@@ -12,7 +12,7 @@
 
 ## 1. Application Scenarios
 
-1bit.MONSTER enables **full-stack LLM fine-tuning on consumer AMD hardware** — no NVIDIA GPU required, no cloud dependency. All training runs locally on Strix Halo's Radeon 8060S GPU using ROCm HIP via TheRock 7.15.0a.
+1bit.MONSTER enables **full-stack LLM fine-tuning on consumer AMD hardware** — no NVIDIA GPU required, no cloud dependency. All training runs locally on Strix Halo's Radeon 8060S GPU using ROCm HIP via TheRock (pinned 10.1.0a20260910).
 
 | Scenario | Description |
 |----------|-------------|
@@ -142,7 +142,7 @@
 ```bash
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-monster
-# Install TheRock 7.15.0a
+# Install TheRock (pinned 10.1.0a20260910)
 pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
   "rocm[libraries,devel]==10.1.0a20260910"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T==10.1.0a20260910"; done
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"

@@ -29,7 +29,7 @@ Pure C++23 LoRA training pipeline for AMD GPUs. No PyTorch, no PEFT, no Python a
 **Key achievements:**
 - **Zero-Python training** — single 400 KB C++ binary handles dataset loading, tokenization, forward/backward, AdamW optimizer, and checkpoint save
 - **Q4NX in-place fine-tuning** — train directly on 4-bit quantized weights without dequantizing
-- **AMD ROCm HIP** — all GEMM on Strix Halo Radeon 8060S via TheRock 7.15.0a
+- **AMD ROCm HIP** — all GEMM on Strix Halo Radeon 8060S via TheRock (pinned 10.1.0a20260910)
 - **1.39× faster** than PyTorch + PEFT on MI300X, with **1.33× less VRAM**
 - **No LoRA merge drift** — base weights never modified, avoiding BF16 rounding errors
 - **Fine-tune 8B models in 6 GB VRAM** via Q4NX + LoRA

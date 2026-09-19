@@ -9,11 +9,11 @@ permissions: {}
 
 jobs:
   server:
-    name: Build release (C++ HIP kernels + server + CLI) — TheRock 7.15.0a
+    name: Build release (C++ HIP kernels + server + CLI) — TheRock 10.1.0a (pinned)
     runs-on: ubuntu-24.04
     # Bare runner, not a container: the `ubuntu:24.04` container image stopped
     # shipping git, which broke actions/checkout's submodule clone. The runner
-    # has git and no system ROCm, so TheRock 7.15.0a (installed below) stays the
+    # has git and no system ROCm, so the pinned TheRock SDK (installed below) stays the
     # ONLY ROCm in the build — same environment CI's C++ job uses.
     timeout-minutes: 90
     permissions:
@@ -51,7 +51,7 @@ jobs:
           done
           sudo /opt/rocm-therock/bin/rocm-sdk init
 
-      - name: Build all C++ targets (TheRock 7.15.0a HIP kernels + servers + CLI)
+      - name: Build all C++ targets (TheRock 10.1.0a HIP kernels + servers + CLI)
         run: |
           # TheRock installs into a Python venv at /opt/rocm-therock.
           # Find the Python site-packages directory (version-dependent) and
@@ -194,7 +194,7 @@ jobs:
             ### Requires
             - An AMD GPU with the matching device package installed
               (`bash scripts/detect-gfx-targets.sh` prints the target)
-            - ROCm 7.15.0a runtime (libhsa-runtime64) — TheRock nightly C++ SDK
+            - ROCm 7.16 runtime (libhsa-runtime64) — TheRock nightly C++ SDK, pinned to 10.1.0a20260910
             - A model file (.h1b, .q4nx, .gguf)
 
             ### Quick Start

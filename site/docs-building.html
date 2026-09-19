@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>1bit.MONSTER: Building the engine</title>
-  <meta name="description" content="Build the 1bit.MONSTER engine from source. TheRock 7.15.0a prerequisites, the onebin target, FastFlowLM discovery, optional GPU decode, and the known gotchas." />
+  <meta name="description" content="Build the 1bit.MONSTER engine from source. TheRock (pinned 10.1.0a20260910) prerequisites, the onebin target, FastFlowLM discovery, optional GPU decode, and the known gotchas." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="1bit.MONSTER: Building the engine" />
-  <meta property="og:description" content="Build the 1bit.MONSTER engine from source. TheRock 7.15.0a prerequisites, the onebin target, FastFlowLM discovery, optional GPU decode, and the known gotchas." />
+  <meta property="og:description" content="Build the 1bit.MONSTER engine from source. TheRock (pinned 10.1.0a20260910) prerequisites, the onebin target, FastFlowLM discovery, optional GPU decode, and the known gotchas." />
   <meta property="og:url" content="https://1bit.monster/docs-building.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="1bit.MONSTER: Building the engine" />
-  <meta name="twitter:description" content="Build the 1bit.MONSTER engine from source. TheRock 7.15.0a prerequisites, the onebin target, FastFlowLM discovery, optional GPU decode, and the known gotchas." />
+  <meta name="twitter:description" content="Build the 1bit.MONSTER engine from source. TheRock (pinned 10.1.0a20260910) prerequisites, the onebin target, FastFlowLM discovery, optional GPU decode, and the known gotchas." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/docs-building.html" />
   <style>
@@ -320,7 +320,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "WebPage", "name": "1bit.MONSTER: Building the engine", "description": "Build the 1bit.MONSTER engine from source. TheRock 7.15.0a prerequisites, the onebin target, FastFlowLM discovery, optional GPU decode, and the known gotchas.", "url": "https://1bit.monster/docs-building.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "WebPage", "name": "1bit.MONSTER: Building the engine", "description": "Build the 1bit.MONSTER engine from source. TheRock (pinned 10.1.0a20260910) prerequisites, the onebin target, FastFlowLM discovery, optional GPU decode, and the known gotchas.", "url": "https://1bit.monster/docs-building.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
 
@@ -388,13 +388,13 @@
           <tbody>
             <tr><td><code>OS</code></td><td>Ubuntu 24.04 LTS+ (CachyOS / Arch also works)</td></tr>
             <tr><td><code>Kernel</code></td><td><strong>6.18.22-lts or 7.x, not 6.19.x</strong> (issue #1 OPTC hang)</td></tr>
-            <tr><td><code>ROCm</code></td><td><strong>TheRock 7.15.0a</strong>, nightly C++ SDK, native gfx1151</td></tr>
+            <tr><td><code>ROCm</code></td><td><strong>TheRock (pinned 10.1.0a20260910)</strong>, nightly C++ SDK, native gfx1151</td></tr>
             <tr><td><code>CMake</code></td><td>≥ 3.28 · Ninja ≥ 1.12 · GCC ≥ 13 (C++20) / ≥ 14 (C++26)</td></tr>
           </tbody>
         </table>
         <pre class="code"><code>$ sudo apt update &amp;&amp; sudo apt install -y cmake ninja-build build-essential git</code></pre>
 
-        <h3>TheRock 7.15.0a</h3>
+        <h3>TheRock (pinned 10.1.0a20260910)</h3>
         <p>The Rock is the NPU-and-GPU toolchain. Install the nightly pip wheel that ships the gfx1151 code objects.</p>
         <pre class="code"><code>$ pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
     "rocm[libraries,devel]==10.1.0a20260910"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T"; done
@@ -429,7 +429,7 @@ $ cmake --build build --target zaya_gpu_decode    <span class="c"># -> build/lib
             <tr><th>Symptom</th><th>Fix</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>hipErrorNoBinaryForGPU</code></td><td><code>CMAKE_HIP_ARCHITECTURES</code> set to your GPU's arch (never hardcode <code>gfx1151</code>) + TheRock 7.15.0a (older ROCm lacks gfx1151 objects)</td></tr>
+            <tr><td><code>hipErrorNoBinaryForGPU</code></td><td><code>CMAKE_HIP_ARCHITECTURES</code> set to your GPU's arch (never hardcode <code>gfx1151</code>) + TheRock (pinned 10.1.0a20260910) (older ROCm lacks gfx1151 objects)</td></tr>
             <tr><td><code>cannot find -lamdhip64</code></td><td>TheRock at <code>/opt/rocm-therock</code> or <code>THEROCK_PIP_ROOT</code>; never system ROCm</td></tr>
             <tr><td>No GPU decode despite build</td><td><code>export LD_LIBRARY_PATH=/path/to/zaya/build:$LD_LIBRARY_PATH</code>; verify the model is actually Q4NX</td></tr>
             <tr><td>First-inference hang (issue #1, ~1 in 5 boots)</td><td><code>export HSA_ENABLE_SDMA=0</code>, avoiding the OPTC code path</td></tr>

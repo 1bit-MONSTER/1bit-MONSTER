@@ -81,7 +81,7 @@ First open-source Mamba1/SSM GPU backend for AMD hardware:
 - Zero-copy state passing between SSM blocks
 - Supports BlackMamba 1.5B (30 layers) and 2.8B (36 layers)
 
-### 3.5 TheRock 7.15.0a Integration
+### 3.5 TheRock (pinned 10.1.0a20260910) Integration
 
 First project to adopt and validate **TheRock** — AMD's nightly pip-installable HIP SDK for gfx1151:
 
@@ -160,7 +160,7 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 ```bash
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-monster
-# Install TheRock 7.15.0a — native gfx1151 HIP SDK
+# Install TheRock (pinned 10.1.0a20260910) — native gfx1151 HIP SDK
 pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
   "rocm[libraries,devel]==10.1.0a20260910"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T==10.1.0a20260910"; done
 # Build

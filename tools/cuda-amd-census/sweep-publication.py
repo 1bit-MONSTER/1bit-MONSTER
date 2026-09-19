@@ -47,6 +47,7 @@ PATTERNS: list[tuple[str, str]] = [
     (r"10\.1\.0a20260822", "superseded TheRock version (current matched set is 10.1.0a20260910)"),
     (r"7\.16\.26332", "superseded HIP version (ryzen is now 7.16.26362)"),
     (r"23\.0\.0git", "superseded amdclang version (ryzen is now 24.0.0git)"),
+    (r"7\.15\.0a", "superseded ROCm 7.15 label (runtime is now 7.16)"),
     # --- INDEX dimension ----------------------------------------------------
     (r"rocm\.nightlies\.amd\.com/whl-multi-arch", "old TheRock index (serves only up to 10.1.0a20260822)"),
     (r"(?:pip|python3?\s+-m\s+pip)[^\n]*rocm\[libraries,devel\](?!==|\$\{)", "unpinned pip install of rocm[libraries,devel]"),
@@ -70,6 +71,7 @@ PATTERNS: list[tuple[str, str]] = [
 HISTORICAL_PATH = re.compile(
     r"(?:^|/)(?:docs/archive|docs/superpowers/plans|docs/superpowers/specs|benchmarks|research)/"
     r"|(?:^|/)log\.md$"
+    r"|(?:^|/)CHANGELOG\.md$"      # a dated log of what shipped when
     r"|archived"
     r"|RESULTS-[0-9]{4}-[0-9]{2}-[0-9]{2}"
     r"|[0-9]{4}-[0-9]{2}-[0-9]{2}.*\.md$"
