@@ -91,3 +91,38 @@ Enforced rules:
 - `cublas/hrx` is **not** an HRX BLAS: HRX ships none, so that row is rocBLAS running on
   HRX's `libamdhip64`. It evidences the compat layer, not a rocBLAS replacement.
 - No performance claims are made anywhere here, and no timing was compared.
+
+## gfx1201 device-pack mode (goal mu7tnx28-9nb7un)
+
+ryzen's gfx1201 math-library failures were traced to running the **wrong SDK device build**:
+the installed SDK is `rocm_sdk_device_gfx1151`, whose rocBLAS ships Tensile kernels for gfx1151
+only. Reproduce the fix without touching the real install:
+
+```bash
+D=~/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel
+rm -rf ~/sdk-gfx1201-devel && mkdir -p ~/sdk-gfx1201-devel
+cp -al $D/. ~/sdk-gfx1201-devel/          # hardlinks: instant, ~0 bytes, same fs required
+# download rocm_sdk_device_gfx1201-*.whl from
+#   https://nightly.repo.amd.com/rocm/whl-next/rocm-sdk-device-gfx1201/
+# then overlay its _rocm_sdk_libraries/lib/* into ~/sdk-gfx1201-devel/lib/
+ROCM_DEVEL=$HOME/sdk-gfx1201-devel EXPECT_GFX=gfx1201 \
+  ./run-census.sh --machine ryzen-gfx1201pack --out reports --timeout 90
+```
+
+Result (committed in `reports/ryzen-gfx1201pack.*`): **cuBLAS `ERROR`→`PASS`** (`sgemm
+max_abs=1.72e-05`, identical to gfx1151) and **cuDNN `ERROR`→`PASS`**. rocSPARSE and hipSOLVER do
+**not** move — the device pack covers only rocblas/hipblaslt/miopen. Compare **per-surface
+verdicts**, not totals: the pack run stages no HRX bundle, so `detected` differs for an unrelated
+reason. See `okf` → `references/gfx1201-rocm-gap-status.md`.
+
+## SPIR-V / ZCFS gate (`probe/p_spirv_zcfs.cpp`)
+
+```bash
+L=$D/lib/llvm/bin
+$L/clang++ -x hip --offload-arch=amdgcnspirv --rocm-path=$D -O3 \
+  -I$D/include -isystem $D/include probe/p_spirv_zcfs.cpp -o /tmp/gate -L$D/lib -lamdhip64
+$L/llvm-objdump --offloading /tmp/gate   # must show hip-spirv64-...--amdgcnspirv, NO gfxXXXX
+```
+
+⚠️ **Use raw `clang++`, never `hipcc`, for `amdgcnspirv`.** `hipcc --offload-arch=amdgcnspirv`
+exits 0 and **silently substitutes native detection**, embedding concrete `gfxXXXX` targets.
