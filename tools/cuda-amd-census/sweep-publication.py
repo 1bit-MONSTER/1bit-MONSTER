@@ -111,11 +111,12 @@ HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+(.*?)\s*$|.*?<h[1-4][^>]*>(.*?)</h[1-
 VERSION_TOKEN = re.compile(r"\b(?:10\.[0-9]\.[0-9]+a[0-9]{8}|7\.1[0-9]\.[0-9]{5}|[0-9]{2}\.0\.0git)\b")
 # Values that are correct TODAY somewhere in the fleet (ryzen and strixhalo
 # legitimately differ, so both sets are current; the classifier decides by context).
+# Only values VERIFIED ON A BOX belong here. Listing a merely-plausible value
+# (7.16.26331) previously masked a stale published number.
 CURRENT_VERSIONS = {
     "10.1.0a20260910",   # ryzen matched set
     "10.1.0a20260822",   # strixhalo (unchanged) + hist   -> context decides
     "7.16.26362",        # ryzen HIP
-    "7.16.26331",        # strixhalo HIP
     "7.16.26332",        # strixhalo HIP variant / hist record
     "24.0.0git",         # ryzen amdclang
     "23.0.0git",         # strixhalo amdclang
