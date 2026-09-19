@@ -18,7 +18,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Deepseek",
-  "model": "a15846/DeepSeek-v4-Fable"
+  "model": "endless-frontier/Fx-Bio"
  },
  "deepseekv41": {
   "arch": "deepseekv41",
@@ -53,7 +53,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "neutrypl/neutry-functiongemma-270m-v2"
+  "model": "Goader/gemma-3-4b-it-uk-matt"
  },
  "gemma4": {
   "arch": "gemma4",
@@ -118,12 +118,19 @@
   "family": "Qwen",
   "model": "Prannesshkva/ISOM-Qwen2.5-Coder-1.5B-Instruct"
  },
+ "kimi-k3": {
+  "arch": "kimi-k3",
+  "covered": true,
+  "date": "2026-09-19",
+  "family": "Kimi",
+  "model": "nkkbr/Mini-K3-1H-attn-1kda-3mla-nope-v2"
+ },
  "llama": {
   "arch": "llama",
   "covered": true,
   "date": "2026-09-05",
   "family": "Llama",
-  "model": "Raghav-Singhal/1pp-1.7b-ua-seed42-sft"
+  "model": "sambal/k2-think-v2-grpo-checkpoint-320"
  },
  "llama3forcausallm_polysurgery": {
   "arch": "llama3forcausallm_polysurgery",
@@ -151,7 +158,7 @@
   "covered": true,
   "date": "2026-09-10",
   "family": "Mistral",
-  "model": "Aurigene-AI/BioMistral-7B"
+  "model": "Jeesup/svd-safety-mis7_swift_remove50_swapgapiter_evfront_b010"
  },
  "mobilintllama": {
   "arch": "mobilintllama",
@@ -207,7 +214,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO"
+  "model": "dwidlee/systemone-lite-0.5b"
  },
  "qwen2_5_vl": {
   "arch": "qwen2_5_vl",
@@ -235,7 +242,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "thuyduongjoe123/checkpoints_en_my_logit"
+  "model": "Smilyai-labs/Mira-1-large-0919"
  },
  "qwen3-vl": {
   "arch": "qwen3-vl",
@@ -249,7 +256,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "YueLinHu/GAC-Qwen3.5-4B"
+  "model": "tomm1988/Qwen3.8-27B-Uncensored-Cyber"
  },
  "qwen3_5moe": {
   "arch": "qwen3_5moe",
@@ -277,7 +284,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i"
+  "model": "Davd-b01/qwen3.8-flash-next-40b-prune-research"
  },
  "rwkv": {
   "arch": "rwkv",
