@@ -103,15 +103,30 @@ install_deps() {
     # can return. Set THEROCK_VERSION= (empty) to float deliberately.
     THEROCK_VERSION="${THEROCK_VERSION-10.1.0a20260910}"
     THEROCK_SPEC="rocm[libraries,devel]${THEROCK_VERSION:+==$THEROCK_VERSION}"
+    # The SDK must live in its OWN venv. `python3 -m pip install` installs to the
+    # USER site (or refuses outright on an externally-managed Python), NOT to
+    # $HOME/.cache/pip/therock — so exporting that path and hoping left a new
+    # machine with no SDK at all while the script reported success. Exercising the
+    # installer on a clean HOME is what surfaced this.
+    THEROCK_PIP_ROOT="${THEROCK_PIP_ROOT:-$HOME/.cache/pip/therock}"
+    export THEROCK_PIP_ROOT
     if ! command -v amdclang++ &>/dev/null; then
         # Phase 1: the arch-independent parts (they provide rocminfo, which is
         # what phase 2 detects with — so this order is required, not cosmetic).
+        if [ ! -x "$THEROCK_PIP_ROOT/bin/python" ]; then
+            log "Creating TheRock venv at $THEROCK_PIP_ROOT"
+            python3 -m venv "$THEROCK_PIP_ROOT" || {
+                warn "Could not create the TheRock venv at $THEROCK_PIP_ROOT"
+                warn "Install python3-venv, or set THEROCK_PIP_ROOT to an existing SDK."
+                exit 1
+            }
+        fi
         log "Installing TheRock SDK (arch-independent parts)..."
-        python3 -m pip install --index-url "$THEROCK_INDEX" "$THEROCK_SPEC" 2>/dev/null || {
-            warn "TheRock pip install failed. Set THEROCK_PIP_ROOT manually."
+        "$THEROCK_PIP_ROOT/bin/pip" install --index-url "$THEROCK_INDEX" "$THEROCK_SPEC" || {
+            warn "TheRock pip install failed."
             warn "See: https://github.com/ROCm/TheRock"
+            exit 1
         }
-        export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
     else
         log "amdclang++ found — TheRock SDK already installed"
     fi
@@ -131,8 +146,10 @@ install_deps() {
     fi
     log "Detected GPU target(s): $(echo "$GFX_TARGETS" | tr '\n' ' ')"
     for t in $GFX_TARGETS; do
-        python3 -m pip install --index-url "$THEROCK_INDEX" "rocm-sdk-device-$t${THEROCK_VERSION:+==$THEROCK_VERSION}" 2>/dev/null \
-            || warn "device package rocm-sdk-device-$t not available — continuing"
+        # Fail closed: a missing device wheel means no kernels for this GPU, and
+        # the failure only surfaces later as an empty Tensile list at runtime.
+        "$THEROCK_PIP_ROOT/bin/pip" install --index-url "$THEROCK_INDEX" "rocm-sdk-device-$t${THEROCK_VERSION:+==$THEROCK_VERSION}" \
+            || { warn "device package rocm-sdk-device-$t failed to install — refusing to continue"; exit 1; }
     done
     # Link the installed device wheels into the devel tree (rocm-sdk init only
     # links what is already installed; it does not choose the arch for you).
