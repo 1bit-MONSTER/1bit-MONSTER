@@ -1,55 +1,55 @@
 {
- "generated": "2026-08-30T06:36:37",
+ "generated": "2026-09-19T13:13:25",
  "related": {
   "1bit-benchmarks.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8519
+    "score": 0.855
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.849
    },
    {
     "url": "https://1bit.monster/1bit-post-three-bugs.html",
     "title": "Three bugs that broke 97 tok/s | 1bit.MONSTER",
     "score": 0.8321
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-sprint.html",
-    "title": "244 to 3.4 ms/tok: the NPU optimization sprint | 1bit.MONSTER",
-    "score": 0.8284
    }
   ],
   "1bit-blog.html": [
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.922
+    "score": 0.9292
    },
    {
-    "url": "https://1bit.monster/1bit-post-rocm-vs-cuda.html",
-    "title": "ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER",
-    "score": 0.909
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.9196
    },
    {
-    "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
-    "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
-    "score": 0.9056
+    "url": "https://1bit.monster/1bit-post-lemonade-v1181.html",
+    "title": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.9118
    }
   ],
   "1bit-docs.html": [
    {
-    "url": "https://1bit.monster/1bit-post-npu-reversal.html",
-    "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8375
-   },
-   {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8356
+    "score": 0.8554
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-npu-reversal.html",
+    "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
+    "score": 0.8537
    },
    {
     "url": "https://1bit.monster/docs-getting-started.html",
     "title": "1bit.MONSTER: Getting started",
-    "score": 0.8105
+    "score": 0.8437
    }
   ],
   "1bit-jarvis.html": [
@@ -61,36 +61,36 @@
    {
     "url": "https://1bit.monster/docs-getting-started.html",
     "title": "1bit.MONSTER: Getting started",
-    "score": 0.8966
+    "score": 0.896
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8749
+    "score": 0.8669
    }
   ],
   "1bit-models.html": [
    {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.8132
+    "url": "https://1bit.monster/docs-getting-started.html",
+    "title": "1bit.MONSTER: Getting started",
+    "score": 0.8179
    },
    {
-    "url": "https://1bit.monster/index.html",
-    "title": "1bit.MONSTER",
-    "score": 0.8053
+    "url": "https://1bit.monster/1bit-post-1775-models.html",
+    "title": "One engine, 1,775 models | 1bit.MONSTER",
+    "score": 0.8124
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8016
+    "score": 0.8106
    }
   ],
   "1bit-monster-v2.html": [
    {
     "url": "https://1bit.monster/docs-getting-started.html",
     "title": "1bit.MONSTER: Getting started",
-    "score": 0.886
+    "score": 0.8867
    },
    {
     "url": "https://1bit.monster/index.html",
@@ -100,41 +100,41 @@
    {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.8459
+    "score": 0.8456
    }
   ],
   "1bit-post-1775-models.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8994
+    "score": 0.8854
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.88
    },
    {
     "url": "https://1bit.monster/1bit-post-1bit-explained.html",
     "title": "What 1-bit actually does to a model | 1bit.MONSTER",
-    "score": 0.8775
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-npu-reversal.html",
-    "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.868
+    "score": 0.8788
    }
   ],
   "1bit-post-1bit-explained.html": [
    {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.8775
+    "score": 0.8788
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8549
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8553
-   },
-   {
-    "url": "https://1bit.monster/docs-models.html",
-    "title": "1bit.MONSTER: Model families",
-    "score": 0.8383
+    "score": 0.8396
    }
   ],
   "1bit-post-50t.html": [
@@ -158,34 +158,34 @@
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8652
+    "score": 0.8586
    },
    {
     "url": "https://1bit.monster/docs-getting-started.html",
     "title": "1bit.MONSTER: Getting started",
-    "score": 0.8429
+    "score": 0.8583
    },
    {
-    "url": "https://1bit.monster/1bit-post-tokenrouter.html",
-    "title": "TokenRouter: token-level multi-backend inference | 1bit.MONSTER",
-    "score": 0.8397
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8416
    }
   ],
   "1bit-post-coding-agent.html": [
    {
+    "url": "https://1bit.monster/docs-getting-started.html",
+    "title": "1bit.MONSTER: Getting started",
+    "score": 0.8324
+   },
+   {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.83
+    "score": 0.8301
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8287
-   },
-   {
-    "url": "https://1bit.monster/docs-getting-started.html",
-    "title": "1bit.MONSTER: Getting started",
-    "score": 0.8118
+    "score": 0.8176
    }
   ],
   "1bit-post-dspark.html": [
@@ -209,34 +209,34 @@
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8798
+    "score": 0.8725
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8449
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
     "score": 0.8449
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.8438
    }
   ],
   "1bit-post-flm-zoo.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8625
+    "score": 0.8688
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8476
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
     "score": 0.8258
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.8242
    }
   ],
   "1bit-post-fused.html": [
@@ -253,19 +253,19 @@
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8529
+    "score": 0.8734
    }
   ],
   "1bit-post-halo-reviews.html": [
    {
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8943
+   },
+   {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
     "score": 0.8936
-   },
-   {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8829
    },
    {
     "url": "https://1bit.monster/1bit-post-qwen36.html",
@@ -287,70 +287,87 @@
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.7836
+    "score": 0.7875
    }
   ],
   "1bit-post-hrx-engine.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.9025
+    "score": 0.9016
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8749
+    "score": 0.8742
    },
    {
     "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
     "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
-    "score": 0.8698
+    "score": 0.8726
    }
   ],
   "1bit-post-lemonade-v1170.html": [
    {
     "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
     "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
-    "score": 0.8998
+    "score": 0.8999
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1181.html",
+    "title": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.8996
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8645
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-hrx-engine.html",
-    "title": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER",
-    "score": 0.8508
+    "score": 0.874
    }
   ],
   "1bit-post-lemonade-v1180.html": [
    {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1181.html",
+    "title": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.9999
+   },
+   {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.9056
+    "score": 0.9117
    },
    {
     "url": "https://1bit.monster/1bit-post-lemonade-v1170.html",
     "title": "Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER",
-    "score": 0.8998
+    "score": 0.8999
+   }
+  ],
+  "1bit-post-lemonade-v1181.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
+    "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.9999
    },
    {
-    "url": "https://1bit.monster/1bit-post-hrx-engine.html",
-    "title": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER",
-    "score": 0.8698
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.9118
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1170.html",
+    "title": "Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER",
+    "score": 0.8996
    }
   ],
   "1bit-post-local-rag.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8689
+    "score": 0.8675
    },
    {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.8466
+    "score": 0.8468
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
@@ -362,7 +379,7 @@
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.922
+    "score": 0.9292
    },
    {
     "url": "https://1bit.monster/1bit-post-sprint.html",
@@ -370,50 +387,50 @@
     "score": 0.9008
    },
    {
-    "url": "https://1bit.monster/1bit-post-halo-reviews.html",
-    "title": "What the Ryzen AI Halo reviews didn't tell you | 1bit.MONSTER",
-    "score": 0.8936
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8976
    }
   ],
   "1bit-post-npu-v12.html": [
-   {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8642
-   },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
     "score": 0.8614
    },
    {
-    "url": "https://1bit.monster/1bit-post-sprint.html",
-    "title": "244 to 3.4 ms/tok: the NPU optimization sprint | 1bit.MONSTER",
-    "score": 0.8343
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8572
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8443
    }
   ],
   "1bit-post-one-engine.html": [
-   {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8642
-   },
    {
     "url": "https://1bit.monster/1bit-post-rocm-vs-cuda.html",
     "title": "ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER",
     "score": 0.8587
    },
    {
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8496
+   },
+   {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.8337
+    "score": 0.8345
    }
   ],
   "1bit-post-qwen36.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8755
+    "score": 0.8872
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
@@ -430,7 +447,7 @@
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.909
+    "score": 0.9021
    },
    {
     "url": "https://1bit.monster/1bit-post-halo-reviews.html",
@@ -438,9 +455,9 @@
     "score": 0.864
    },
    {
-    "url": "https://1bit.monster/1bit-post-one-engine.html",
-    "title": "One engine. Every model. Any chip. | 1bit.MONSTER",
-    "score": 0.8587
+    "url": "https://1bit.monster/docs-getting-started.html",
+    "title": "1bit.MONSTER: Getting started",
+    "score": 0.8626
    }
   ],
   "1bit-post-sprint.html": [
@@ -452,7 +469,7 @@
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.877
+    "score": 0.876
    },
    {
     "url": "https://1bit.monster/1bit-post-fused.html",
@@ -467,21 +484,21 @@
     "score": 0.8798
    },
    {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8618
+   },
+   {
     "url": "https://1bit.monster/1bit-post-dspark.html",
     "title": "DSpark speculative decoding, disproven | 1bit.MONSTER",
     "score": 0.8589
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-halo-reviews.html",
-    "title": "What the Ryzen AI Halo reviews didn't tell you | 1bit.MONSTER",
-    "score": 0.8588
    }
   ],
   "1bit-post-tokenrouter.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8493
+    "score": 0.847
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
@@ -496,6 +513,11 @@
   ],
   "1bit-post-unsloth.html": [
    {
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8516
+   },
+   {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
     "score": 0.85
@@ -504,35 +526,47 @@
     "url": "https://1bit.monster/1bit-post-halo-reviews.html",
     "title": "What the Ryzen AI Halo reviews didn't tell you | 1bit.MONSTER",
     "score": 0.8474
-   },
+   }
+  ],
+  "1bit-post-zaya-q4nx-hrx.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.842
+    "score": 0.9196
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-npu-reversal.html",
+    "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
+    "score": 0.8976
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-1775-models.html",
+    "title": "One engine, 1,775 models | 1bit.MONSTER",
+    "score": 0.88
    }
   ],
   "1bit-post-zyphra.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.828
+    "score": 0.8369
    },
    {
-    "url": "https://1bit.monster/docs-running.html",
-    "title": "1bit.MONSTER: Running the server",
-    "score": 0.8092
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8176
    },
    {
-    "url": "https://1bit.monster/1bit-post-binary-formats.html",
-    "title": "One binary, all formats | 1bit.MONSTER",
-    "score": 0.8077
+    "url": "https://1bit.monster/docs-getting-started.html",
+    "title": "1bit.MONSTER: Getting started",
+    "score": 0.8165
    }
   ],
   "1bit-store.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8372
+    "score": 0.8376
    },
    {
     "url": "https://1bit.monster/index.html",
@@ -564,36 +598,36 @@
   ],
   "docs-building.html": [
    {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8689
-   },
-   {
     "url": "https://1bit.monster/docs-getting-started.html",
     "title": "1bit.MONSTER: Getting started",
-    "score": 0.8486
+    "score": 0.8595
+   },
+   {
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.859
    },
    {
     "url": "https://1bit.monster/1bit-post-hrx-engine.html",
     "title": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER",
-    "score": 0.8409
+    "score": 0.8337
    }
   ],
   "docs-getting-started.html": [
    {
-    "url": "https://1bit.monster/docs-jarvis.html",
-    "title": "1bit.MONSTER: JARVIS",
-    "score": 0.8973
-   },
-   {
     "url": "https://1bit.monster/1bit-jarvis.html",
     "title": "1bit.MONSTER: 1bit JARVIS",
-    "score": 0.8966
+    "score": 0.896
    },
    {
-    "url": "https://1bit.monster/1bit-monster-v2.html",
-    "title": "1bit.MONSTER: One engine. Any model. Zero Python.",
-    "score": 0.886
+    "url": "https://1bit.monster/docs-jarvis.html",
+    "title": "1bit.MONSTER: JARVIS",
+    "score": 0.8889
+   },
+   {
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8879
    }
   ],
   "docs-jarvis.html": [
@@ -605,46 +639,46 @@
    {
     "url": "https://1bit.monster/docs-getting-started.html",
     "title": "1bit.MONSTER: Getting started",
-    "score": 0.8973
+    "score": 0.8889
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8477
+    "score": 0.8479
    }
   ],
   "docs-models.html": [
    {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8757
+   },
+   {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.8537
+    "score": 0.8551
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8508
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-1bit-explained.html",
-    "title": "What 1-bit actually does to a model | 1bit.MONSTER",
-    "score": 0.8383
+    "score": 0.8427
    }
   ],
   "docs-running.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8489
+    "score": 0.8584
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8552
    },
    {
     "url": "https://1bit.monster/docs-getting-started.html",
     "title": "1bit.MONSTER: Getting started",
-    "score": 0.8471
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
-    "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
-    "score": 0.8314
+    "score": 0.8547
    }
   ],
   "index.html": [
@@ -656,29 +690,29 @@
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8534
+    "score": 0.8459
    },
    {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.8412
+    "score": 0.8408
    }
   ],
   "search.html": [
    {
     "url": "https://1bit.monster/1bit-post-local-rag.html",
     "title": "Local RAG with our own embeddings | 1bit.MONSTER",
-    "score": 0.7333
+    "score": 0.7325
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.6738
+    "score": 0.6956
    },
    {
-    "url": "https://1bit.monster/docs-models.html",
-    "title": "1bit.MONSTER: Model families",
-    "score": 0.6617
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.6871
    }
   ],
   "share.html": [
@@ -712,7 +746,7 @@
    {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, 1,775 models | 1bit.MONSTER",
-    "score": 0.7395
+    "score": 0.7394
    }
   ]
  }
