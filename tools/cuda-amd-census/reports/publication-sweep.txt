@@ -27,4 +27,8 @@ VERSION-LIKE TOKENS discovered (each must be current or labelled):
   unlabelled arch tokens: 0 (must be 0)
   manifest: reports/publication-sweep.json (173 hits, each with its justifying rule)
 ------------------------------------------------------------------------------
-sweep-publication: STALE hits = 0, unlabelled versions = 0 (both must be 0)
+STRUCTURAL: generated surfaces must be deterministic functions of their sources
+  OK   okf generated == sources                       OK: generated tree matches its sources (100 markdown files, fingerprint recorded 2026-09-1
+  OK   repo site/llms-full.txt == regenerated         identical
+------------------------------------------------------------------------------
+sweep-publication: STALE hits = 0, unlabelled versions = 0, structural failures = 0 (all must be 0)

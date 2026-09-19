@@ -160,6 +160,47 @@ MAX_BYTES = 8_000_000
 BLOB_LINE = 2000
 
 
+
+# ---------------------------------------------------------------------------
+# STRUCTURAL check: a heuristic sweep shows "the strings I looked for are clean".
+# An additional, stronger property is that the GENERATED surfaces are
+# deterministic functions of their sources — then "sources are clean" implies
+# "generated output is clean", rather than relying on the sweep having thought of
+# every string. Both trees are checked:
+#   * okf:        scripts/check-generated.sh must report the tree matches sources
+#   * repo site/: llms-full.txt must equal a fresh regeneration from site/*.html
+def structural_checks(repo: Path, okf: Path) -> list[tuple[str, bool, str]]:
+    import subprocess, tempfile, shutil
+    out: list[tuple[str, bool, str]] = []
+
+    # okf generated tree == its sources
+    cg = okf / "scripts" / "check-generated.sh"
+    if cg.exists():
+        r = subprocess.run(["bash", str(cg)], cwd=str(okf),
+                           capture_output=True, text=True, timeout=600)
+        txt = (r.stdout + r.stderr).strip().splitlines()
+        last = txt[-1] if txt else ""
+        out.append(("okf generated == sources", r.returncode == 0 and last.startswith("OK"), last[:90]))
+    else:
+        out.append(("okf generated == sources", False, "check-generated.sh not found"))
+
+    # repo: llms-full.txt == fresh regeneration
+    gen = repo / "scripts" / "gen_llms.py"
+    if gen.exists() and (repo / "site" / "llms-full.txt").exists():
+        with tempfile.TemporaryDirectory() as td:
+            tmp_site = Path(td) / "site"
+            shutil.copytree(repo / "site", tmp_site)
+            r = subprocess.run(["python3", str(gen), str(tmp_site)],
+                               cwd=str(repo), capture_output=True, text=True, timeout=600)
+            fresh = (tmp_site / "llms-full.txt").read_text()
+            committed = (repo / "site" / "llms-full.txt").read_text()
+            same = fresh == committed
+            out.append(("repo site/llms-full.txt == regenerated", same,
+                        "identical" if same else "DIFFERS from a fresh regeneration"))
+    else:
+        out.append(("repo site/llms-full.txt == regenerated", False, "missing gen_llms.py or llms-full.txt"))
+    return out
+
 def iter_files(root: Path):
     if not root.exists():
         return
@@ -361,8 +402,16 @@ def main() -> int:
         Path(args.manifest).write_text(json.dumps(manifest, indent=2))
         print(f"  manifest: {args.manifest} ({len(manifest)} hits, each with its justifying rule)")
     print("-" * 78)
-    total = stale_total + sum(unknown.values())
-    print(f"sweep-publication: STALE hits = {stale_total}, unlabelled versions = {sum(unknown.values())} (both must be 0)")
+    print("STRUCTURAL: generated surfaces must be deterministic functions of their sources")
+    structural = structural_checks(Path(args.repo), Path(args.okf))
+    for name, ok, detail in structural:
+        print(f"  {'OK  ' if ok else 'FAIL'} {name:<46} {detail}")
+    n_bad_struct = sum(1 for _, ok, _ in structural if not ok)
+
+    print("-" * 78)
+    total = stale_total + sum(unknown.values()) + n_bad_struct
+    print(f"sweep-publication: STALE hits = {stale_total}, unlabelled versions = {sum(unknown.values())}, "
+          f"structural failures = {n_bad_struct} (all must be 0)")
     return 1 if total else 0
 
 
