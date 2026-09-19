@@ -16,7 +16,7 @@ remains unidentified.
 ## Hardware
 
 - **GPU:** AMD Radeon 8060S (Strix Halo, gfx1151)
-- **ROCm:** 7.15.26302 (TheRock SDK, ROCm 10.0)
+- **ROCm:** 7.15.26302 (TheRock SDK, ROCm 10.0 — env at report time)
 - **CPU:** AMD RYZEN AI MAX+ 395
 - **RAM:** 122 GB unified
 

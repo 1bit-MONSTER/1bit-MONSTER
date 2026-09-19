@@ -92,12 +92,36 @@ MARKERS = re.compile(
     r"|strixhalo remains|strixhalo on|strixhalo at|since moved|now explained|measured against"
     r"|restore point|\.bak-|Reversible|the record of the defect|Defect|defect table"
     r"|\(record\)|at the time of this experiment|distinct from the live|historical note"
+    r"|never exercised|pack-experiment|pack experiment|env at report time"
 )
 
 # A section whose heading names the machine these values are correct FOR.
 SCOPED_SECTION = re.compile(r"strixhalo|gfx1151", re.I)
 OTHER_MACHINE = re.compile(r"ryzen|gfx1201|RDNA4", re.I)
 HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+(.*?)\s*$|.*?<h[1-4][^>]*>(.*?)</h[1-4]>)", re.I)
+
+
+# ---------------------------------------------------------------------------
+# COMPLETENESS BY DISCOVERY, not by pattern list.
+# A fixed pattern list can only prove "the things I thought of are clean". To get
+# closer to a proof of completeness, enumerate EVERY version-like token in both
+# trees and require each occurrence to be either a known-current value or an
+# explicitly labelled/historical one. This is what caught the `ROCm 7.15.0a` label
+# that no pattern had named.
+VERSION_TOKEN = re.compile(r"\b(?:10\.[0-9]\.[0-9]+a[0-9]{8}|7\.1[0-9]\.[0-9]{5}|[0-9]{2}\.0\.0git)\b")
+# Values that are correct TODAY somewhere in the fleet (ryzen and strixhalo
+# legitimately differ, so both sets are current; the classifier decides by context).
+CURRENT_VERSIONS = {
+    "10.1.0a20260910",   # ryzen matched set
+    "10.1.0a20260822",   # strixhalo (unchanged) + hist   -> context decides
+    "7.16.26362",        # ryzen HIP
+    "7.16.26331",        # strixhalo HIP
+    "7.16.26332",        # strixhalo HIP variant / hist record
+    "24.0.0git",         # ryzen amdclang
+    "23.0.0git",         # strixhalo amdclang
+    "22.0.0git",         # Xilinx/llvm-aie (Peano) clang — the NPU-side
+                         # toolchain, a different component entirely
+}
 
 SKIP_DIRS = {".git", "build", "third_party", ".gitnexus", "node_modules", ".venv", "__pycache__"}
 SKIP_NAMES = {"sweep-publication.py", "sweep-publication.sh"}
@@ -222,9 +246,47 @@ def main() -> int:
     for _, desc in PATTERNS:
         st, ok = per_pattern[desc]
         print(f"{desc[:64]:<64}{st:>7}{ok:>7}")
+    # ---- discovery pass -------------------------------------------------
     print("-" * 78)
-    print(f"sweep-publication: STALE hits = {stale_total} (must be 0)")
-    return 1 if stale_total else 0
+    print("VERSION-LIKE TOKENS discovered (each must be current or labelled):")
+    unknown: dict[str, int] = {}
+    for root in (Path(args.repo), Path(args.okf)):
+        for path in iter_files(root):
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                continue
+            historical_file = bool(HISTORICAL_PATH.search(str(path)))
+            lines = text.splitlines()
+            for m in VERSION_TOKEN.finditer(text):
+                tok = m.group(0)
+                if tok in CURRENT_VERSIONS:
+                    continue
+                # Artifact references: `rocm_sdk_device_gfx1201-10.2.0a20260918-...whl`
+                # or `therock-<ver>-core.tar.gz` name one specific artifact. Saying so
+                # is not claiming the version is current.
+                pre = re.search(r"[\w.\-/]*$", text[:m.start()]).group(0)
+                post = re.match(r"[\w.\-]*", text[m.end():]).group(0)
+                name = pre + tok + post
+                if ("rocm_sdk_device" in name or "therock-" in name
+                        or name.endswith(".whl") or ".whl" in name):
+                    continue
+                line_no = text.count("\n", 0, m.start()) + 1
+                idx = line_no - 1
+                lo = max(0, idx - 3); hi = min(len(lines), idx + 4)
+                para = "\n".join(lines[lo:hi])
+                if historical_file or MARKERS.search(para):
+                    continue
+                unknown[tok] = unknown.get(tok, 0) + 1
+                print(f"  UNKNOWN-VERSION {path}:{line_no}  {tok}")
+    for tok, n in sorted(unknown.items(), key=lambda kv: -kv[1]):
+        print(f"  ... {tok} x{n}")
+    print(f"  unlabelled version tokens: {sum(unknown.values())} (must be 0)")
+
+    print("-" * 78)
+    total = stale_total + sum(unknown.values())
+    print(f"sweep-publication: STALE hits = {stale_total}, unlabelled versions = {sum(unknown.values())} (both must be 0)")
+    return 1 if total else 0
 
 
 if __name__ == "__main__":
