@@ -1,0 +1,4 @@
+0.04.395.256 I perplexity: P6 stream size=12599 fnv1a64=867c8618e1944fda add_bos=0 n_ctx=2048
+0.04.395.317 I perplexity: calculating perplexity over 6 chunks, n_ctx=2048, batch_size=2048, n_seq=1
+[1]10.7515,[2]12.4680,[3]12.6493,[4]12.6784,[5]12.8687,[6]10.9992,
+0.41.496.118 I Final estimate: PPL = 10.9992 +/- 0.40694

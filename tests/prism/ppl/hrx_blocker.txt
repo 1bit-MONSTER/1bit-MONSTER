@@ -1,0 +1,17 @@
+# HRX/Loom column-2 blocker evidence — 2026-09-19T01:23:18Z
+# binary: /home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66 (hrx-b66)  device: HRX0 gfx1151
+# command: llama-perplexity -m <Prism GGUF> --device HRX0 -c 2048 -f slice200.txt
+
+/__w/ggml-staging-automation/ggml-staging-automation/llama.cpp/ggml/src/ggml-backend.cpp:898: pre-allocated tensor (cache_r_l0 (reshaped) (view) (view)) in a buffer (HRX0) that cannot run the operation (SCALE)
+75	in ./nptl/cancellation.c
+#3  0x00007f5ba6b1cacf in __GI___wait4 (pid=<optimized out>, stat_loc=<optimized out>, options=<optimized out>, usage=<optimized out>) at ../sysdeps/unix/sysv/linux/wait4.c:30
+#4  0x00007f5baa172c26 in ggml_print_backtrace () from /home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66/lib/libggml-base.so.0
+#5  0x00007f5baa18a229 in ggml_abort () from /home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66/lib/libggml-base.so.0
+#6  0x00007f5baa192bde in ggml_backend_sched_backend_id_from_cur(ggml_backend_sched*, ggml_tensor*) () from /home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66/lib/libggml-base.so.0
+#7  0x00007f5baa18fea5 in ggml_backend_sched_split_graph () from /home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66/lib/libggml-base.so.0
+#8  0x00007f5ba9f3f947 in llama_context::graph_reserve(unsigned int, unsigned int, unsigned int, llama_memory_context_i const*, bool, unsigned long*) () from /home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66/lib/libllama.so.0
+
+# list-devices:
+Available devices:
+  HRX0: AMD Radeon 8060S Graphics (Node 1) (gfx1151) (114688 MiB, 114688 MiB free)
+  Vulkan0: AMD Radeon 8060S Graphics (RADV STRIX_HALO) (123904 MiB, 118631 MiB free)
