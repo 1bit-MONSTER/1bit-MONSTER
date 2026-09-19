@@ -174,6 +174,13 @@
   "file": "1bit-post-significant-darmm-darmm-ocr-kazakh-vl-3b.html",
   "mode": "covered"
  },
+ "covered:Davd-b01/qwen3.8-flash-next-40b-prune-research": {
+  "arch": "qwen4exp",
+  "date": "2026-09-19",
+  "family": "Qwen",
+  "file": "1bit-post-significant-davd-b01-qwen3-8-flash-next-40b-prune-research.html",
+  "mode": "covered"
+ },
  "covered:DripGhad1223/GLM-5.3-CYBERSECURITY-FP8": {
   "arch": "glmmoedsa",
   "date": "2026-09-02",
@@ -223,6 +230,13 @@
   "file": "1bit-post-significant-fluxmire-glm-4-6v-flash-fp8-dynamic.html",
   "mode": "covered"
  },
+ "covered:Goader/gemma-3-4b-it-uk-matt": {
+  "arch": "gemma3",
+  "date": "2026-09-19",
+  "family": "Gemma",
+  "file": "1bit-post-significant-goader-gemma-3-4b-it-uk-matt.html",
+  "mode": "covered"
+ },
  "covered:HYU-NLP-EVAL/qwen3-4b-rar-medicine-onlinerubrics-seed11-step-045": {
   "arch": "qwen3",
   "date": "2026-09-02",
@@ -270,6 +284,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-jjarvinen-qwen3-5-2b-eu-tool-jarvis-compact-v1-1.html",
+  "mode": "covered"
+ },
+ "covered:Jeesup/svd-safety-mis7_swift_remove50_swapgapiter_evfront_b010": {
+  "arch": "mistral",
+  "date": "2026-09-19",
+  "family": "Mistral",
+  "file": "1bit-post-significant-jeesup-svd-safety-mis7-swift-remove50-swapgapiter-evfront-b010.html",
   "mode": "covered"
  },
  "covered:Jkatdare/gemma-3-4b-it-tulumix-30k": {
@@ -326,6 +347,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-saifiindustries-qwen3-5-35b-a3b.html",
+  "mode": "covered"
+ },
+ "covered:Smilyai-labs/Mira-1-large-0919": {
+  "arch": "qwen3",
+  "date": "2026-09-19",
+  "family": "Qwen",
+  "file": "1bit-post-significant-smilyai-labs-mira-1-large-0919.html",
   "mode": "covered"
  },
  "covered:Solstice-AI/DeepSeek-V4-Flash-Vision-Exp-MXFP4": {
@@ -503,11 +531,25 @@
   "file": "1bit-post-significant-dureduck-olmo-3-7b-posttraining8k-sft-step-40.html",
   "mode": "covered"
  },
+ "covered:dwidlee/systemone-lite-0.5b": {
+  "arch": "qwen2",
+  "date": "2026-09-19",
+  "family": "Qwen",
+  "file": "1bit-post-significant-dwidlee-systemone-lite-0-5b.html",
+  "mode": "covered"
+ },
  "covered:emese-tech/patak": {
   "arch": "llama",
   "date": "2026-09-02",
   "family": "Llama",
   "file": "1bit-post-significant-emese-tech-patak.html",
+  "mode": "covered"
+ },
+ "covered:endless-frontier/Fx-Bio": {
+  "arch": "deepseekv4",
+  "date": "2026-09-19",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-endless-frontier-fx-bio.html",
   "mode": "covered"
  },
  "covered:forgeguard-ai/Ornith-1.5-35B-A3B-NVFP4": {
@@ -629,6 +671,13 @@
   "file": "1bit-post-significant-neutrypl-neutry-functiongemma-270m-v2.html",
   "mode": "covered"
  },
+ "covered:nkkbr/Mini-K3-1H-attn-1kda-3mla-nope-v2": {
+  "arch": "kimi-k3",
+  "date": "2026-09-19",
+  "family": "Kimi",
+  "file": "1bit-post-significant-nkkbr-mini-k3-1h-attn-1kda-3mla-nope-v2.html",
+  "mode": "covered"
+ },
  "covered:noodcon/Safetensors.granite-4.0-Improved-Enhanced-Refined": {
   "arch": "granitemoehybrid",
   "date": "2026-09-02",
@@ -657,6 +706,13 @@
   "file": "1bit-post-significant-ramazanoff34-neo-one-lite.html",
   "mode": "covered"
  },
+ "covered:sambal/k2-think-v2-grpo-checkpoint-320": {
+  "arch": "llama",
+  "date": "2026-09-19",
+  "family": "Llama",
+  "file": "1bit-post-significant-sambal-k2-think-v2-grpo-checkpoint-320.html",
+  "mode": "covered"
+ },
  "covered:scouzi1966/GLM-5.3-Flash-AFM-MLX-4bit": {
   "arch": "glm5next",
   "date": "2026-09-02",
@@ -683,6 +739,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-thuyduongjoe123-checkpoints-en-my-logit.html",
+  "mode": "covered"
+ },
+ "covered:tomm1988/Qwen3.8-27B-Uncensored-Cyber": {
+  "arch": "qwen3_5",
+  "date": "2026-09-19",
+  "family": "Qwen",
+  "file": "1bit-post-significant-tomm1988-qwen3-8-27b-uncensored-cyber.html",
   "mode": "covered"
  },
  "covered:yamatazen/Himeyuri-Magnum-12B-HereticLoRA": {
