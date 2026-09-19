@@ -84,3 +84,18 @@ was costing the slot fleet.
   16 slots ≈ 71 GB of model RSS — well inside the 122 GB box, so RAM is still not the wall.
 * **Idle slots stay free**: every serving slot returned 56–63 tok/s with 15 peers resident. Slots buy
   addressability/state isolation, not aggregate FLOPs.
+
+## Token-identity validation of the 16-slot fleet
+
+The ceiling probe proved each flm slot *serves*; step 5 wants the stronger claim, so the same 16 slots
+were re-run with `benchmarks/flm_slot_identity_probe.sh` and each given the identical deterministic
+request (`temperature=0`, max_tokens=24, `"Reply with exactly the two characters OK and nothing else."`).
+Slot 1 was probed twice and was **deterministic** (`text="OK"`); every later slot was compared to it.
+
+| slots | identical | differ | per-slot decode | total RSS |
+|---:|---:|---:|---|---:|
+| 16 | **15 / 15** (slot 1 is the reference) | 0 | 41–50 tok/s | 65.3 GB |
+
+Every slot generated exactly `"OK"` — the 16-slot flm fleet is token-identical to its serial
+reference, so the idle ceiling is not a set of processes that merely started. Raw output:
+`evidence-engine-slots/flm_identity_n16.out`.
