@@ -321,9 +321,13 @@ data['title'] = '$TITLE'  # injection if TITLE contains '
 
 ---
 
-### #14 — `gfx1151` hardcoded as GPU architecture
+### #14 — `gfx1151` hardcoded as GPU architecture  — ✅ **RESOLVED 2026-09-19**
 
-**Files:** `CMakeLists.txt:205`
+**Files:** `CMakeLists.txt:205` (and later found at `ck-prefill/CMakeLists.txt:87`)
+
+> **Resolved** by `scripts/detect-gfx-targets.sh`: the main `CMakeLists.txt` now asks the repo detector and
+> **fails closed** rather than defaulting to an arch, and `ck-prefill/CMakeLists.txt` was given the same
+> treatment. The block below is the pre-fix state, kept as the record of the defect.
 
 ```cmake
 set(CMAKE_HIP_ARCHITECTURES "gfx1151" CACHE STRING "GPU arch(es) to build")

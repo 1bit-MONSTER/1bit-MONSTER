@@ -1,5 +1,5 @@
 // CCA Attention GPU Test - Zaya CCA Attention GPU Kernel + CPU Reference
-// Build: /opt/rocm-therock/bin/hipcc -O3 --offload-arch=gfx1151 test_cca_attn.cpp -o test_cca_attn
+// Build: /opt/rocm-therock/bin/hipcc -O3 --offload-arch=<gfxNNNN> test_cca_attn.cpp -o test_cca_attn   # use YOUR arch: bash scripts/detect-gfx-targets.sh
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>

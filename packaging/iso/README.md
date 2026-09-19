@@ -30,7 +30,7 @@ build output).
 - Baked in (no network needed at install time): the engine `.deb`, pinned
   `mesa-vulkan-drivers`/`libvulkan1`/`bolt` (Thunderbolt/USB4 — stock
   Ubuntu, frozen at the tested version, same rationale as Vulkan), pinned
-  TheRock `10.1.0a20260822` runtime (rocm-sdk-core + rocm-sdk-devel +
+  TheRock `10.1.0a20260910` runtime (rocm-sdk-core + rocm-sdk-devel +
   rocm-sdk-libraries — all three ship together because the 10.x devel
   package's `lib/*.so.N` entries are relative symlinks into libraries),
   the `1bit-unified.service` and `1bit-model-fetch.service` units.

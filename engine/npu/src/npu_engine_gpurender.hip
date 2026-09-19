@@ -19,7 +19,7 @@
  *       -D__HIP_PLATFORM_AMD__=1 -I src -I include -I/opt/rocm/include \
  *       src/npu_engine_gpurender.hip src/gpu_kernels_fused.hip \
  *       src/dequant_q4nx.cpp src/attn_gpu.hip \
- *       --offload-arch=gfx1151 \
+ *       --offload-arch=<gfxNNNN> \   # use YOUR arch: bash scripts/detect-gfx-targets.sh
  *       -lxrt_coreutil -lxrt_core -luuid -lpthread -laiebu -lm -ldl -fopenmp \
  *       -o build/npu_engine_gpurender
  */

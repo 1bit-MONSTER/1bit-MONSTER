@@ -23,7 +23,7 @@ its `echo` label asserted the flag was present.
 
 | Item | Value |
 |---|---|
-| Toolchain A | TheRock `_rocm_sdk_devel` `10.1.0a20260822`, HIP `7.16.26332`, AMD clang `23.0.0git` |
+| Toolchain A *(record: the pre-upgrade SDK this experiment started on)* | TheRock `_rocm_sdk_devel` `10.1.0a20260822`, HIP `7.16.26332`, AMD clang `23.0.0git` |
 | Toolchain B | TheRock `_rocm_sdk_devel` `10.1.0a20260910`, HIP `7.16.26362`, AMD clang `24.0.0git` |
 | GPU | AMD Radeon RX 9070 XT (`gfx1201`); host also exposes a Granite Ridge iGPU (`gfx1036`) |
 | OS | Ubuntu 26.04.1 LTS |

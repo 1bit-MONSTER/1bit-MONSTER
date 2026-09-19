@@ -84,7 +84,20 @@ find_package(hip REQUIRED CONFIG PATHS "${ROCM_ROOT}")
 find_package(composable_kernel REQUIRED CONFIG COMPONENTS utility PATHS "${ROCM_ROOT}")
 
 if(NOT CMAKE_HIP_ARCHITECTURES)
-    set(CMAKE_HIP_ARCHITECTURES "gfx1151" CACHE STRING "GPU arch(es) to build")
+    # Never hardcode an arch. Ask the repo's detector (the same one the installer
+    # uses); it reads this machine's GPU and fails closed rather than guessing.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/detect-gfx-targets.sh")
+        execute_process(
+            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/detect-gfx-targets.sh" --cmake
+            OUTPUT_VARIABLE _CK_GFX OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(_CK_GFX)
+            set(CMAKE_HIP_ARCHITECTURES "${_CK_GFX}" CACHE STRING "GPU arch(es) to build")
+        endif()
+    endif()
+endif()
+if(NOT CMAKE_HIP_ARCHITECTURES)
+    message(FATAL_ERROR "ck-prefill needs a GPU arch: make scripts/detect-gfx-targets.sh "
+        "runnable (install/point at a TheRock SDK), or pass -DCMAKE_HIP_ARCHITECTURES=<gfxNNNN>.")
 endif()
 
 function(add_ck_example name src)

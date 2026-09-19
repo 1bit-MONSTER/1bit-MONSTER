@@ -2,7 +2,7 @@
 // Uses librocm_cpp.so for all GPU operations. No custom kernels needed.
 //
 // Build:
-//   hipcc -O3 --offload-arch=gfx1151 -shared -fPIC \
+//   hipcc -O3 --offload-arch=<gfxNNNN> -shared -fPIC \  # use YOUR arch: bash scripts/detect-gfx-targets.sh \
 //         -I/home/bcloud/1bit/include \
 //         -o build/libgpu_verify.so engine/fusion/gpu_verify.hip \
 //         -L/home/bcloud/1bit/build -lrocm_cpp

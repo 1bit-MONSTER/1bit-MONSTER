@@ -18,7 +18,7 @@
 // block = (128,). In-place permitted. K must be a multiple of 128.
 //
 // Verify (caller responsibility, not wired into CMakeLists.txt yet):
-//   /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch=gfx1151 -O3 \
+//   /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch=<gfxNNNN> -O3 \   # use YOUR arch: bash scripts/detect-gfx-targets.sh
 //       -std=c++20 -c kernels/hadamard_rotate_butterfly.hip \
 //       -o /tmp/hadamard_rotate_butterfly.o
 //

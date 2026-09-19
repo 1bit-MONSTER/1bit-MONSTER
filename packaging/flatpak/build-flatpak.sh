@@ -30,13 +30,13 @@ done
 }
 
 # 2. TheRock payloads — fetch if missing
-if ! ls "${PAYLOAD}"/therock-10.1.0a20260822-*.tar.gz >/dev/null 2>&1; then
+if ! ls "${PAYLOAD}"/therock-10.1.0a20260910-*.tar.gz >/dev/null 2>&1; then
   echo "Fetching pinned TheRock payloads..."
   ( cd "${REPO_ROOT}/packaging/iso" && bash fetch-payload.sh )
 fi
-for f in therock-10.1.0a20260822-devel.tar.gz \
-         therock-10.1.0a20260822-libraries.tar.gz \
-         therock-10.1.0a20260822-core.tar.gz; do
+for f in therock-10.1.0a20260910-devel.tar.gz \
+         therock-10.1.0a20260910-libraries.tar.gz \
+         therock-10.1.0a20260910-core.tar.gz; do
   [ -f "${PAYLOAD}/$f" ] || { echo "FATAL: ${PAYLOAD}/$f missing" >&2; exit 1; }
 done
 

@@ -2,7 +2,7 @@
 // Minimal compilable version with weight loading + layer loop
 //
 // Build:
-//   /opt/rocm-therock/bin/hipcc -O3 --offload-arch=gfx1151 zaya_full.cpp -o zaya_full
+//   /opt/rocm-therock/bin/hipcc -O3 --offload-arch=<gfxNNNN> zaya_full.cpp -o zaya_full   # use YOUR arch: bash scripts/detect-gfx-targets.sh
 //   ./zaya_full
 
 #include <hip/hip_runtime.h>

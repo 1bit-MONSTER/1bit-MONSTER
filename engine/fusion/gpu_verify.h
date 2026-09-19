@@ -2,7 +2,7 @@
 // C ABI for GPU-accelerated model forward pass.
 // Loads .trg format weights onto GPU and runs inference via HIP.
 //
-// Build: hipcc -O3 -march=native -fopenmp --offload-arch=gfx1151 \
+// Build: hipcc -O3 -march=native -fopenmp --offload-arch=<gfxNNNN> \  # use YOUR arch: bash scripts/detect-gfx-targets.sh \
 //        -shared -fPIC -o libgpu_verify.so gpu_verify.hip \
 //        -L/home/bcloud/1bit/build -lrocm_cpp \
 //        -I/home/bcloud/1bit/include

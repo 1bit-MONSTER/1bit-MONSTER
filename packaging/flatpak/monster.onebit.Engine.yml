@@ -49,16 +49,16 @@ modules:
     buildsystem: simple
     build-commands:
       - mkdir -p /app/therock
-      - tar xzf therock-10.1.0a20260822-devel.tar.gz -C /app/therock
-      - tar xzf therock-10.1.0a20260822-libraries.tar.gz -C /app/therock
-      - tar xzf therock-10.1.0a20260822-core.tar.gz -C /app/therock
+      - tar xzf therock-10.1.0a20260910-devel.tar.gz -C /app/therock
+      - tar xzf therock-10.1.0a20260910-libraries.tar.gz -C /app/therock
+      - tar xzf therock-10.1.0a20260910-core.tar.gz -C /app/therock
     sources:
       - type: file
-        path: ../iso/build/payload/therock-10.1.0a20260822-devel.tar.gz
+        path: ../iso/build/payload/therock-10.1.0a20260910-devel.tar.gz
       - type: file
-        path: ../iso/build/payload/therock-10.1.0a20260822-libraries.tar.gz
+        path: ../iso/build/payload/therock-10.1.0a20260910-libraries.tar.gz
       - type: file
-        path: ../iso/build/payload/therock-10.1.0a20260822-core.tar.gz
+        path: ../iso/build/payload/therock-10.1.0a20260910-core.tar.gz
 
   # The engine: prebuilt onebin + shared HIP kernel lib + ZINC shaders.
   # Sources are staged into this directory by build-flatpak.sh (build/ is a

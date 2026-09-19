@@ -2,7 +2,7 @@
 // at the overlap engine's exact config (NH=16, NKV=8, HD=128, fp16 K/V cache).
 //
 // Build (ROCm 7.1, gfx1151):
-//   hipcc -O3 --offload-arch=gfx1151 -I src -I include \
+//   hipcc -O3 --offload-arch=<gfxNNNN> -I src -I include \   # use YOUR arch: bash scripts/detect-gfx-targets.sh
 //         src/kv_cache_attn_fd.hip attn_swap_bench.hip attn_stub.cpp -o attn_swap_bench
 //
 // Run: ./attn_swap_bench [seq_len...]
