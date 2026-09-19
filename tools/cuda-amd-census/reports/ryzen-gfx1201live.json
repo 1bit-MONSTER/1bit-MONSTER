@@ -104,7 +104,7 @@
     {
       "surface": "runtime",
       "result": "PASS",
-      "detail": "dev=\"AMD Radeon RX 9070 XT\" arch=gfx1201 arch_expect=gfx1201 arch_match"
+      "detail": "dev=\"AMD Radeon RX 9070 XT\" arch=gfx1201 arch_expect=gfx1201 arch_match|ndev=2 | add4M max_abs=0.0e+00 kernel=0.463ms | sentinel=devclock_ok(monotonic)"
     },
     {
       "surface": "numerics",
@@ -154,17 +154,17 @@
     {
       "surface": "cusolver_diag",
       "result": "PASS",
-      "detail": "arch=gfx1201 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 "
+      "detail": "arch=gfx1201 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 || getrs=OK residual=1.192e-07 x=[0.488,0.9522,1.321,1.33] -> LU is valid (L*U == P*A), so any det mismatch is a harness convention"
     },
     {
       "surface": "cudnn_ref",
       "result": "PASS",
-      "detail": "algo=3 "
+      "detail": "algo=3 | gpu_vs_numpy max_abs=8.892e-07 rel=2.333e-07 (MATCH) | hand_vs_numpy max_abs=5.987e-07 rel=1.571e-07 (MATCH) | hand_vs_gpu rel=2.624e-07 -> all three agree; the earlier discrepancy does not reproduce"
     },
     {
       "surface": "workload",
       "result": "PASS",
-      "detail": "trained a 2-layer MLP (8->32->1) end-to-end on AMD Radeon RX 9070 XT (gfx1201): 200 SGD steps "
+      "detail": "trained a 2-layer MLP (8->32->1) end-to-end on AMD Radeon RX 9070 XT (gfx1201): 200 SGD steps | device witness ok | gradients match an independent CPU reference (loss_rel=6.4e-08 grad_max_abs=3.6e-07) | loss 1.122802 -> 0.085816"
     },
     {
       "surface": "torch_train",

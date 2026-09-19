@@ -64,7 +64,7 @@ jobs:
           export HIP_PATH="$ROCM_PATH"
           export ROCM_CORE_PATH="$PYTHON_SITE/_rocm_sdk_core"
           export ROCM_LIB_PATH="$PYTHON_SITE/_rocm_sdk_libraries"
-          export ROCM_DEVICE_LIBS_PATH="$PYTHON_SITE/_rocm_sdk_device_gfx1151"
+          export ROCM_DEVICE_LIBS_PATH="$(ls -d "$PYTHON_SITE"/_rocm_sdk_device_* 2>/dev/null | head -1)"
           export LLVM_PATH="$ROCM_PATH/lib/llvm"
           export PATH="$ROCM_PATH/bin:$ROCM_CORE_PATH/bin:$THEROCK_ROOT/bin:$PATH"
           export LD_LIBRARY_PATH="$ROCM_PATH/lib:$ROCM_CORE_PATH/lib:$ROCM_LIB_PATH/lib:$LD_LIBRARY_PATH"

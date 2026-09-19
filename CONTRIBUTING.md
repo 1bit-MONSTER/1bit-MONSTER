@@ -75,7 +75,7 @@ git clone https://github.com/YOUR_USERNAME/1bit-monster
 cd 1bit-monster
 
 # Build zaya_server (the one binary)
-cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
+cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"
 cmake --build build --target zaya_server -j$(nproc)
 
 # Run (auto-detects model from default path)
@@ -111,7 +111,7 @@ See [docs/guides/building.md](docs/guides/building.md) for full prerequisites an
 **TheRock 7.15.0a installation (pip):**
 ```bash
 pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-  "rocm[libraries,devel,device-gfx1151]"
+  "rocm[libraries,devel]"   # then rocm-sdk-device-<target> per GPU (scripts/detect-gfx-targets.sh)
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 ```
 
@@ -128,7 +128,7 @@ Set `THEROCK_PIP_ROOT` to pin to a specific TheRock installation.
 ```bash
 # Configure
 cmake -B build -G Ninja \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
+  -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)" \
   -DCMAKE_BUILD_TYPE=Release
 
 # Build the one binary
@@ -322,7 +322,7 @@ Every new feature should justify its binary size cost. The server is currently ~
 
 All build logic lives in `CMakeLists.txt`. The build must work with:
 ```bash
-cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
+cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"
 cmake --build build --target zaya_server -j$(nproc)
 ```
 No Makefiles, no shell scripts, no Python wrappers for the core build.

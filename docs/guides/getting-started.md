@@ -43,7 +43,7 @@ cd 1bit-monster
 
 ```bash
 pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-  "rocm[libraries,devel,device-gfx1151]"
+  "rocm[libraries,devel]"   # then add rocm-sdk-device-<target> per GPU (scripts/detect-gfx-targets.sh)
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 ```
 

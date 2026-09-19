@@ -75,7 +75,11 @@ Enforced rules:
    because every variable-operand form of the 6-arg `__builtin_amdgcn_sudot4` is
    rejected on amdclang 23 / HIP 7.16 (`must be a constant integer`). A build failure
    there is the *finding* for that row, not a harness bug — and it is recorded as an
-   open discrepancy against the ISA notes rather than resolved by guessing.
+   was mis-recorded as a toolchain limit. RESOLVED: the builtin interleaves three CONSTANT
+   bool flags with three int operands — `sudot4(bool,int,bool,int,int,bool)`, as the engine calls
+   it in `kernels/ternary_gemv_sherry.hip:183`. The probe had variables in the constant positions.
+   With the right order it PASSes (256/256 lanes = 70 on both gfx1201 and gfx1151), vindicating the
+   ISA note.
 
 ## Layout
 
@@ -93,8 +97,9 @@ Enforced rules:
 
 ## Notes for future runs
 
-- The `int8_dot4`, MIOpen-random-case and ryzen-HRX items are **open**, not settled;
-  see the okf note's "Open items" for the specific resolution paths.
+- The `int8_dot4` and MIOpen-conv2d items are **RESOLVED** (2026-09-19): the first was a wrong
+  argument order in this probe, the second a missing input-channel accumulation in this census's own
+  reference (MIOpen was right — see `probe/p_dnn_ref.{cpp,py}`). The ryzen-HRX item remains open.
 - `cublas/hrx` is **not** an HRX BLAS: HRX ships none, so that row is rocBLAS running on
   HRX's `libamdhip64`. It evidences the compat layer, not a rocBLAS replacement.
 - No performance claims are made anywhere here, and no timing was compared.

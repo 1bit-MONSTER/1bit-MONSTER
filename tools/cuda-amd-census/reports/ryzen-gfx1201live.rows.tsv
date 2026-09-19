@@ -14,7 +14,7 @@ nccl/present	detected	/home/bcloud/.cache/pip/therock/lib/python3.14/site-packag
 ptx_jit/present	detected	/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hiprtc.h
 runtime/present	detected	/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h
 hrx/present	UNSUPPORTED	no libhrx.so found (no AMD hrx-system bundle on this host)
-runtime	PASS	dev="AMD Radeon RX 9070 XT" arch=gfx1201 arch_expect=gfx1201 arch_match
+runtime	PASS	dev="AMD Radeon RX 9070 XT" arch=gfx1201 arch_expect=gfx1201 arch_match|ndev=2 | add4M max_abs=0.0e+00 kernel=0.463ms | sentinel=devclock_ok(monotonic)
 numerics	PASS	atomicAdd=16384 half2_dot=ok bf16=ok (int8 dot4 -> see dot4 row)
 graphs	PASS	capture 5-node graph + replay = 5 (exact)
 ptx_jit	PASS	hiprtc compiled --offload-arch=gfx1201, JIT kernel = 21.0 (exact)
@@ -24,9 +24,9 @@ cusparse	PASS	csr spmv 3x3 nnz=5 exact (rocSPARSE)
 cusolver	PASS	getrf 4x4 LU det=209.0000 == cpu det=209.0000 rel=0.0e+00 (hipSOLVER)
 cudnn	PASS	conv2d fwd 1x2x8x8 k3x3 vs direct CPU conv rel=9.4e-08 + all-ones PASS (MIOpen algo=3, 1 algos)
 int8_dot4	PASS	engine-form sudot4(true,a,true,b,acc,false): 256/256 lanes = 70 (matches okf silicon record + CPU ref)
-cusolver_diag	PASS	arch=gfx1201 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 
-cudnn_ref	PASS	algo=3 
-workload	PASS	trained a 2-layer MLP (8->32->1) end-to-end on AMD Radeon RX 9070 XT (gfx1201): 200 SGD steps 
+cusolver_diag	PASS	arch=gfx1201 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 || getrs=OK residual=1.192e-07 x=[0.488,0.9522,1.321,1.33] -> LU is valid (L*U == P*A), so any det mismatch is a harness convention
+cudnn_ref	PASS	algo=3 | gpu_vs_numpy max_abs=8.892e-07 rel=2.333e-07 (MATCH) | hand_vs_numpy max_abs=5.987e-07 rel=1.571e-07 (MATCH) | hand_vs_gpu rel=2.624e-07 -> all three agree; the earlier discrepancy does not reproduce
+workload	PASS	trained a 2-layer MLP (8->32->1) end-to-end on AMD Radeon RX 9070 XT (gfx1201): 200 SGD steps | device witness ok | gradients match an independent CPU reference (loss_rel=6.4e-08 grad_max_abs=3.6e-07) | loss 1.122802 -> 0.085816
 torch_train	UNSUPPORTED	no torch in python3's environment (build one with rocm[libraries,devel,device-<arch>] + torch)
 torch	UNSUPPORTED	import torch failed: ModuleNotFoundError: No module named 'torch'
 vulkan_compute	PASS	SPIR-V dispatch host[0]=0.500 exact witness=1.0 device="AMD Radeon RX 9070 XT (RADV GFX1201) + AMD Ryzen 7 9800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO) + llvmpipe (LLVM 21.1.8, 256 bits)" (RADV compute)

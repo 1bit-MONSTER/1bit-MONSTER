@@ -56,7 +56,7 @@ classify() {
     local surf="$1" lf="$2" rc="$3"
     local line; line="$(grep -m1 '^PROBE|' "$lf" 2>/dev/null)"
     if [[ -n $line ]]; then
-        row "$surf" "$(cut -d'|' -f3 <<<"$line")" "$(cut -d'|' -f4 <<<"$line")"
+        row "$surf" "$(cut -d'|' -f3 <<<"$line")" "$(cut -d'|' -f4- <<<"$line")"
     elif [[ $rc -eq 124 ]]; then
         row "$surf" TIMEOUT "no result within ${TL}s — last: $(tail -c 200 "$lf" 2>/dev/null | tr '\n' ' ')"
     elif [[ $rc -eq 127 ]]; then

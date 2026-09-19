@@ -3,7 +3,8 @@
 This document covers building **zaya** — a pure C++ inference server with optional
 GPU decoding support, one entry point of the single binary `build/1bit` (run via
 `1bit zaya`). No Rust, no Python at runtime. The host CPU is **AMD Strix Halo**
-(Ryzen AI Max+ 395) and GPU acceleration uses **TheRock 7.15.0a** targeting `gfx1151`.
+(Ryzen AI Max+ 395) and GPU acceleration uses **TheRock** with the device package chosen from the
+machine's actual GPU arch (`scripts/detect-gfx-targets.sh`) — not a hardcoded `gfx1151`.
 
 > `zaya_server` is no longer a standalone CMake **build target** — its full
 > source list is compiled into `onebin`/`build/1bit` only (see
@@ -20,7 +21,7 @@ GPU decoding support, one entry point of the single binary `build/1bit` (run via
 |--------------------|-----------------------------------------------------|
 | Ubuntu             | 24.04 LTS or later (CachyOS / Arch also works)      |
 | Kernel             | 6.18.22-lts or 7.x — **not** 6.19.x (issue #1 hang) |
-| ROCm               | TheRock 7.15.0a (nightly C++ SDK, native gfx1151) |
+| ROCm               | TheRock (nightly C++ SDK; device package + HIP arch detected per GPU) |
 | CMake              | ≥ 3.28                                              |
 | Ninja              | ≥ 1.12                                              |
 | GCC                | ≥ 15 (C++26) or ≥ 14 with a C++26-capable flag set           |
@@ -38,9 +39,9 @@ sudo apt install -y cmake ninja-build build-essential git
 ## TheRock 7.15.0a
 
 ```bash
-# Install TheRock HIP SDK for gfx1151 (Strix Halo)
+# Install TheRock HIP SDK — the device package is chosen from YOUR GPU's arch
 pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-  "rocm[libraries,devel,device-gfx1151]"
+  "rocm[libraries,devel]"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T"; done
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 
 # Verify
@@ -53,13 +54,13 @@ The CMake build system auto-discovers TheRock (see `CMakeLists.txt`):
 **Set `CMAKE_HIP_ARCHITECTURES`** so that HIP kernels are compiled for Strix Halo:
 
 ```bash
-export CMAKE_HIP_ARCHITECTURES=gfx1151
+export CMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"
 ```
 
 It is convenient to add this to your shell profile:
 
 ```bash
-echo 'export CMAKE_HIP_ARCHITECTURES=gfx1151' >> ~/.bashrc
+echo 'export CMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"' >> ~/.bashrc
 ```
 
 ---
@@ -78,7 +79,7 @@ cd zaya
 # CMAKE_PREFIX_PATH at system ROCm (/opt/rocm).
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1151
+  -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"
 
 # Build the single binary (zaya, unified, jarvis, vision, and the CLI all
 # live in this one target — there is no standalone `zaya_server` target)
@@ -117,7 +118,7 @@ to offload the dequantisation and matmul steps to the GPU:
 ```bash
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
+  -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)" \
   -DZAYA_ENABLE_GPU_DECODE=ON
 
 cmake --build build --target zaya_gpu_decode
@@ -142,7 +143,7 @@ cd path/to/llama.cpp
 
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
+  -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)" \
   -DGGML_HIP=ON
 
 cmake --build build --target llama
@@ -159,7 +160,7 @@ Then ensure `zaya_server`'s CMake configuration points to this build (e.g. via
 |----------------------------|---------|--------------------------------------------|
 | `ZAYA_ENABLE_GPU_DECODE`   | OFF     | Build `zaya_gpu_decode` for Q4NX GPU offload |
 | `ZAYA_USE_LLAMACPP_ROCM`   | OFF     | Link llama.cpp compiled with `GGML_HIP=ON` |
-| `CMAKE_HIP_ARCHITECTURES`  | —       | **Must** be set to `gfx1151`               |
+| `CMAKE_HIP_ARCHITECTURES`  | —       | **Must** be set to your GPU's arch — `bash scripts/detect-gfx-targets.sh --cmake` prints it. **Never hardcode `gfx1151`**: a wrong arch builds cleanly and only fails at runtime (rocBLAS aborts with an empty Tensile list)               |
 
 ---
 
@@ -179,8 +180,9 @@ message at startup confirming GPU decode is active.
 ### `hipErrorNoBinaryForGPU`
 
 The `CMAKE_HIP_ARCHITECTURES` variable was not set, or was set to the wrong target.
-Ensure it is `gfx1151` and that TheRock 7.15.0a is installed (older ROCm releases may
-not include code-objects for gfx1151).
+Ensure it matches your GPU's arch — `bash scripts/detect-gfx-targets.sh --cmake` prints it, and
+the matching `rocm-sdk-device-<target>` must be installed. **Do not hardcode `gfx1151`**: a wrong
+arch builds cleanly and only fails at runtime, with rocBLAS aborting on an empty Tensile list.(Older ROCm releases may not include code-objects for newer parts.)
 
 ### `cannot find -lamdhip64`
 

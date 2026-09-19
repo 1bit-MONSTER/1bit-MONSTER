@@ -66,8 +66,10 @@ if(NOT _RC_LLVM_BIN)
         message(STATUS "rocm-cpp: using system ROCm at ${_RC_ROCM_DEFAULT}")
     else()
         message(FATAL_ERROR
-            "rocm-cpp needs an AMD clang: set THEROCK_PIP_ROOT env var, install "
-            "via 'pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \"rocm[libraries,devel,device-gfx1151]\"', "
+            "rocm-cpp needs an AMD clang: set THEROCK_PIP_ROOT env var, install the "
+            "arch-independent parts with 'pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \"rocm[libraries,devel]\"', "
+            "then add the device package for THIS machine's GPU — 'bash scripts/detect-gfx-targets.sh' "
+            "prints the targets, install each as 'rocm-sdk-device-<target>' (never hardcode gfx1151), "
             "or install system ROCm at /opt/rocm.")
     endif()
 endif()
@@ -382,8 +384,29 @@ if(NOT CMAKE_HIP_ARCHITECTURES)
         ERROR_QUIET)
     if(_DETECTED_ARCH)
         set(CMAKE_HIP_ARCHITECTURES "${_DETECTED_ARCH}")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/scripts/detect-gfx-targets.sh")
+        # Ask the repo's own detector (the same one the installer uses). It fails
+        # closed rather than guessing.
+        execute_process(
+            COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/detect-gfx-targets.sh" --cmake
+            OUTPUT_VARIABLE _GFX_CMAKE
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(_GFX_CMAKE)
+            set(CMAKE_HIP_ARCHITECTURES "${_GFX_CMAKE}")
+        else()
+            # Was: a silent "gfx1151" default. That is the exact defect this goal
+            # exists to remove — a wrong arch builds cleanly and only fails later at
+            # runtime (rocBLAS aborts with an empty Tensile list). Fail loudly instead.
+            message(FATAL_ERROR
+                "Could not detect this machine's GPU arch, and refusing to default to gfx1151. "
+                "Pass -DCMAKE_HIP_ARCHITECTURES=<arch> explicitly "
+                "(scripts/detect-gfx-targets.sh --cmake prints the value).")
+        endif()
     else()
-        set(CMAKE_HIP_ARCHITECTURES "gfx1151")
+        message(FATAL_ERROR
+            "Could not detect this machine's GPU arch and scripts/detect-gfx-targets.sh is absent. "
+            "Pass -DCMAKE_HIP_ARCHITECTURES=<arch> explicitly.")
     endif()
 endif()
 set(CMAKE_HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}" CACHE STRING "GPU arch(es) to build")
@@ -1880,7 +1903,7 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
             -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib -fopenmp)
         set_target_properties(test_pipeline_real PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy
-            HIP_ARCHITECTURES "gfx1151")
+            HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
         add_test(NAME test_pipeline_real COMMAND test_pipeline_real)
         set_tests_properties(test_pipeline_real PROPERTIES
             LABELS "gpu_required;npu_required" SKIP_RETURN_CODE 77
