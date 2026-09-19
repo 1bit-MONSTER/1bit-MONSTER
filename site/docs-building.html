@@ -397,14 +397,14 @@
         <h3>TheRock 7.15.0a</h3>
         <p>The Rock is the NPU-and-GPU toolchain. Install the nightly pip wheel that ships the gfx1151 code objects.</p>
         <pre class="code"><code>$ pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-    "rocm[libraries,devel,device-gfx1151]"
+    "rocm[libraries,devel]"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T"; done
 $ export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"</code></pre>
         <p>CMake auto-discovers TheRock: <code>/opt/rocm-therock</code> → <code>$THEROCK_PIP_ROOT</code> → <code>~/.cache/lemonade/bin/therock</code>. <strong>Never</strong> point <code>CMAKE_PREFIX_PATH</code> at system ROCm (<code>/opt/rocm</code>). Always set the target architecture.</p>
-        <pre class="code"><code>$ export CMAKE_HIP_ARCHITECTURES=gfx1151</code></pre>
+        <pre class="code"><code>$ export CMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"</code></pre>
 
         <h2>Build</h2>
         <pre class="code"><code>$ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_HIP_ARCHITECTURES=gfx1151
+    -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"
 $ cmake --build build --target onebin</code></pre>
         <p>The result is the single binary <code>build/1bit</code>. There is no standalone <code>zaya_server</code> target; packaged installs ship a <code>zaya_server</code> symlink, dispatched by <code>argv[0]</code>. Header-only deps (cpp-httplib, nlohmann_json, FTXUI) are fetched automatically via CMake FetchContent.</p>
 
@@ -419,7 +419,7 @@ $ cmake --build build --target onebin</code></pre>
 
         <h3>Optional GPU decode (Q4NX models)</h3>
         <pre class="code"><code>$ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_HIP_ARCHITECTURES=gfx1151 -DZAYA_ENABLE_GPU_DECODE=ON
+    -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)" -DZAYA_ENABLE_GPU_DECODE=ON
 $ cmake --build build --target zaya_gpu_decode    <span class="c"># -> build/libzaya_gpu_decode.so</span></code></pre>
         <p>Auto-detected at startup for Q4NX models. Without it, inference stays on CPU.</p>
 
@@ -429,7 +429,7 @@ $ cmake --build build --target zaya_gpu_decode    <span class="c"># -> build/lib
             <tr><th>Symptom</th><th>Fix</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>hipErrorNoBinaryForGPU</code></td><td><code>CMAKE_HIP_ARCHITECTURES=gfx1151</code> + TheRock 7.15.0a (older ROCm lacks gfx1151 objects)</td></tr>
+            <tr><td><code>hipErrorNoBinaryForGPU</code></td><td><code>CMAKE_HIP_ARCHITECTURES</code> set to your GPU's arch (never hardcode <code>gfx1151</code>) + TheRock 7.15.0a (older ROCm lacks gfx1151 objects)</td></tr>
             <tr><td><code>cannot find -lamdhip64</code></td><td>TheRock at <code>/opt/rocm-therock</code> or <code>THEROCK_PIP_ROOT</code>; never system ROCm</td></tr>
             <tr><td>No GPU decode despite build</td><td><code>export LD_LIBRARY_PATH=/path/to/zaya/build:$LD_LIBRARY_PATH</code>; verify the model is actually Q4NX</td></tr>
             <tr><td>First-inference hang (issue #1, ~1 in 5 boots)</td><td><code>export HSA_ENABLE_SDMA=0</code>, avoiding the OPTC code path</td></tr>
