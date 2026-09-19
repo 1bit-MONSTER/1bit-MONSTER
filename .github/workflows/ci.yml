@@ -59,7 +59,7 @@ jobs:
           sudo /opt/rocm-therock/bin/pip install \
             "rocm[devel,libraries]" \
             --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
-          for t in $(bash scripts/detect-gfx-targets.sh); do
+          for t in $(GFX_TARGETS="gfx1151;gfx1201" bash scripts/detect-gfx-targets.sh); do
             echo "++ device package for $t"
             sudo /opt/rocm-therock/bin/pip install "rocm-sdk-device-$t" \
               --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
@@ -106,7 +106,7 @@ jobs:
           if [ -x /opt/rocm-therock/bin/amdclang++ ]; then
             echo "TheRock detected — full cmake configure + build."
             # Build for the runner's actual GPU, not a hardcoded arch.
-            HIP_ARCH="$(bash scripts/detect-gfx-targets.sh --cmake)"
+            HIP_ARCH="$(GFX_TARGETS="gfx1151;gfx1201" bash scripts/detect-gfx-targets.sh --cmake)"   # no GPU on this runner — declare the release target set
             echo "HIP arch: $HIP_ARCH"
             cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCH"
             # Build the server AND every test_* target so a dropped source or a

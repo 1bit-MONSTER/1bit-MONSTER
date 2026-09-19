@@ -14,7 +14,8 @@ Published results: [`okf` reference — gfx1201 ROCm gap status](https://github.
 
 **Current state of ryzen's gfx1201 install: all four math-library gaps CLOSED.** The SDK was the
 wrong device build (`device-gfx1151` on a `gfx1201` card); a coherent matched `10.1.0a20260910`
-gfx1201 set is now deployed and the live census reports `PASS 11 / ERROR 0 / INCORRECT 0`
+gfx1201 set is now deployed and the live census reports `PASS 14 / ERROR 0 / INCORRECT 0`
+(clause 2 and the entry below were added after that count was first written)
 (`reports/ryzen-gfx1201live.{json,tsv}`), against `PASS 6 / ERROR 4 / INCORRECT 4` before.
 
 ## Two backends, same binaries
@@ -73,9 +74,8 @@ Enforced rules:
    MIOpen. `probe/p_dnn_diag.cpp` keeps that two-stage discipline.
 2. **A compile failure can be the evidence.** `probe/p_dot4.cpp` exists separately
    because every variable-operand form of the 6-arg `__builtin_amdgcn_sudot4` is
-   rejected on amdclang 23 / HIP 7.16 (`must be a constant integer`). A build failure
-   there is the *finding* for that row, not a harness bug — and it is recorded as an
-   was mis-recorded as a toolchain limit. RESOLVED: the builtin interleaves three CONSTANT
+   rejected on amdclang 23 / HIP 7.16 (`must be a constant integer`). RESOLVED: that rejection
+   was a wrong argument order in this probe, not a toolchain limit — it had been the builtin interleaves three CONSTANT
    bool flags with three int operands — `sudot4(bool,int,bool,int,int,bool)`, as the engine calls
    it in `kernels/ternary_gemv_sherry.hip:183`. The probe had variables in the constant positions.
    With the right order it PASSes (256/256 lanes = 70 on both gfx1201 and gfx1151), vindicating the
@@ -89,8 +89,11 @@ Enforced rules:
 | `probe/common.hpp` | evidence classes, CPU references, tolerances |
 | `probe/p_core.cpp` | HIP runtime, bf16/fp16/atomics, CUDA graphs, hipRTC JIT |
 | `probe/p_libs.cpp` | rocBLAS, rocFFT, rocSPARSE, hipSOLVER, MIOpen (all CPU-referenced) |
-| `probe/p_dot4.cpp` | int8 dot4 reachability (compile failure = the evidence) |
+| `probe/p_dot4.cpp` | int8 dot4 via the engine's call form (`sudot4(bool,int,bool,int,int,bool)`); PASSes with 70 |
 | `probe/p_dnn_diag.cpp` | layout-independent all-ones conv disambiguation |
+| `probe/p_dnn_ref.{cpp,py}` | conv2d attributed by an INDEPENDENT numpy recomputation |
+| `probe/p_workload.cpp` | real end-to-end GPU workload (MLP training) — the integration rung |
+| `probe/p_torch_train.py` | torch training run (records the gfx1201 `hipErrorInvalidKernelFile` negative) |
 | `probe/p_torch.py` | framework surface; a `+cpu` wheel is `UNSUPPORTED`, not a pass |
 | `probe/vk_compute.{c,comp}` | Mesa RADV Vulkan compute lane (no CUDA analogue) |
 | `reports/` | captured per-machine TSV + JSON |
@@ -126,7 +129,7 @@ max_abs=1.72e-05`, identical to gfx1151) and **cuDNN `ERROR`→`PASS`**. A devic
 **not** move rocSPARSE or hipSOLVER — it carries data for rocblas/hipblaslt/miopen only. Those two
 needed the **base libraries** to move: a **coherent matched upgrade** (all components at
 `10.1.0a20260910`, applied to the live install) closes **all four** rows
-(`reports/ryzen-gfx1201live.{json,tsv}` → `PASS 11 / ERROR 0 / INCORRECT 0`). Compare **per-surface
+(`reports/ryzen-gfx1201live.{json,tsv}` → `PASS 14 / ERROR 0 / INCORRECT 0`). Compare **per-surface
 verdicts**, not totals: the pack run stages no HRX bundle, so `detected` differs for an unrelated
 reason. See `okf` → `references/gfx1201-rocm-gap-status.md`.
 

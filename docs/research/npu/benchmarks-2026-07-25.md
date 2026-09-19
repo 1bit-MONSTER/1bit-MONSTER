@@ -49,6 +49,12 @@ g++ -O3 -mavx512f -mavx512bw -mavx512vl -mavx512dq -fopenmp \
     -lxrt_coreutil -lxrt_core -luuid -lpthread -laiebu -lm -ldl \
     -o build/npu_engine_v13
 
+> **Arch note (added 2026-09-19).** `--offload-arch=gfx1151` below is the arch of the machine
+> this record was taken on (Strix Halo). It is history — do **not** copy it verbatim onto other
+> hardware. Use `bash scripts/detect-gfx-targets.sh --cmake` for your own build; a hardcoded
+> `gfx1151` installs a device build that only works on gfx1151 (rocBLAS aborts with an empty
+> Tensile list elsewhere).
+
 # GPU targets (hipcc / ROCm 7.1, gfx1151):
 for t in fused overlap spec; do
   hipcc -O3 -mavx512f -mavx512bw -mavx512vl -mavx512dq \

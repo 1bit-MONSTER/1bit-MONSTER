@@ -44,6 +44,17 @@ case "${1:-}" in
 esac
 QUIET="${QUIET:-0}"
 
+# Explicit override for build hosts that have NO GPU. GitHub-hosted CI and release
+# runners are `ubuntu-24.04` with no AMD device, so detection cannot work there and
+# failing closed would block every release. Those callers declare the target set they
+# are building FOR (semicolon- or newline-separated) — which is the honest answer for a
+# release artifact anyway: it must serve the platforms it claims to support, not the
+# arch of whatever machine happened to build it.
+if [[ -n ${GFX_TARGETS:-} ]]; then
+    printf '%s\n' "${GFX_TARGETS//;/ }" | tr ' ' '\n' | grep -E '^gfx[0-9]{3,}$' | sort -u
+    exit 0
+fi
+
 # ----------------------------------------------------------------- rocminfo
 find_rocminfo() {
     local b base

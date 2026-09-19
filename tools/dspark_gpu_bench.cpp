@@ -1,5 +1,7 @@
 // DSpark: CPU draft + GPU verify — full pipeline benchmark
-// Build: hipcc -O3 --offload-arch=gfx1151 -Iinclude -Iengine/fusion -Ispec-decode/draft \
+// Build (arch from THIS machine, never hardcoded):
+//   ARCH="$(bash scripts/detect-gfx-targets.sh --cmake)"
+//   hipcc -O3 --offload-arch="$ARCH" -Iinclude -Iengine/fusion -Ispec-decode/draft \
 //   -o tools/dspark_gpu_bench tools/dspark_gpu_bench.cpp \
 //   engine/fusion/cpu_layer.cpp -lm -Lbuild -lrocm_cpp
 // Run:  LD_LIBRARY_PATH=build ./tools/dspark_gpu_bench model.trg [M] [rounds] [draft_path]
