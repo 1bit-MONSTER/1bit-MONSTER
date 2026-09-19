@@ -6,7 +6,8 @@
 This document exists because an ordered goal step required "an upstream-ready writeup" of a claimed
 `hipcc` defect. **The defect does not exist**, so the honest deliverable is this record: a report
 written to the standard a maintainer would expect, whose conclusion is that the tool is behaving
-correctly and that the original evidence was an artifact of how the test was invoked.
+correctly and that **the original claim traced to a mislabeled command**, not to any `hipcc`
+behaviour.
 
 Filing this as a bug report would be actively misleading. It is kept in-repo as the retraction
 record and as the reproduction anyone can re-run.
@@ -57,9 +58,10 @@ Verified across **four** invocation styles (`.cpp`/`.cu` × with/without `-x hip
 23 and clang 24. `hipcc` emits the portable `amdgcnspirv` target in every case where the flag is
 passed, and falls back to native detection only when it is not.
 
-## Root cause of the original false claim
+## Root cause of the original false claim: a mislabeled command
 
-The failing command was:
+The original claim **traced to a mislabeled command** — the label asserted the flag was passed while
+the command omitted it entirely:
 
 ```bash
 echo "=== A) hipcc --offload-arch=amdgcnspirv ==="      # <-- label asserts the flag IS passed
@@ -68,13 +70,14 @@ $H -O3 -std=c++17 -I$D/include -isystem $D/include k.cpp -o /tmp/gate   # <-- it
 
 `hipcc` then did the **correct** thing: with no `--offload-arch` it detected the locally installed
 GPUs and embedded `gfx1201` + `gfx1036`. That expected output was attributed to the
-`amdgcnspirv` flag, and the result was published as a fail-open trap. It was a **misattribution**,
-not a measurement error — the same failure class as the project's earlier "census ran a
+`amdgcnspirv` flag, and the result was published as a fail-open trap. It was a **misattribution
+caused by a mislabeled command**, not a measurement error — the same failure class as the project's earlier "census ran a
 55-commits-stale tree" and an overlay that landed one directory too deep.
 
 ## Conclusion
 
-- **No defect.** No change is requested of ROCm/TheRock/hipcc.
+- **No defect.** No change is requested of ROCm/TheRock/hipcc. The original claim traced to a
+  mislabeled command, so this is a retraction of a claim about hipcc rather than a report on it.
 - **No workaround is needed.** `hipcc --offload-arch=amdgcnspirv` is as valid as raw `clang++`;
   earlier guidance in this repository to "use raw `clang++`, never `hipcc`" has been corrected.
 - **What was retained from the original work, and is real:** that `amdgcnspirv` + ZCFS work on this
