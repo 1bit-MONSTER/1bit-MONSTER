@@ -73,10 +73,35 @@ KERN="$(uname -r)"
 # ------------------------------------------------------------------ discovery
 find_rocm() {
     local c
-    for c in ${ROCM_DEVEL:-} /opt/rocm-therock/lib/python*/site-packages/_rocm_sdk_devel \
-             /opt/rocm/lib/python*/site-packages/_rocm_sdk_devel /opt/rocm-* /opt/rocm; do
-        [[ -d "$c" ]] || continue
-        [[ -e "$c/bin/hipcc" || -e "$c/include/hip/hip_runtime.h" ]] && { echo "$c"; return 0; }
+    # 1) explicit override always wins
+    if [[ -n ${ROCM_DEVEL:-} && -d ${ROCM_DEVEL} ]]; then echo "$ROCM_DEVEL"; return 0; fi
+    # 2) pip/TheRock venv SDK layout: the real devel tree lives *inside*
+    #    site-packages, and the venv's own include/lib are decoys. NOTE: a
+    #    previous version of this function looked only at /opt/rocm* and
+    #    ${ROCM_DEVEL}, which produced a FALSE "no ROCm on this host" for ryzen
+    #    -- the tree is at ~/.cache/pip/therock and predated the census. Search
+    #    devel trees first, then bare venv roots.
+    local pats=(
+        "$HOME"/.cache/pip/*/lib/python*/site-packages/_rocm_sdk_devel
+        "$HOME"/.cache/pip/*/lib/python*/site-packages/_rocm_sdk_libraries
+        "$HOME"/.local/lib/python*/site-packages/_rocm_sdk_devel
+        "$HOME"/*/lib/python*/site-packages/_rocm_sdk_devel
+        /opt/rocm*/lib/python*/site-packages/_rocm_sdk_devel
+        /opt/rocm*/lib/python*/site-packages/_rocm_sdk_libraries
+        /usr/lib/python*/site-packages/_rocm_sdk_devel
+    )
+    for c in ${pats[@]+${pats[@]}}; do
+        [[ -d $c ]] || continue
+        if [[ -x $c/bin/hipcc || -e $c/include/hip/hip_runtime.h ]]; then echo "$c"; return 0; fi
+    done
+    # 3) bare venv roots that carry the tools directly (~/.cache/pip/therock)
+    for c in "$HOME"/.cache/pip/therock "$HOME"/.cache/pip/*rocm*; do
+        [[ -x $c/bin/hipcc ]] && { echo "$c"; return 0; }
+    done
+    # 4) classic system trees
+    for c in /opt/rocm-therock /opt/rocm-* /opt/rocm; do
+        [[ -d $c ]] || continue
+        [[ -x $c/bin/hipcc || -e $c/include/hip/hip_runtime.h ]] && { echo "$c"; return 0; }
     done
     return 1
 }
@@ -91,6 +116,13 @@ find_hrx() {
 }
 find_hrx_bin() {
     local c
+    # Prefer an hrx-info sitting beside the lib dir we already found, so a
+    # harness pointed at a copied bundle still records its device row.
+    if [[ -n ${HRX_LIB:-} ]]; then
+        for c in "${HRX_LIB%/lib}"/bin "$HRX_LIB"; do
+            [[ -x $c/hrx-info ]] && { echo "$c/hrx-info"; return 0; }
+        done
+    fi
     for c in ${HRX_BIN:-} /opt/hrx/bin "$HOME"/hrx-gfx1151/hrx-runtime/bin "$HOME"/hrx-*/bin; do
         [[ -x "$c/hrx-info" ]] && { echo "$c/hrx-info"; return 0; }
     done
@@ -138,7 +170,7 @@ if [[ -n $HRX_LIBDIR ]]; then
     [[ -n $lm ]] && row "loom/present" detected "$(basename "$lm") (JIT compiler; kernels are specialized at launch)"
     if [[ -n $HRX_INFO ]]; then
         hlog="$WORK/hrxinfo.log"
-        timeout "$TL" env LD_LIBRARY_PATH="$HRX_LIBDIR:/usr/lib/x86_64-linux-gnu" "$HRX_INFO" >"$hlog" 2>&1
+        timeout "$TL" env LD_LIBRARY_PATH="$HRX_LIBDIR:${HRX_EXTRA_LD:+$HRX_EXTRA_LD:}/usr/lib/x86_64-linux-gnu" "$HRX_INFO" >"$hlog" 2>&1
         hrc=$?
         if [[ $hrc -eq 0 ]] && grep -qiE 'GPU accelerator: unavailable|NOT_FOUND' "$hlog"; then
             # HRX is a lean runtime, not a full stack: with no ROCr/HSA runtime it
@@ -203,7 +235,14 @@ run_probe_ld() { # surface ldpath binary args...
 
 run_probe() { local s="$1"; shift; run_probe_ld "$s" "${LDPATH:-/usr/lib/x86_64-linux-gnu}" "$@"; }
 # Same binary, HRX's libamdhip64 instead of ROCm's -> the second backend column.
-run_hrx_probe() { local s="$1"; shift; run_probe_ld "$s/hrx" "$HRX_LIBDIR:/usr/lib/x86_64-linux-gnu" "$@"; }
+# HRX needs the ROCr/HSA runtime on the loader path; HRX_EXTRA_LD prepends a dir
+# for it (e.g. a TheRock devel lib/ that already ships libhsa-runtime64.so.1),
+# which is how gfx1201 gets an HRX lane without installing anything.
+run_hrx_probe() {
+    local s="$1"; shift
+    local ld="$HRX_LIBDIR:${HRX_EXTRA_LD:+$HRX_EXTRA_LD:}/usr/lib/x86_64-linux-gnu"
+    run_probe_ld "$s/hrx" "$ld" "$@"
+}
 
 if [[ -z $HIPCC ]]; then
     for s in runtime numerics graphs ptx_jit blas fft sparse solver dnn int8_dot4; do
@@ -216,7 +255,10 @@ else
         run_probe runtime  "$WORK/p_core" runtime "$EXPECT_GFX"
         run_probe numerics "$WORK/p_core" numerics
         run_probe graphs   "$WORK/p_core" graphs
-        run_probe ptx_jit  "$WORK/p_core" rtc
+        # pass the SDK include dir to hiprtc: without it the JIT cannot find
+        # hip/hip_runtime.h where the SDK include is not a default search path,
+        # which is a harness config gap rather than a backend limitation.
+        run_probe ptx_jit  "$WORK/p_core" rtc "$EXPECT_GFX" "-I$ROCM/include"
     else
         for s in runtime numerics graphs ptx_jit; do
             row "$s" UNSUPPORTED "p_core build failed: $(grep -m1 error "$WORK/build_core.err" | head -c 200)"
@@ -240,6 +282,13 @@ else
         BUILT_DOT4="$WORK/p_dot4"
     else
         row "int8_dot4" UNSUPPORTED "toolchain rejects sudot4 builtin with runtime operands: $(grep -m1 error "$WORK/build_dot4.err" | head -c 180)"
+    fi
+    # solver disambiguation: distinguishes a silent no-op from a layout/reference
+    # artefact, so a cusolver INCORRECT is never published on inference alone.
+    if "$HIPCC" -O2 -std=c++17 ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_solver_diag.cpp" -o "$WORK/p_solver_diag" -lhipsolver 2>"$WORK/build_soldiag.err"; then
+        run_probe cusolver_diag "$WORK/p_solver_diag"
+    else
+        row "cusolver_diag" UNSUPPORTED "build failed: $(grep -m1 error "$WORK/build_soldiag.err" | head -c 180)"
     fi
 fi
 

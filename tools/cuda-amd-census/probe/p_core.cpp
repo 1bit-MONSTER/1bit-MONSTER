@@ -28,6 +28,7 @@
     return r_error(fmt("%s -> %s (%d)", #x, hipGetErrorString(_e), (int)_e)); } while (0)
 
 static const char *EXPECTED = "";
+static const char *g_rtc_extra = "";   // extra hiprtc option, set from argv[3]
 
 // ---------------------------------------------------------------- GPU proof
 // Writes a value derived from a device-only instruction (clock64 = the GPU
@@ -215,18 +216,22 @@ static int do_rtc() {
     hiprtcProgram prog;
     hiprtcResult r = hiprtcCreateProgram(&prog, g_src, "jit.hip", 0, nullptr, nullptr);
     if (r != HIPRTC_SUCCESS) return r_unsupported(fmt("hiprtcCreateProgram: %s", hiprtcGetErrorString(r)));
-    // offline arch for the *running* device, not a guessed value
+    // Extra hiprtc options may be supplied as argv[3] (e.g. "-I<rocm>/include").
+    // Without them the JIT cannot find hip/hip_runtime.h on hosts where the SDK
+    // include dir is not on the compiler's default search path -- which is a
+    // harness configuration gap, NOT a backend limitation.
     hipDeviceProp_t pp; CK(hipGetDeviceProperties(&pp, 0));
     std::string opt = fmt("--offload-arch=%s", pp.gcnArchName);
-    const char *opts[] = { opt.c_str() };
-    r = hiprtcCompileProgram(prog, 1, opts);
+    std::vector<const char *> opts;
+    opts.push_back(opt.c_str());
+    if (g_rtc_extra && g_rtc_extra[0]) opts.push_back(g_rtc_extra);
+    r = hiprtcCompileProgram(prog, (int)opts.size(), opts.data());
     if (r != HIPRTC_SUCCESS) {
         size_t ls = 0; hiprtcGetProgramLogSize(prog, &ls);
         std::string log(ls, '\0'); hiprtcGetProgramLog(prog, &log[0]);
         return r_unsupported(fmt("hiprtcCompileProgram(%s) failed: %s", opt.c_str(),
                                  log.substr(0, 300).c_str()));
-    }
-    size_t cs = 0; RTCK(hiprtcGetCodeSize(prog, &cs));
+    }    size_t cs = 0; RTCK(hiprtcGetCodeSize(prog, &cs));
     std::vector<char> code(cs); RTCK(hiprtcGetCode(prog, code.data()));
     hipModule_t mod; hipFunction_t fn;
     CK2(hipModuleLoadData(&mod, code.data()));
@@ -244,9 +249,10 @@ static int do_rtc() {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s <runtime|numerics|graphs|rtc> [expected_gfx]\n", argv[0]); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: %s <runtime|numerics|graphs|rtc> [expected_gfx] [extra_rtc_opt]\n", argv[0]); return 2; }
     g_surface = argv[1];
     if (argc > 2) EXPECTED = argv[2];
+    if (argc > 3) g_rtc_extra = argv[3];
     std::string c = argv[1];
     if (c == "runtime")  return do_runtime();
     if (c == "numerics") return do_numerics();

@@ -3,7 +3,7 @@
   "os": "Ubuntu 26.04.1 LTS",
   "kernel": "7.0.0-31-generic",
   "gpu": "VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Navi 48 [Radeon RX 9070/9070 XT/9070 GRE] (rev c0);VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Granite Ridge [Radeon Graphics] (rev cb)",
-  "rocm_root": null,
+  "rocm_root": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel",
   "hrx_libdir": "/tmp/hrx-test/hrx-runtime/lib",
   "generated_by": "projects/cuda-amd-census/run-census.sh",
   "evidence_classes": [
@@ -16,9 +16,11 @@
     "ERROR"
   ],
   "counts": {
-    "detected": 4,
-    "UNSUPPORTED": 23,
-    "PASS": 1
+    "detected": 16,
+    "UNSUPPORTED": 4,
+    "PASS": 6,
+    "ERROR": 4,
+    "INCORRECT": 4
   },
   "rows": [
     {
@@ -43,58 +45,58 @@
     },
     {
       "surface": "bf16_atomics/present",
-      "result": "UNSUPPORTED",
-      "detail": "no hip_bfloat16.h in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_bfloat16.h"
     },
     {
       "surface": "cublas/present",
-      "result": "UNSUPPORTED",
-      "detail": "no rocblas in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocblas"
     },
     {
       "surface": "cublaslt/present",
-      "result": "UNSUPPORTED",
-      "detail": "no hipblaslt in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipblaslt-version.h"
     },
     {
       "surface": "cudnn/present",
-      "result": "UNSUPPORTED",
-      "detail": "no miopen in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/miopen"
     },
     {
       "surface": "cufft/present",
-      "result": "UNSUPPORTED",
-      "detail": "no rocfft in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocfft"
     },
     {
       "surface": "cusolver/present",
-      "result": "UNSUPPORTED",
-      "detail": "no hipsolver in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipsolver"
     },
     {
       "surface": "cusparse/present",
-      "result": "UNSUPPORTED",
-      "detail": "no rocsparse in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocsparse"
     },
     {
       "surface": "graphs/present",
-      "result": "UNSUPPORTED",
-      "detail": "no hip_runtime.h in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h"
     },
     {
       "surface": "nccl/present",
-      "result": "UNSUPPORTED",
-      "detail": "no rccl in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/nccl_device/rccl_ptr.h"
     },
     {
       "surface": "ptx_jit/present",
-      "result": "UNSUPPORTED",
-      "detail": "no hiprtc in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hiprtc.h"
     },
     {
       "surface": "runtime/present",
-      "result": "UNSUPPORTED",
-      "detail": "no hip_runtime.h in rocm tree or /usr"
+      "result": "detected",
+      "detail": "/home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h"
     },
     {
       "surface": "hrx/present",
@@ -102,54 +104,84 @@
       "detail": "/tmp/hrx-test/hrx-runtime/lib (libhrx.so.0.1.0)"
     },
     {
+      "surface": "hrx/device_enum",
+      "result": "detected",
+      "detail": "hrx-info rc=0; GPU accelerator: 1 device"
+    },
+    {
       "surface": "runtime",
-      "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "result": "PASS",
+      "detail": "dev=\"AMD Radeon RX 9070 XT\" arch=gfx1201 arch_expect=gfx1201 arch_match"
     },
     {
       "surface": "numerics",
-      "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "result": "PASS",
+      "detail": "atomicAdd=16384 half2_dot=ok bf16=ok (int8 dot4 -> see dot4 row)"
     },
     {
       "surface": "graphs",
-      "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "result": "PASS",
+      "detail": "capture 5-node graph + replay = 5 (exact)"
     },
     {
       "surface": "ptx_jit",
-      "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "result": "PASS",
+      "detail": "hiprtc compiled --offload-arch=gfx1201, JIT kernel = 21.0 (exact)"
     },
     {
-      "surface": "blas",
-      "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "surface": "cublas",
+      "result": "ERROR",
+      "detail": "rc=134 no PROBE line: nd  rocBLAS error: Cannot read /home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib/rocblas/library/TensileLibrary.dat: No such file or directory for GPU arch : gfx1201  List of available TensileLibrary Files :  "
     },
     {
-      "surface": "fft",
-      "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "surface": "cufft",
+      "result": "PASS",
+      "detail": "c2c fwd N=64 vs naive DFT max_abs=3.81e-06 rel=1.09e-07 (rocFFT)"
     },
     {
-      "surface": "sparse",
+      "surface": "cusparse",
       "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "detail": "rocsparse_create_handle failed"
     },
     {
-      "surface": "solver",
-      "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "surface": "cusolver",
+      "result": "INCORRECT",
+      "detail": "LU det=256.000000 cpu det=209.000005 rel=2.249e-01"
     },
     {
-      "surface": "dnn",
-      "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "surface": "cudnn",
+      "result": "ERROR",
+      "detail": "rc=134 no PROBE line: nd  rocBLAS error: Cannot read /home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib/rocblas/library/TensileLibrary.dat: No such file or directory for GPU arch : gfx1201  List of available TensileLibrary Files :  "
     },
     {
       "surface": "int8_dot4",
       "result": "UNSUPPORTED",
-      "detail": "no hipcc/ROCm toolchain on this host"
+      "detail": "toolchain rejects sudot4 builtin with runtime operands: /home/bcloud/projects/cuda-amd-census/probe/p_dot4.cpp:36:29: error: argument to '__builtin_amdgcn_sudot4' must be a constant integer"
+    },
+    {
+      "surface": "cusolver_diag",
+      "result": "INCORRECT",
+      "detail": "arch=gfx1201 status=OK info=0 ipiv=[0,0,0,0] lu_diag=[4,4,4,4] LU_byte_equal_to_A=YES LUpow_recon_err=3.00e+00 det_lu=256.0000 "
+    },
+    {
+      "surface": "runtime/hrx",
+      "result": "INCORRECT",
+      "detail": "add mismatch max_abs=1.999e+00 N=4194304"
+    },
+    {
+      "surface": "graphs/hrx",
+      "result": "INCORRECT",
+      "detail": "graph replay produced 0.0, expected 5.0"
+    },
+    {
+      "surface": "numerics/hrx",
+      "result": "ERROR",
+      "detail": "hipDeviceSynchronize() -> hipErrorUnknown (999)"
+    },
+    {
+      "surface": "cublas/hrx",
+      "result": "ERROR",
+      "detail": "rc=134 no PROBE line: nd  rocBLAS error: Cannot read /home/bcloud/.cache/pip/therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib/rocblas/library/TensileLibrary.dat: No such file or directory for GPU arch : gfx1201  List of available TensileLibrary Files :  "
     },
     {
       "surface": "torch",
