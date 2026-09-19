@@ -82,6 +82,8 @@ find_rocm() {
     #    -- the tree is at ~/.cache/pip/therock and predated the census. Search
     #    devel trees first, then bare venv roots.
     local pats=(
+        # canonical location first, so a sibling backup can never win
+        "$HOME"/.cache/pip/therock/lib/python*/site-packages/_rocm_sdk_devel
         "$HOME"/.cache/pip/*/lib/python*/site-packages/_rocm_sdk_devel
         "$HOME"/.cache/pip/*/lib/python*/site-packages/_rocm_sdk_libraries
         "$HOME"/.local/lib/python*/site-packages/_rocm_sdk_devel
@@ -92,6 +94,11 @@ find_rocm() {
     )
     for c in ${pats[@]+${pats[@]}}; do
         [[ -d $c ]] || continue
+        # Never adopt a backup/renamed tree: creating one (e.g. a restore point)
+        # otherwise silently changes which SDK the census measures. Learned the
+        # hard way -- a `.bak-...` sibling matched the glob and the "live" run
+        # actually measured the pre-change build.
+        case "$c" in *.bak*|*.bak-*|*~) continue ;; esac
         if [[ -x $c/bin/hipcc || -e $c/include/hip/hip_runtime.h ]]; then echo "$c"; return 0; fi
     done
     # 3) bare venv roots that carry the tools directly (~/.cache/pip/therock)
