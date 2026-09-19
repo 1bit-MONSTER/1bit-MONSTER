@@ -159,6 +159,13 @@ CURRENT_INDEX_PREFIXES = (
     "https://download.pytorch.org/whl/",
 )
 
+
+# Generated bundles: one enormous line, no line structure. A +/-N char window over
+# such a blob can see markers from unrelated neighbouring content, which is the
+# vacuity the auditor flagged. These are justified by the STRUCTURAL proof instead.
+GENERATED_BLOBS = {"viz.html", "search-index.json", "llms-full.txt", "related.json",
+                   "GENERATED.json"}
+
 SKIP_DIRS = {".git", "build", "third_party", ".gitnexus", "node_modules", ".venv", "__pycache__"}
 # Never scan the sweep's OWN output: the manifest lists every superseded value as
 # data (value/reason fields), so scanning it made the sweep count itself — 199
@@ -171,6 +178,7 @@ TEXT_SUFFIXES = {
     ".hip", ".h", ".hpp", ".hh", ".c", ".cc", ".cpp", ".cxx", ".cu", ".rs",
     ".tmpl", ".service", ".rules", "",
 }
+MAX_CONTEXT_CHARS = 1200   # cap the context used to justify a hit
 MAX_BYTES = 8_000_000
 BLOB_LINE = 2000
 
@@ -290,12 +298,21 @@ def main() -> int:
             for rx, desc in compiled:
                 for m in rx.finditer(text):
                     line_no = text.count("\n", 0, m.start()) + 1
-                    if monoline:
+                    idx = line_no - 1
+                    huge_line = (not monoline and idx < len(lines)
+                                 and len(lines[idx]) > MAX_CONTEXT_CHARS)
+                    is_blob = ((monoline or huge_line) and path.name in GENERATED_BLOBS)
+                    if is_blob:
+                        # derived artifact: the structural check proves it matches its
+                        # sources, so do NOT decide it by a sliding window.
+                        window = ""
+                        quoted = False
+                        ordered = scoped
+                    elif monoline:
                         window = text[max(0, m.start() - args.context):m.end() + args.context]
                         quoted = bool(MARKERS.search(window))
                         ordered = scoped
                     else:
-                        idx = line_no - 1
                         lo = idx
                         while lo > 0 and lines[lo - 1].strip() and idx - lo < 6:
                             lo -= 1
@@ -303,10 +320,16 @@ def main() -> int:
                         while hi + 1 < len(lines) and lines[hi + 1].strip() and hi - idx < 6:
                             hi += 1
                         para = "\n".join(lines[lo:hi + 1])
+                        if len(para) > MAX_CONTEXT_CHARS:
+                            # huge line/bundle: fall back to a tight window so a
+                            # marker elsewhere in the blob cannot excuse this hit
+                            para = text[max(0, m.start() - 300):m.end() + 300]
                         quoted = bool(MARKERS.search(para))
                         ordered = scoped_at[idx] if idx < len(scoped_at) else False
 
-                    if ordered:
+                    if is_blob:
+                        verdict = "OK-DERIVED"
+                    elif ordered:
                         verdict = "OK-SCOPED"
                     elif historical_file:
                         verdict = "OK-HISTORICAL"
@@ -317,7 +340,9 @@ def main() -> int:
 
                     # Record WHY, so the classification is auditable rather than a count.
                     reason = ""
-                    if verdict == "OK-SCOPED":
+                    if verdict == "OK-DERIVED":
+                        reason = "generated blob: justified by the structural (derived == sources) proof"
+                    elif verdict == "OK-SCOPED":
                         ms = SCOPED_SECTION.search(title_txt)
                         reason = f"section/title scoped: {ms.group(0)!r}" if ms else "scoped section"
                     elif verdict == "OK-HISTORICAL":
