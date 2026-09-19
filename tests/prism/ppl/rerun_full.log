@@ -1,0 +1,58 @@
+runner pid=505428 start=2026-09-19T14:54:56Z head=323bcc683
+stream md5=62cd3e0de33b83123e1b9ece75e57580 ids=12599
+=== A/B EXACT (legacy grouping) ===
+  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-2-27B-PTQ1_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 7.8512  (scored 1023)
+  [2] PPL = 11.6138  (scored 1023)
+  [3] PPL = 11.5632  (scored 1023)
+  [4] PPL = 9.6331  (scored 1023)
+  [5] PPL = 10.4254  (scored 1023)
+  [6] PPL = 4.1311  (scored 1023)
+  FINAL PPL = 8.7127  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1482.43s
+
+=== A/B DP4A (legacy grouping) ===
+  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-2-27B-PTQ1_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 7.8589  (scored 1023)
+  [2] PPL = 11.6144  (scored 1023)
+  [3] PPL = 11.5747  (scored 1023)
+  [4] PPL = 9.6348  (scored 1023)
+  [5] PPL = 10.4305  (scored 1023)
+  [6] PPL = 4.1317  (scored 1023)
+  FINAL PPL = 8.7168  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1348.03s
+
+=== POST-FIX Ternary-Bonsai-2-27B-PTQ1_0 ===
+  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-2-27B-PTQ1_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 6.7003  (scored 1023)
+  [2] PPL = 10.1245  (scored 1023)
+  [3] PPL = 9.5173  (scored 1023)
+  [4] PPL = 8.5707  (scored 1023)
+  [5] PPL = 9.5325  (scored 1023)
+  [6] PPL = 3.5762  (scored 1023)
+  FINAL PPL = 7.5731  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1367.35s
+
+=== POST-FIX Bonsai-27B-Q1_0 ===
+  pack=/home/bcloud/models/prism/1bp/Bonsai-27B-Q1_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 10.7187  (scored 1023)
+  [2] PPL = 14.4295  (scored 1023)
+  [3] PPL = 12.9693  (scored 1023)
+  [4] PPL = 12.7842  (scored 1023)
+  [5] PPL = 13.6239  (scored 1023)
+  [6] PPL = 5.0020  (scored 1023)
+  FINAL PPL = 10.9750  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1222.14s
+
+=== POST-FIX Ternary-Bonsai-27B-PQ2_0 ===
+  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-27B-PQ2_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 9.9579  (scored 1023)
+  [2] PPL = 11.7697  (scored 1023)
+  [3] PPL = 10.9474  (scored 1023)
+  [4] PPL = 12.4391  (scored 1023)
+  [5] PPL = 12.5373  (scored 1023)
+  [6] PPL = 4.6539  (scored 1023)
+  FINAL PPL = 9.8819  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1425.51s
+
+=== rerun done 2026-09-19T16:49:01Z ===
