@@ -1,0 +1,16 @@
+== engine slot ceiling: N=10 tag=q06 ng=200 prompt=/tmp/tiny_ids.txt ==
+== baseline hwctx=0 ==
+== after 6x5s: hwctx_now=0 peak_hwctx=10 ==
+  slot 1: SERVED  112.6 ms/tok (9 tok/s)  Prefill: 789ms  tokens=200
+  slot 2: SERVED  112.0 ms/tok (9 tok/s)  Prefill: 801ms  tokens=200
+  slot 3: SERVED  113.6 ms/tok (9 tok/s)  Prefill: 298ms  tokens=200
+  slot 4: SERVED  112.1 ms/tok (9 tok/s)  Prefill: 807ms  tokens=200
+  slot 5: SERVED  113.0 ms/tok (9 tok/s)  Prefill: 703ms  tokens=200
+  slot 6: SERVED  112.4 ms/tok (9 tok/s)  Prefill: 794ms  tokens=200
+  slot 7: SERVED  112.6 ms/tok (9 tok/s)  Prefill: 779ms  tokens=200
+  slot 8: SERVED  113.6 ms/tok (9 tok/s)  Prefill: 331ms  tokens=200
+  slot 9: SERVED  113.4 ms/tok (9 tok/s)  Prefill: 557ms  tokens=200
+  slot 10: SERVED  113.5 ms/tok (9 tok/s)  Prefill: 496ms  tokens=200
+== SERVED=10 FAIL=0 PENDING=0 (N=10), engine RSS now=0.00 GB ==
+== driver refusals ==
+== after cleanup hwctx=0 ==
