@@ -97,3 +97,71 @@ own.
   patch in `tools/perplexity/perplexity.cpp`), over `slice200.txt`.
 * Tokenizer parity: `tests/prism/check_tokenizer_parity.py` + `tests/prism/tokenize_htok.cpp`.
 * No throughput claim is made; no quiet-window triad is claimed in this report.
+
+
+---
+
+## Vulkan cross-check (goal `mu7ukkbl`) — is the PPL a substrate artifact?
+
+Operator question: the section-3/5 numbers "seem really low". This checks whether the value is an
+artifact of the CPU oracle or of our HIP engine.
+
+### (a) The oracle's own Vulkan backend, same stream, same protocol
+
+```
+/home/bcloud/prism/llama.cpp/build/bin/llama-perplexity \
+  -m <gguf> -f ~/models/prism/eval/slice200.txt -c 2048 -t 16 -ngl 99
+```
+
+Offload was confirmed in the run log, not assumed:
+`llama_prepare_model_devices: using device Vulkan0 (AMD Radeon 8060S Graphics (RADV STRIX_HALO))`
+and `load_tensors: layer N assigned to device Vulkan0`. The stream hash logged by the fork was the
+same 12 599 ids / `fnv1a64=867c8618e1944fda` for every pack.
+
+| Pack | Fork CPU | Fork **Vulkan** (`-ngl 99`) | Δ |
+|---|---:|---:|---:|
+| Bonsai-27B-Q1_0 | 10.9992 | **10.9992** | 0.0000 [Bonsai-27B-Q1_0 | Q1_0 | fork Vulkan vs CPU | strixhalo-unknown | 6138 | slice200 | 2026-09-19] |
+| Ternary-Bonsai-2-27B-PTQ1_0 | 7.5887 | **7.5887** | 0.0000 [Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | fork Vulkan vs CPU | strixhalo-unknown | 6138 | slice200 | 2026-09-19] |
+| Ternary-Bonsai-27B-PQ2_0 | 9.8897 | **9.8897** | 0.0000 [Ternary-Bonsai-27B-PQ2_0 | PQ2_0 | fork Vulkan vs CPU | strixhalo-unknown | 6138 | slice200 | 2026-09-19] |
+
+**Result: the oracle is backend-invariant on this stream.** Vulkan offload reproduces the CPU number
+to four decimals on all three packs. So the absolute value is a property of the model + stream, not
+of the CPU path. (Raw logs: `tests/prism/ppl/fork_vulkan*.txt`.)
+
+### (b) Our engine's own Vulkan path — NOT PRODUCIBLE (blocker with evidence)
+
+Asked to "use the engine", we checked whether our Vulkan/ZINC path can drive the same stream
+end-to-end. It cannot, today:
+
+* The **only** Prism Vulkan asset in the repo is `kernels/vulkan/dmmv_prism.comp` — a block-decoding
+  **GEMV** — plus the standalone `tests/test_vulkan_prism.cpp` harness. `kernels/vulkan/` otherwise
+  holds `dmmv_q1_bonsai.comp`, `dmmv_tq2_bonsai.comp`, `matmul_fp32.comp`, `zaya_cca_attn.comp`:
+  there is no Prism attention, GDN recurrence, RMSNorm, RoPE or 64-layer forward in Vulkan.
+* The engine's Vulkan backends contain **zero** Prism references:
+  `backend_vulkan.cpp` (Zaya1-8B backend) = 0, `backend_vulkan_hpp.cpp` = 0,
+  `backend_zinc.cpp` (ZINC) = 0, `backend_ggml_vulkan.cpp` = 0 — and the latter is a **stub**
+  because `third_party/llama.cpp` is not checked out (no `ggml.h`).
+* ZINC on Prism is blocked independently (P5 record: segfault in `zinc/src/model/loader.zig:666`
+  uploading a 13.9 MB tensor; no Zig toolchain in tree) `[Prism ML Bonsai 27B | ZINC | blocked | strixhalo-unknown | - | - | 2026-09-19]`.
+* What the Vulkan path **can** do is verified, and is not nothing: the GEMV harness builds and runs
+  on gfx1151 and is per-element correct for all three packs — Q1_0 `max_abs_err=0.000000` at
+  M=16/K=256 and `0.000005` at the model shape M=17408/K=5120; PQ2_0 and PTQ1_0 likewise
+  `[3-packs | Q1_0+PQ2_0+PTQ1_0 | Vulkan dmmv_prism.comp vs CPU ref | strixhalo-unknown | - | synthetic | 2026-09-19]`.
+  These are tiny/warm figures, not a throughput claim.
+
+**Conclusion.** A Vulkan PPL from *our* engine would require authoring the Prism forward
+(attention/GDN/norms/rope) as Vulkan kernels plus a host driver — a port, not a configuration. It is
+recorded as a blocker with the inventory above, not silently dropped. The only full-forward Vulkan
+substrate available today is the oracle fork's own backend, which is column (a) and is a measurement
+oracle, never a dependency.
+
+### (c) What the cross-check settles
+
+1. **The PPL values are not a substrate artifact.** The oracle is identical on CPU and Vulkan, and
+   our HIP engine matches it on Q1_0 (−0.22%) and PQ2_0 (−0.08%).
+2. **PTQ1_0's +14.9% gap is localized to our HIP PTQ1_0 path.** Fork Vulkan = fork CPU = 7.5887,
+   while our HIP engine = 8.7168 `[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | HIP engine vs both oracle backends | strixhalo-unknown | 6138 | slice200 | 2026-09-19]`.
+   Because the oracle reproduces itself exactly across two backends, the discrepancy cannot be
+   attributed to the evaluation; it is our engine's PTQ1_0 decode/dot (leading candidate: the
+   approximate dp4a path). The mechanism remains open; this cross-check rules out the measurement.
+3. **No throughput/quiet claim is made here.** The GEMV numbers above are tiny-shape and warm.

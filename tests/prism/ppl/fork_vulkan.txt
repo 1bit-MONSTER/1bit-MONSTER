@@ -1,0 +1,21 @@
+=== VULKAN Bonsai-27B-Q1_0  gguf=onebit-gguf/Bonsai-27B-Q1_0.gguf  2026-09-19T03:51:38Z ===
+0.00.096.053 I llama_prepare_model_devices: using device Vulkan0 (AMD Radeon 8060S Graphics (RADV STRIX_HALO)) (0000:c5:00.0) - 123463 MiB free
+0.00.465.556 I llama_prepare_model_devices: using device Vulkan0 (AMD Radeon 8060S Graphics (RADV STRIX_HALO)) (0000:c5:00.0) - 123463 MiB free
+0.01.311.321 I perplexity: P6 stream size=12599 fnv1a64=867c8618e1944fda add_bos=0 add_eos=0 n_ctx=2048
+0.01.311.372 I perplexity: calculating perplexity over 6 chunks, n_ctx=2048, batch_size=2048, n_seq=1
+0.35.470.022 I Final estimate: PPL = 10.9992 +/- 0.40694
+
+=== VULKAN Ternary-Bonsai-2-27B-PTQ1_0  gguf=ternary2-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf  2026-09-19T03:52:14Z ===
+0.00.102.524 I llama_prepare_model_devices: using device Vulkan0 (AMD Radeon 8060S Graphics (RADV STRIX_HALO)) (0000:c5:00.0) - 123463 MiB free
+0.00.488.112 I llama_prepare_model_devices: using device Vulkan0 (AMD Radeon 8060S Graphics (RADV STRIX_HALO)) (0000:c5:00.0) - 123463 MiB free
+0.07.421.927 I perplexity: P6 stream size=12599 fnv1a64=867c8618e1944fda add_bos=0 add_eos=0 n_ctx=2048
+0.07.421.978 I perplexity: calculating perplexity over 6 chunks, n_ctx=2048, batch_size=2048, n_seq=1
+1.04.933.791 I Final estimate: PPL = 7.5887 +/- 0.25476
+
+=== VULKAN Ternary-Bonsai-27B-PQ2_0  gguf=ternary-gguf/Ternary-Bonsai-27B-PQ2_0.gguf  2026-09-19T03:53:19Z ===
+0.00.108.280 I llama_prepare_model_devices: using device Vulkan0 (AMD Radeon 8060S Graphics (RADV STRIX_HALO)) (0000:c5:00.0) - 123463 MiB free
+0.00.464.222 I llama_prepare_model_devices: using device Vulkan0 (AMD Radeon 8060S Graphics (RADV STRIX_HALO)) (0000:c5:00.0) - 123463 MiB free
+0.10.599.286 I perplexity: P6 stream size=12599 fnv1a64=867c8618e1944fda add_bos=0 add_eos=0 n_ctx=2048
+0.10.599.366 I perplexity: calculating perplexity over 6 chunks, n_ctx=2048, batch_size=2048, n_seq=1
+7.06.563.412 I Final estimate: PPL = 9.8897 +/- 0.36774
+

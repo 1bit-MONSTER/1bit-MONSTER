@@ -1,0 +1,47 @@
+# Our-engine Vulkan blocker evidence — 2026-09-19T04:01:18Z
+# Question: can OUR Vulkan/ZINC path drive the 12599-token stream end-to-end for a PPL number?
+
+## 1. Prism Vulkan assets in our repo (only GEMV)
+kernels/vulkan/dmmv_prism.comp
+kernels/vulkan/ full listing:
+dmmv_prism.comp
+dmmv_q1_bonsai.comp
+dmmv_tq2_bonsai.comp
+matmul_fp32.comp
+zaya_cca_attn.comp
+zaya_cca_attn.comp.spv
+
+## 2. Prism references in the engine Vulkan backends (0 = no support)
+src/backend_vulkan.cpp: 0
+src/backend_vulkan_hpp.cpp: 0
+src/backend_ggml_vulkan.cpp: 0
+src/backend_zinc.cpp: 0
+
+## 3. What those backends are (roles)
+// backend_vulkan.cpp — Vulkan GPU backend for Zaya1-8B
+// Hybrid: Vulkan compute for standard matmuls, CPU for CCA custom ops
+// Portable: AMD, NVIDIA, Intel, Apple (any Vulkan 1.2+)
+/// backend_zinc.cpp — C++ ZINC GPU backend.
+/// Fixed: #763 proper includes via CMake, shader path from build config
+// backend_ggml_vulkan.cpp — llama.cpp Vulkan backend wrapper (MIT License).
+// Sync: git submodule update --remote third_party/llama.cpp
+//
+// Compiles to a stub when llama.h is not available (CI without submodules).
+
+## 4. Vendored llama.cpp is NOT checked out -> backend_ggml_vulkan is a stub
+(no ggml.h)
+
+## 5. The one Prism Vulkan capability that DOES exist: per-element GEMV
+built: g++ -O2 -std=c++17 -I include -I src -DVK_SHADER_DIR="/tmp" tests/test_vulkan_prism.cpp src/onebp_model.cpp -lvulkan
+
+== Prism flat-128-block Vulkan GEMV (dmmv_prism.comp) ==
+device: AMD Radeon 8060S Graphics (RADV STRIX_HALO)
+  Q1_0 correctness PASSED: M=16 K=256 max_abs_err=0.000000 max_rel=2.06e-06
+  Q1_0 M=16 K=256: 0.0000 ms/iter | 60.6 GB/s (warmup=25, iters=200)
+  PQ2_0 correctness PASSED: M=16 K=256 max_abs_err=0.000000 max_rel=8.00e-07
+  PQ2_0 M=16 K=256: 0.0000 ms/iter | 72.9 GB/s (warmup=25, iters=200)
+  PTQ1_0 correctness PASSED: M=16 K=256 max_abs_err=0.000000 max_rel=1.89e-06
+  PTQ1_0 M=16 K=256: 0.0000 ms/iter | 50.0 GB/s (warmup=25, iters=200)
+
+== throughput (fits the shader's default spec constants for block size) ==
+  Q1_0 correctness PASSED: M=17408 K=5120 max_abs_err=0.000005 max_rel=8.16e-02

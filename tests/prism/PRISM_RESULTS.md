@@ -938,3 +938,22 @@ The 53-gate suite proves fidelity-to-oracle, not text quality. This section scor
 **Column 2 (HRX/Loom) NOT PRODUCED - hard runtime blocker, evidence kept.** `llama-perplexity -m <Prism GGUF> --device HRX0 -c 2048 -f slice200.txt` on the pinned hrx-b66 aborts during graph reservation: `pre-allocated tensor (cache_r_l0 ...) in a buffer (HRX0) that cannot run the operation (SCALE)`. Backtrace in `tests/prism/ppl/hrx_blocker.txt`.
 
 **Finding - quality is reproduced on two of three packs, and one pack drifts.** Q1_0 and PQ2_0 reproduce the oracle's real-text quality to within 0.22% and 0.08% `[Bonsai-27B-Q1_0 + Ternary-Bonsai-27B-PQ2_0\|Q1_0 + PQ2_0\|derived\|strixhalo-unknown\|6138\|wiki.test.raw slice200\|2026-09-19]`. PTQ1_0 does not: our PPL is 14.9% higher (8.7168 vs 7.5887) `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|HIP PrismEngine vs fork\|strixhalo-unknown\|6138\|wiki.test.raw slice200\|2026-09-19]`. The protocol is identical across the three packs, so this is pack-specific engine behavior; PTQ1_0 is the pack whose GEMV dot is the approximate dp4a path, which is the leading candidate, but the mechanism is **not isolated** here and is recorded as an open question, not a finding. The 01:21 duplicate-runner incident stays visible in `tests/prism/ppl/our_engine_ppl.CONTAMINATED.txt`; the numbers above are the single clean 01:22:26Z run, and the runner now holds an flock so a second exits.
+
+
+## 7. P6 Vulkan cross-check — oracle is backend-invariant; our engine has no Vulkan forward (blocked)
+
+Operator asked whether the section-6 PPL values are a substrate artifact. Cross-checked on the SAME 12599-id stream (`fnv1a64 867c8618e1944fda`, logged unchanged in every run).
+
+**Fork oracle on its Vulkan backend** (`llama-perplexity … -ngl 99`; offload confirmed: `using device Vulkan0`, `layer N assigned to device Vulkan0`):
+
+| pack | fork CPU | fork Vulkan | delta | tag |
+|---|---:|---:|---:|---|
+| Bonsai-27B-Q1_0 | 10.9992 | **10.9992** | 0.0000 | `[Bonsai-27B-Q1_0\|Q1_0\|fork llama.cpp Vulkan -ngl 99\|strixhalo-unknown\|6138\|wiki.test.raw slice200\|2026-09-19]` |
+| Ternary-Bonsai-2-27B-PTQ1_0 | 7.5887 | **7.5887** | 0.0000 | `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|fork llama.cpp Vulkan -ngl 99\|strixhalo-unknown\|6138\|wiki.test.raw slice200\|2026-09-19]` |
+| Ternary-Bonsai-27B-PQ2_0 | 9.8897 | **9.8897** | 0.0000 | `[Ternary-Bonsai-27B-PQ2_0\|PQ2_0\|fork llama.cpp Vulkan -ngl 99\|strixhalo-unknown\|6138\|wiki.test.raw slice200\|2026-09-19]` |
+
+**Result: the oracle is backend-invariant on this stream** — Vulkan reproduces CPU to 4 decimals. So the value is a property of model + stream, not of the CPU path.
+
+**Our engine's Vulkan path: NOT PRODUCIBLE — blocker, not a declined measurement.** The only Prism Vulkan asset in the repo is the block-decoding GEMV `kernels/vulkan/dmmv_prism.comp` (+ harness `tests/test_vulkan_prism.cpp`); there is no Prism attention/GDN/RMSNorm/RoPE/64-layer forward in Vulkan. Prism references in the engine Vulkan backends: `backend_vulkan.cpp`=0, `backend_vulkan_hpp.cpp`=0, `backend_zinc.cpp`=0, `backend_ggml_vulkan.cpp`=0 (the last is a stub: `third_party/llama.cpp` not checked out, no `ggml.h`). ZINC on Prism is independently blocked (loader.zig:666 segfault on a 13.9 MB tensor) `[Prism ML Bonsai 27B\|ZINC\|blocked\|strixhalo-unknown\|-\|-\|2026-09-19]`. The GEMV path that does exist is per-element verified for all three packs (Q1_0 max_abs_err 0.000000 at M=16/K=256 and 0.000005 at M=17408/K=5120) `[3-packs\|Q1_0+PQ2_0+PTQ1_0\|Vulkan dmmv_prism.comp vs CPU ref\|strixhalo-unknown\|-\|synthetic\|2026-09-19]` — a port of the remaining ops is required for a Vulkan PPL, which is a port, not a config. Evidence file: `tests/prism/ppl/vulkan_engine_blocker.txt`.
+
+**What it settles.** (1) The PPL values are NOT a substrate artifact: oracle CPU == oracle Vulkan, and our HIP engine matches on Q1_0 (−0.22%) and PQ2_0 (−0.08%). (2) PTQ1_0's +14.9% gap is localised to our HIP PTQ1_0 path — fork Vulkan = fork CPU = 7.5887 vs our HIP 8.7168 `[Ternary-Bonsai-2-27B-PTQ1_0\|PTQ1_0\|HIP vs both oracle backends\|strixhalo-unknown\|6138\|wiki.test.raw slice200\|2026-09-19]` — so it is an engine defect/approximation, not an evaluation artifact. No throughput/quiet claim is made.

@@ -1,0 +1,5 @@
+0.00.096.053 I llama_prepare_model_devices: using device Vulkan0 (AMD Radeon 8060S Graphics (RADV STRIX_HALO)) (0000:c5:00.0) - 123463 MiB free
+0.00.465.556 I llama_prepare_model_devices: using device Vulkan0 (AMD Radeon 8060S Graphics (RADV STRIX_HALO)) (0000:c5:00.0) - 123463 MiB free
+0.01.311.321 I perplexity: P6 stream size=12599 fnv1a64=867c8618e1944fda add_bos=0 add_eos=0 n_ctx=2048
+0.01.311.372 I perplexity: calculating perplexity over 6 chunks, n_ctx=2048, batch_size=2048, n_seq=1
+0.35.470.022 I Final estimate: PPL = 10.9992 +/- 0.40694
