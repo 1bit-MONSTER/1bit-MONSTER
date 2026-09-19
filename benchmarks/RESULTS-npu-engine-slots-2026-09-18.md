@@ -46,7 +46,9 @@ simultaneous launch with a tiny prompt served 10/10). Staggered joins never hit 
   byte-identical** to the serial reference, at 71–74 tok/s per slot; 4 simultaneous long-prompt slots
   and 8 simultaneous tiny-prompt slots are also 4/4 and 8/8 identical. No device errors.
 * Validated: the engine's slot capacity exceeds flm's (26+ vs 16), so the slot-per-agent layout is
-  viable on capacity.
+  viable on capacity. The flm baseline itself was also token-validated — all 16 flm slots generated
+  identical text (15/15 vs the reference; `RESULTS-slot-ceiling-idle-2026-09-18.md`), so the 16-slot
+  ceiling is not a set of processes that merely started.
 * **Not** validated as a drop-in replacement for production: a workload that starts many long-prompt
   slots at once can still be refused (bf16 prefill-init race). Do not restore the MoE, but also do
   not call the swap production-ready until that race is fixed or the launcher staggers starts.
