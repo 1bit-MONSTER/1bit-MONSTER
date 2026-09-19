@@ -15,7 +15,12 @@ export HIP_VISIBLE_DEVICES=0
 
 echo "=== Compiling bench_gemm ==="
 # Build for THIS machine's arch (was hardcoded gfx1151).
-ARCH="$(bash "$SCRIPT_DIR/../scripts/detect-gfx-targets.sh" --cmake 2>/dev/null || echo gfx1151)"
+# Fail closed: never guess an arch. A silent gfx1151 fallback is the exact defect this removes.
+if ! ARCH="$(bash "$SCRIPT_DIR/../scripts/detect-gfx-targets.sh" --cmake)"; then
+    echo "ERROR: could not detect the GPU arch (detect-gfx-targets.sh failed)." >&2
+    echo "       Refusing to guess gfx1151 — set GFX_TARGETS to override." >&2
+    exit 1
+fi
 echo "    arch: $ARCH"
 hipcc -O3 --offload-arch="$ARCH" \
     -I/opt/rocm/include \

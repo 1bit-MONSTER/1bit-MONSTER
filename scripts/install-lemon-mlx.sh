@@ -16,7 +16,13 @@ set -euo pipefail
 PREFIX="${PREFIX:-/opt/lemon-mlx-engine}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 JOBS="${JOBS:-$(nproc)}"
-GFX="${GFX:-gfx1151}"
+# Fail closed: derive the arch from the detected GPU; do not assume gfx1151.
+if [ -z "${GFX:-}" ]; then
+    if ! GFX="$(bash "$(dirname "$0")/detect-gfx-targets.sh" --cmake)"; then
+        echo "ERROR: could not detect the GPU arch. Set GFX to override (e.g. GFX=gfx1201)." >&2
+        exit 1
+    fi
+fi
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)/integrations/lemon-mlx-engine"
 
