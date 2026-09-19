@@ -1,0 +1,73 @@
+#version 460
+// kernels/vulkan/fwht.comp — Prism folded-basis activation transform (plan P3.1).
+//
+// The Vulkan sibling of kernels/prism_hadamard_fwht.hip. Applies the normalized
+// Sylvester–Walsh Hadamard transform along a row's last axis, blockwise, exactly as
+// include/prism_codec.h::hadamard_fwht():
+//     forward : x = fwht(x * signs, block) * (1/sqrt(block))
+//     inverse : x = fwht(x, block) * (1/sqrt(block)) * signs
+// `signs` is a per-column +/-1 vector, passed here as FLOAT +1/-1 (the host expands
+// the pack's int8 payload before upload, so no 8-bit storage extension is needed).
+//
+// One workgroup per block of the row. The in-place butterfly is log2(block) stages
+// of (j, j+len) pairs with a barrier per stage; block elements staged in shared.
+// Shared footprint = 4*block bytes (16 KiB at block=4096) — under the 32 KiB floor.
+//
+// Launch contract:
+//   grid  = (width / block, 1, 1), local_size = 256
+//   SPEC_BLOCK = block (power of two, 2..4096), SPEC_MODE = 0 forward / 1 inverse
+//   push constants = { width, x_off(elements), s_off(elements), has_signs }
+//   x is read+written in place (host-visible buffer); signs is readonly.
+
+layout(local_size_x = 256) in;
+layout(constant_id = 0) const uint SPEC_BLOCK = 1024;
+layout(constant_id = 1) const uint SPEC_MODE   = 0;
+
+layout(push_constant) uniform PC {
+    uint width;       // total elements in the row (multiple of SPEC_BLOCK)
+    uint x_off;       // element offset into x
+    uint s_off;       // element offset into signs
+    uint has_signs;   // 1 = apply the signs buffer
+};
+
+layout(set = 0, binding = 0) buffer BufX    { float x[]; };
+layout(set = 0, binding = 1) readonly buffer BufSigns { float s[]; };
+
+shared float sh[4096];
+
+void main() {
+    const uint base = gl_WorkGroupID.x * SPEC_BLOCK;
+    const uint tid  = gl_LocalInvocationID.x;
+    const uint nthr = gl_WorkGroupSize.x;          // 256
+    const float scale = 1.0 / sqrt(float(SPEC_BLOCK));
+
+    // Stage the block; forward mode applies the signs on the way in.
+    for (uint i = tid; i < SPEC_BLOCK; i += nthr) {
+        float v = x[x_off + base + i];
+        if (SPEC_MODE == 0u && has_signs == 1u) v *= s[s_off + base + i];
+        sh[i] = v;
+    }
+    barrier();
+
+    // In-place butterfly: for each stage len, low element j of every (j, j+len)
+    // pair gets a+b, the high element a-b.
+    for (uint len = 1u; len < SPEC_BLOCK; len <<= 1u) {
+        const uint stride = len << 1u;
+        for (uint j = tid; j < SPEC_BLOCK; j += nthr) {
+            if ((j % stride) < len) {
+                float a = sh[j];
+                float b = sh[j + len];
+                sh[j] = a + b;
+                sh[j + len] = a - b;
+            }
+        }
+        barrier();
+    }
+
+    // Normalize; inverse mode applies the signs on the way out.
+    for (uint i = tid; i < SPEC_BLOCK; i += nthr) {
+        float v = sh[i] * scale;
+        if (SPEC_MODE == 1u && has_signs == 1u) v *= s[s_off + base + i];
+        x[x_off + base + i] = v;
+    }
+}

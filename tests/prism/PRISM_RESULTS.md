@@ -351,6 +351,27 @@ a CPU reference, which is the shape of gate that the end-to-end fork oracle turn
 oracle matched 5/5 while a kernel's norm output was wrong by up to 0.42). A fallback column that is slow but
 elementwise-verified is a better asset than a fast column whose only evidence is a short-prompt argmax.
 
+## 4d-ter. FOLDED-pack GEMV unlocked (2026-09-19) — the fail-closed guard is lifted, on the activation side
+
+The GEMV-only harness above deliberately refuses a folded pack (`__onebp_ext_prism_transform`): it never applies
+the Hadamard activation rotation, so serving the folded weights as plain would be plausible garbage. That blocker is
+now cleared by adding the missing *activation-side* transform as a Vulkan shader and composing it with the existing
+GEMV — `kernels/vulkan/fwht.comp` (forward/inverse normalized Sylvester–Walsh, matching `include/prism_codec.h::hadamard_fwht`)
+then `dmmv_prism.comp`. `tests/test_vulkan_prism_folded.cpp` loads a real folded pack, parses the manifest
+(block=1024, signs, widths), and runs the actual `output.weight` PTQ1_0 tensor (248320×5120) through
+`fwht.comp → dmmv_prism.comp` against the CPU oracle (dequant + `hadamard_forward` + dot).
+
+| measurement | value | tag |
+|---|---|---|
+| fwht.comp forward vs CPU oracle | K=5120 max_abs_err 0.000000 (bit-exact) | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| Vulkan fwht.comp vs CPU ref \| strixhalo-unknown \| - \| synthetic x \| 2026-09-19]` |
+| folded GEMV (fwht + dmmv) vs CPU oracle | M=1024 K=5120 max_abs_err 0.000002, max_rel 1.05e-03 — PASSED | `[Ternary-Bonsai-2-27B-PTQ1_0 \| PTQ1_0 \| Vulkan fwht.comp+dmmv_prism.comp vs CPU ref \| strixhalo-unknown \| - \| real output.weight bytes \| 2026-09-19]` |
+
+The GEMV shader needed **no change** — weight packing is basis-agnostic, as its header comment already said; the
+unlock is the FWHT shader feeding it a rotated activation. The existing fail-closed guard in
+`test_vulkan_prism.cpp` is left intact (it is still correct for a GEMV-only harness); the folded path is owned by the
+new test. This is a GEMV-level unlock, not a full Vulkan forward: attention/GDN/RMSNorm/RoPE remain a port, not a
+configuration.
+
 ## 4f. Pattern-matched GEMV bounds (16:46) - the Q1_0 GEMV is ALU-bound for cache-resident shapes
 
 **Method, and it is the rule applied correctly:** this is a kernel-versus-kernel comparison, so in-situ would have
