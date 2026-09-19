@@ -18,7 +18,7 @@
   "counts": {
     "detected": 14,
     "UNSUPPORTED": 4,
-    "PASS": 11
+    "PASS": 14
   },
   "rows": [
     {
@@ -144,17 +144,32 @@
     {
       "surface": "cudnn",
       "result": "PASS",
-      "detail": "conv2d fwd 1x2x8x8 k3x3: all-ones PASS (layout-independent); random-case rel=8.2e-01 DISAGREES -> open reference/ordering discrepancy in this probe, NOT a demonstrated backend defect (algo=3 of 1)"
+      "detail": "conv2d fwd 1x2x8x8 k3x3 vs direct CPU conv rel=9.4e-08 + all-ones PASS (MIOpen algo=3, 1 algos)"
     },
     {
       "surface": "int8_dot4",
-      "result": "UNSUPPORTED",
-      "detail": "toolchain rejects sudot4 builtin with runtime operands: /home/bcloud/projects/1bit-MONSTER/tools/cuda-amd-census/probe/p_dot4.cpp:36:29: error: argument to '__builtin_amdgcn_sudot4' must be a constant integer"
+      "result": "PASS",
+      "detail": "engine-form sudot4(true,a,true,b,acc,false): 256/256 lanes = 70 (matches okf silicon record + CPU ref)"
     },
     {
       "surface": "cusolver_diag",
       "result": "PASS",
       "detail": "arch=gfx1201 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 "
+    },
+    {
+      "surface": "cudnn_ref",
+      "result": "PASS",
+      "detail": "algo=3 "
+    },
+    {
+      "surface": "workload",
+      "result": "PASS",
+      "detail": "trained a 2-layer MLP (8->32->1) end-to-end on AMD Radeon RX 9070 XT (gfx1201): 200 SGD steps "
+    },
+    {
+      "surface": "torch_train",
+      "result": "UNSUPPORTED",
+      "detail": "no torch in python3's environment (build one with rocm[libraries,devel,device-<arch>] + torch)"
     },
     {
       "surface": "torch",

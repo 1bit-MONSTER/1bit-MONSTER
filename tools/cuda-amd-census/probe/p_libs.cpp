@@ -259,18 +259,30 @@ static int do_dnn() {
     std::vector<float> x(N * C * H * W), w(K * C * R * S), y(N * K * outH * outW, 0.f);
     fill_det((int)x.size(), x.data(), 13);
     fill_det((int)w.size(), w.data(), 17);
-    // direct CPU conv reference (valid, stride 1, no pad)
+    // Direct CPU conv reference (valid, stride 1, no pad).
+    //
+    // BUG FIXED 2026-09-19: the accumulator must span ALL input channels. The
+    // original loop nested `ci` OUTSIDE the store and assigned
+    //     yref[...] = (float)acc;
+    // per channel, so each channel OVERWROTE the previous one and the reference
+    // returned only the LAST channel's contribution. That single = instead of
+    // += is what made the census report MIOpen conv2d as disagreeing on random
+    // data (rel=0.62) while the layout-independent all-ones case passed — the
+    // all-ones case compares against the analytic C*R*S and never touches this
+    // reference, so it could not see the bug. An independent numpy recomputation
+    // (probe/p_dnn_ref.py) showed MIOpen matching to rel=2.3e-07 and this
+    // reference matching "last channel only" to rel=2.1e-07.
     std::vector<float> yref(N * K * outH * outW, 0.f);
     for (int ko = 0; ko < K; ++ko)
-      for (int ci = 0; ci < C; ++ci)
-        for (int oh = 0; oh < outH; ++oh)
-          for (int ow = 0; ow < outW; ++ow) {
-            double acc = 0;
+      for (int oh = 0; oh < outH; ++oh)
+        for (int ow = 0; ow < outW; ++ow) {
+          double acc = 0;
+          for (int ci = 0; ci < C; ++ci)
             for (int r = 0; r < R; ++r) for (int s = 0; s < S; ++s)
               acc += (double)w[((ko * C + ci) * R + r) * S + s] *
                      (double)x[((0 * C + ci) * H + (oh + r)) * W + (ow + s)];
-            yref[((0 * K + ko) * outH + oh) * outW + ow] = (float)acc;
-          }
+          yref[((0 * K + ko) * outH + oh) * outW + ow] = (float)acc;
+        }
 
     miopenTensorDescriptor_t xD, wD, yD;
     miopenCreateTensorDescriptor(&xD); miopenCreateTensorDescriptor(&wD); miopenCreateTensorDescriptor(&yD);

@@ -22,8 +22,11 @@ cublas	PASS	sgemm 256x192x288 max_abs=1.72e-05 tol=4.51e-03 (rocBLAS)
 cufft	PASS	c2c fwd N=64 vs naive DFT max_abs=3.81e-06 rel=1.09e-07 (rocFFT)
 cusparse	PASS	csr spmv 3x3 nnz=5 exact (rocSPARSE)
 cusolver	PASS	getrf 4x4 LU det=209.0000 == cpu det=209.0000 rel=0.0e+00 (hipSOLVER)
-cudnn	PASS	conv2d fwd 1x2x8x8 k3x3: all-ones PASS (layout-independent); random-case rel=8.2e-01 DISAGREES -> open reference/ordering discrepancy in this probe, NOT a demonstrated backend defect (algo=3 of 1)
-int8_dot4	UNSUPPORTED	toolchain rejects sudot4 builtin with runtime operands: /home/bcloud/projects/1bit-MONSTER/tools/cuda-amd-census/probe/p_dot4.cpp:36:29: error: argument to '__builtin_amdgcn_sudot4' must be a constant integer
+cudnn	PASS	conv2d fwd 1x2x8x8 k3x3 vs direct CPU conv rel=9.4e-08 + all-ones PASS (MIOpen algo=3, 1 algos)
+int8_dot4	PASS	engine-form sudot4(true,a,true,b,acc,false): 256/256 lanes = 70 (matches okf silicon record + CPU ref)
 cusolver_diag	PASS	arch=gfx1201 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 
+cudnn_ref	PASS	algo=3 
+workload	PASS	trained a 2-layer MLP (8->32->1) end-to-end on AMD Radeon RX 9070 XT (gfx1201): 200 SGD steps 
+torch_train	UNSUPPORTED	no torch in python3's environment (build one with rocm[libraries,devel,device-<arch>] + torch)
 torch	UNSUPPORTED	import torch failed: ModuleNotFoundError: No module named 'torch'
 vulkan_compute	PASS	SPIR-V dispatch host[0]=0.500 exact witness=1.0 device="AMD Radeon RX 9070 XT (RADV GFX1201) + AMD Ryzen 7 9800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO) + llvmpipe (LLVM 21.1.8, 256 bits)" (RADV compute)

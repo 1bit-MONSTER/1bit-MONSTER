@@ -1,29 +1,35 @@
 // p_dot4.cpp — int8 dot4 (sudot4) reachability probe.
 //
-// This lives in its own translation unit on purpose. On the TheRock toolchain
-// (amdclang 23 / HIP 7.16) every variable-operand form of the 6-arg sudot4
-// builtin is rejected:
+// RESOLVED 2026-09-19 (goal mu7vzirt-7k1q97). An earlier revision of this probe
+// called the builtin as
 //
-//   error: argument to '__builtin_amdgcn_sudot4' must be a constant integer
+//     __builtin_amdgcn_sudot4(a[i], b[i], 0, 0, 0, 0)      // WRONG
 //
-// and the 3-arg form fails with "too few arguments to function call, expected 6".
-// A compile failure here is therefore the *evidence* for this row, not a harness
-// bug: the row means "this toolchain cannot emit an int8 dot4 with runtime
-// operands via the documented builtin". The driver records it accordingly.
+// and clang answered "argument to '__builtin_amdgcn_sudot4' must be a constant
+// integer", which was recorded as "the toolchain cannot emit int8 dot4 with
+// runtime operands" — apparently contradicting okf's
+// references/kernel-codegen-parity-gfx1151-gfx1201, which records sudot4 as
+// silicon-verified on both parts and says the engine ships sudot4 kernels.
 //
-// Cross-check note: okf
-// systems/1bit-monster/references/kernel-codegen-parity-gfx1151-gfx1201.md
-// records sudot4 as silicon-verified on BOTH gfx1151 and gfx1201 (value 70) and
-// states the engine ships sudot4-based kernels. That claims reachability through
-// the toolchain, so this row is a genuine open discrepancy between the recorded
-// silicon evidence and the builtin's usability on the pinned toolchain. Resolve
-// by finding the actual engine invocation (inline asm vs builtin) before either
-// claim is changed.
+// The engine was right and this probe was wrong. The real signature interleaves
+// THREE constant bool flags with THREE int operands:
+//
+//   __builtin_amdgcn_sudot4(bool, int, bool, int, int, bool)
+//                          ^const ^var ^const ^var ^acc  ^const
+//
+// as used verbatim in kernels/ternary_gemv_sherry.hip:183,
+// kernels/zaya_moe_ternary_gemv.hip:203,345 and
+// kernels/ternary_gemv_phase5_{dot4,halo}.hip. Putting a VARIABLE in a
+// constant-flag position is a hard compile error — which is all the earlier
+// "unusable builtin" finding ever was. Verified on hardware: with the engine's
+// argument order the builtin compiles AND runs, returning 70 for
+// (1,2,3,4).(5,6,7,8), matching the value okf records.
 //
 // Test vector: int8 lanes (1,2,3,4) . (5,6,7,8) = 5+12+21+32 = 70 (all-positive
 // so the signed/unsigned interpretation cannot change the answer).
 #include "common.hpp"
 #include <hip/hip_runtime.h>
+#include <vector>
 
 #define CK(x) do { hipError_t _e = (x); if (_e != hipSuccess) \
     return r_error(fmt("%s -> %s (%d)", #x, hipGetErrorString(_e), (int)_e)); } while (0)
@@ -32,9 +38,11 @@
 int main() { g_surface = "int8_dot4"; return r_unsupported("not an AMD target"); }
 #else
 
+// The engine's exact call form. The three bools are compile-time constants.
 __global__ void k_sudot4(const int *a, const int *b, int *out) {
-    out[threadIdx.x] = (int)__builtin_amdgcn_sudot4(
-        a[threadIdx.x], b[threadIdx.x], 0, 0, 0, 0);
+    int acc = 0;
+    out[threadIdx.x] =
+        __builtin_amdgcn_sudot4(true, a[threadIdx.x], true, b[threadIdx.x], acc, false);
 }
 
 int main() {
@@ -43,32 +51,32 @@ int main() {
     if (ndev == 0) return r_unsupported("no device");
 
     const int T = 256, EXPECT = 70;
-    int ia[T], ib[T], iout[T];
+    std::vector<int> ia(T), ib(T), iout(T, -1);
     for (int i = 0; i < T; ++i) {
         ia[i] = (1 & 0xff) | ((2 & 0xff) << 8) | ((3 & 0xff) << 16) | ((4 & 0xff) << 24);
         ib[i] = (5 & 0xff) | ((6 & 0xff) << 8) | ((7 & 0xff) << 16) | ((8 & 0xff) << 24);
-        iout[i] = -1;
     }
     int *da, *db, *dout;
-    CK(hipMalloc((void **)&da, sizeof(ia)));
-    CK(hipMalloc((void **)&db, sizeof(ib)));
-    CK(hipMalloc((void **)&dout, sizeof(iout)));
-    CK(hipMemcpy(da, ia, sizeof(ia), hipMemcpyHostToDevice));
-    CK(hipMemcpy(db, ib, sizeof(ib), hipMemcpyHostToDevice));
-    CK(hipMemcpy(dout, iout, sizeof(iout), hipMemcpyHostToDevice));
+    CK(hipMalloc((void **)&da, ia.size() * 4));
+    CK(hipMalloc((void **)&db, ib.size() * 4));
+    CK(hipMalloc((void **)&dout, iout.size() * 4));
+    CK(hipMemcpy(da, ia.data(), ia.size() * 4, hipMemcpyHostToDevice));
+    CK(hipMemcpy(db, ib.data(), ib.size() * 4, hipMemcpyHostToDevice));
+    CK(hipMemcpy(dout, iout.data(), iout.size() * 4, hipMemcpyHostToDevice));
 
     k_sudot4<<<1, T>>>(da, db, dout);
     hipError_t se = hipDeviceSynchronize();
     if (se != hipSuccess) return r_unsupported(fmt("sudot4 launch refused: %s", hipGetErrorString(se)));
-    CK(hipMemcpy(iout, dout, sizeof(iout), hipMemcpyDeviceToHost));
+    CK(hipMemcpy(iout.data(), dout, iout.size() * 4, hipMemcpyDeviceToHost));
 
     bool allz = true;
     for (int i = 0; i < T; ++i) if (iout[i] != 0) allz = false;
-    // The silent-zero class the okf meta-lesson warns about: a kernel that runs,
+    // The silent-zero class okf's meta-lesson warns about: a kernel that runs,
     // exits 0, and writes zeros because the operand form was invalid.
     if (allz) return r_incorrect("sudot4 executed but returned all-zero (silent-zero class)");
     for (int i = 0; i < T; ++i)
         if (iout[i] != EXPECT) return r_incorrect(fmt("sudot4[%d]=%d expected %d", i, iout[i], EXPECT));
-    return r_pass(fmt("sudot4 builtin 6-arg form, %d/256 lanes = %d (matches okf silicon record)", T, EXPECT));
+    return r_pass(fmt("engine-form sudot4(true,a,true,b,acc,false): %d/%d lanes = %d "
+                      "(matches okf silicon record + CPU ref)", T, T, EXPECT));
 }
 #endif

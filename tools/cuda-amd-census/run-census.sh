@@ -207,6 +207,19 @@ CFLAGS_HIP=(); [[ -n $ROCM ]] && CFLAGS_HIP=(-I"$ROCM/include" -isystem "$ROCM/i
 LIBS_CORE=(-lhiprtc)
 LIBS_HIP=(-lrocblas -lrocfft -lrocsparse -lhipsolver -lMIOpen)
 EXPECT_GFX="${EXPECT_GFX:-}"
+# Build for the machine's expected arch. Without this hipcc targets EVERY native
+# GPU (ryzen: gfx1201 AND the old gfx1036 iGPU), and an arch-gated builtin then
+# fails the whole build: __builtin_amdgcn_sudot4 needs dot8-insts, which gfx1036
+# lacks. That is exactly why int8_dot4 reported UNSUPPORTED here while a direct
+# --offload-arch=gfx1201 compile of the same file succeeded. Pick the arch the way
+# scripts/detect-gfx-targets.sh does for the installer.
+ARCHARG=()
+if [[ -n ${EXPECT_GFX:-} ]]; then
+    ARCHARG=(--offload-arch="$EXPECT_GFX")
+elif [[ -x $HERE/../../scripts/detect-gfx-targets.sh ]]; then
+    ARCHARG=("$(bash "$HERE/../../scripts/detect-gfx-targets.sh" --cmake | sed 's/;/\n/g' | sed 's/^/--offload-arch=/' | tr '\n' ' ')")
+    read -r -a ARCHARG <<< "${ARCHARG[0]}"
+fi
 BUILT_CORE=""; BUILT_LIBS=""
 
 # ---- two-stage timeout -------------------------------------------------------
@@ -257,7 +270,7 @@ if [[ -z $HIPCC ]]; then
     done
 else
     log "[census] compiling HIP probes with $HIPCC"
-    if "$HIPCC" -O2 -std=c++17 ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_core.cpp" -o "$WORK/p_core" ${LIBS_CORE[@]+"${LIBS_CORE[@]}"} 2>"$WORK/build_core.err"; then
+    if "$HIPCC" -O2 -std=c++17 ${ARCHARG[@]+"${ARCHARG[@]}"} ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_core.cpp" -o "$WORK/p_core" ${LIBS_CORE[@]+"${LIBS_CORE[@]}"} 2>"$WORK/build_core.err"; then
         BUILT_CORE="$WORK/p_core"
         run_probe runtime  "$WORK/p_core" runtime "$EXPECT_GFX"
         run_probe numerics "$WORK/p_core" numerics
@@ -271,7 +284,7 @@ else
             row "$s" UNSUPPORTED "p_core build failed: $(grep -m1 error "$WORK/build_core.err" | head -c 200)"
         done
     fi
-    if "$HIPCC" -O2 -std=c++17 ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_libs.cpp" -o "$WORK/p_libs" ${LIBS_HIP[@]+"${LIBS_HIP[@]}"} 2>"$WORK/build_libs.err"; then
+    if "$HIPCC" -O2 -std=c++17 ${ARCHARG[@]+"${ARCHARG[@]}"} ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_libs.cpp" -o "$WORK/p_libs" ${LIBS_HIP[@]+"${LIBS_HIP[@]}"} 2>"$WORK/build_libs.err"; then
         BUILT_LIBS="$WORK/p_libs"
         run_probe cublas   "$WORK/p_libs" blas
         run_probe cufft    "$WORK/p_libs" fft
@@ -284,7 +297,7 @@ else
         done
     fi
     # int8 dot4: a build failure IS the evidence (see probe/p_dot4.cpp)
-    if "$HIPCC" -O2 -std=c++17 ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_dot4.cpp" -o "$WORK/p_dot4" 2>"$WORK/build_dot4.err"; then
+    if "$HIPCC" -O2 -std=c++17 ${ARCHARG[@]+"${ARCHARG[@]}"} ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_dot4.cpp" -o "$WORK/p_dot4" 2>"$WORK/build_dot4.err"; then
         run_probe int8_dot4 "$WORK/p_dot4"
         BUILT_DOT4="$WORK/p_dot4"
     else
@@ -292,10 +305,44 @@ else
     fi
     # solver disambiguation: distinguishes a silent no-op from a layout/reference
     # artefact, so a cusolver INCORRECT is never published on inference alone.
-    if "$HIPCC" -O2 -std=c++17 ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_solver_diag.cpp" -o "$WORK/p_solver_diag" -lhipsolver 2>"$WORK/build_soldiag.err"; then
+    if "$HIPCC" -O2 -std=c++17 ${ARCHARG[@]+"${ARCHARG[@]}"} ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_solver_diag.cpp" -o "$WORK/p_solver_diag" -lhipsolver 2>"$WORK/build_soldiag.err"; then
         run_probe cusolver_diag "$WORK/p_solver_diag"
     else
         row "cusolver_diag" UNSUPPORTED "build failed: $(grep -m1 error "$WORK/build_soldiag.err" | head -c 180)"
+    fi
+
+    # conv2d attribute by an INDEPENDENT reference. The `cudnn` row above compares
+    # MIOpen against a hand-rolled C++ reference; when those disagree that cannot
+    # tell you which is wrong. This dumps both plus the inputs and recomputes the
+    # convolution with numpy, then reports the attribution. (It is what caught the
+    # census's own reference missing the input-channel accumulation.)
+    if "$HIPCC" -O2 -std=c++17 ${ARCHARG[@]+"${ARCHARG[@]}"} ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_dnn_ref.cpp" -o "$WORK/p_dnn_ref" -lMIOpen 2>"$WORK/build_dnnref.err"; then
+        if timeout "$TL" env LD_LIBRARY_PATH="${LDPATH:-/usr/lib/x86_64-linux-gnu}" "$WORK/p_dnn_ref" "$WORK/cudnn_ref.json" >"$WORK/dnn_ref_dump.log" 2>&1; then
+            lf="$WORK/dnn_ref.log"
+            timeout "$TL" "${PYBIN:-python3}" "$PROBE/p_dnn_ref.py" "$WORK/cudnn_ref.json" >"$lf" 2>&1
+            classify cudnn_ref "$lf" $?
+        else
+            row cudnn_ref ERROR "state dump failed: $(tail -c 160 "$WORK/dnn_ref_dump.log" | tr '\n' ' ')"
+        fi
+    else
+        row cudnn_ref UNSUPPORTED "build failed: $(grep -m1 error "$WORK/build_dnnref.err" | head -c 160)"
+    fi
+
+    # THE payoff: a real end-to-end workload — the integration-validated rung the
+    # per-library rows never reached. Trains an MLP on the GPU, checks its
+    # gradients against an independent CPU reference, and requires the loss to fall.
+    if "$HIPCC" -O2 -std=c++17 ${ARCHARG[@]+"${ARCHARG[@]}"} ${CFLAGS_HIP[@]+"${CFLAGS_HIP[@]}"} "$PROBE/p_workload.cpp" -o "$WORK/p_workload" -lrocblas 2>"$WORK/build_workload.err"; then
+        run_probe workload "$WORK/p_workload"
+    else
+        row workload UNSUPPORTED "build failed: $(grep -m1 error "$WORK/build_workload.err" | head -c 160)"
+    fi
+
+    # torch training run — only meaningful when a ROCm torch build is installed for
+    # the interpreter PYBIN points at (the `torch` row above checks the same one).
+    if "${PYBIN:-python3}" -c 'import torch' 2>/dev/null; then
+        run_probe torch_train "${PYBIN:-python3}" "$PROBE/p_torch_train.py"
+    else
+        row torch_train UNSUPPORTED "no torch in ${PYBIN:-python3}'s environment (build one with rocm[libraries,devel,device-<arch>] + torch)"
     fi
 fi
 
