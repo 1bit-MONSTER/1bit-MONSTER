@@ -1,0 +1,13 @@
+== engine slot identity: N=8 tag=q06 ng=200 launch=simul prompt=/tmp/tiny_ids.txt ==
+serial reference:  10.2 ms/tok (98 tok/s)  Prefill: 95ms
+reference determinism: IDENTICAL across two serial runs
+  slot 1: tokens=IDENTICAL  92.1 ms/tok (11 tok/s)  Prefill: 174ms
+  slot 2: tokens=IDENTICAL  94.3 ms/tok (11 tok/s)  Prefill: 687ms
+  slot 3: tokens=IDENTICAL  94.4 ms/tok (11 tok/s)  Prefill: 689ms
+  slot 4: tokens=IDENTICAL  94.3 ms/tok (11 tok/s)  Prefill: 687ms
+  slot 5: tokens=IDENTICAL  94.4 ms/tok (11 tok/s)  Prefill: 695ms
+  slot 6: tokens=IDENTICAL  94.7 ms/tok (11 tok/s)  Prefill: 607ms
+  slot 7: tokens=IDENTICAL  92.7 ms/tok (11 tok/s)  Prefill: 186ms
+  slot 8: tokens=IDENTICAL  94.5 ms/tok (11 tok/s)  Prefill: 664ms
+== identical=8 differ=0 refused=0 of N=8  |  aggregate decode=88 tok/s ==
+== device errors ==
