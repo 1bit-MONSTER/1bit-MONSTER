@@ -40,8 +40,8 @@ sudo apt install -y cmake ninja-build build-essential git
 
 ```bash
 # Install TheRock HIP SDK — the device package is chosen from YOUR GPU's arch
-pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-  "rocm[libraries,devel]"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T"; done
+pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
+  "rocm[libraries,devel]==10.1.0a20260910"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T==10.1.0a20260910"; done
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 
 # Verify

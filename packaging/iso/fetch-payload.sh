@@ -15,7 +15,9 @@ mkdir -p "$PAYLOAD"
 export TMPDIR="${PAYLOAD}/.tmp"
 mkdir -p "$TMPDIR"
 
-THEROCK_VER="10.1.0a20260822"
+# Pinned to the version-matched set verified on gfx1201 (PASS 14 / ERROR 0 /
+# INCORRECT 0). Do NOT float: a newer nightly is a combination never tested here.
+THEROCK_VER="10.1.0a20260910"
 # Where to look for a local TheRock pip-SDK install when the exact pinned
 # version is no longer in the nightlies index. Default: the first candidate
 # that exists — the reference box's /opt/rocm-therock, else ~/.cache/pip/therock
@@ -65,7 +67,7 @@ vendor_therock() {
 
   tmp_pip="$(mktemp -d)"
   if TMPDIR="${PAYLOAD}/.pip-tmp" pip download "${pip_pkg}==${THEROCK_VER}" \
-      --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+      --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
       --no-deps -d "$tmp_pip" > /tmp/therock-pip.log 2>&1; then
     whl="$(ls "${tmp_pip}"/*.whl | head -1)"
     tmp_unzip="$(mktemp -d)"
@@ -153,6 +155,15 @@ vendor_therock "rocm-sdk-libraries" "_rocm_sdk_libraries" "therock-${THEROCK_VER
 
 echo "-- TheRock core runtime ${THEROCK_VER}: rocm-sdk-core --"
 vendor_therock "rocm-sdk-core" "_rocm_sdk_core" "therock-${THEROCK_VER}-core.tar.gz"
+
+echo "-- TheRock device kernels ${THEROCK_VER}: gfx1201 + gfx1151 --"
+# The device wheel is REQUIRED. Without it rocBLAS aborts at runtime with an
+# empty Tensile list — the exact failure this work removes. Both arches the ISO
+# claims to support are vendored, pinned to the same version as the base so the
+# set stays matched.
+for _t in gfx1201 gfx1151; do
+  vendor_therock "rocm-sdk-device-${_t}" "_rocm_sdk_device_${_t}" "therock-${THEROCK_VER}-device-${_t}.tar.gz"
+done
 
 echo ""
 echo "Payload ready in ${PAYLOAD}:"

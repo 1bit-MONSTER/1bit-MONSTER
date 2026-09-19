@@ -110,8 +110,8 @@ See [docs/guides/building.md](docs/guides/building.md) for full prerequisites an
 
 **TheRock 7.15.0a installation (pip):**
 ```bash
-pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-  "rocm[libraries,devel]"   # then rocm-sdk-device-<target> per GPU (scripts/detect-gfx-targets.sh)
+pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
+  "rocm[libraries,devel]==10.1.0a20260910"   # then rocm-sdk-device-<target>==10.1.0a20260910 per GPU (scripts/detect-gfx-targets.sh)
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 ```
 

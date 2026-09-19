@@ -1,3 +1,8 @@
+> **Superseded (2026-09-19).** The index below was later replaced: `whl-multi-arch` tops out at
+> `10.1.0a20260822`, which leaves cuSPARSE `UNSUPPORTED` and cuSOLVER `INCORRECT` on gfx1201, so the
+> live script `packaging/iso/fetch-payload.sh` now uses `whl-next`, pins `10.1.0a20260910`, and
+> vendors a device wheel per arch. Kept for the record; do not follow the index below.
+
 # 1bit.MONSTER Appliance ISO Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
@@ -168,7 +173,7 @@ test -f "${PAYLOAD}/libvulkan1_${VULKAN1_VER}_amd64.deb" || {
 echo "-- TheRock gfx1151 ${THEROCK_VER}: attempting exact-version pip download --"
 TMP_PIP="$(mktemp -d)"
 if pip download "rocm-sdk-devel==${THEROCK_VER}" \
-    --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+    --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
     --no-deps -d "$TMP_PIP" > /tmp/therock-pip.log 2>&1; then
   tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$TMP_PIP" .
   echo "   fetched from nightlies index"

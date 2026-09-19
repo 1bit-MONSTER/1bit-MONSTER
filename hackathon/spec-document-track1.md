@@ -143,7 +143,8 @@
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-monster
 # Install TheRock 7.15.0a
-pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ "rocm[libraries,devel,device-gfx1151]"
+pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
+  "rocm[libraries,devel]==10.1.0a20260910"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T==10.1.0a20260910"; done
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 # Build
 cmake -B build -DCMAKE_HIP_ARCHITECTURES=gfx1151

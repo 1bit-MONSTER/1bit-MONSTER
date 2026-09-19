@@ -396,8 +396,8 @@
 
         <h3>TheRock 7.15.0a</h3>
         <p>The Rock is the NPU-and-GPU toolchain. Install the nightly pip wheel that ships the gfx1151 code objects.</p>
-        <pre class="code"><code>$ pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-    "rocm[libraries,devel]"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T"; done
+        <pre class="code"><code>$ pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
+    "rocm[libraries,devel]==10.1.0a20260910"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T"; done
 $ export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"</code></pre>
         <p>CMake auto-discovers TheRock: <code>/opt/rocm-therock</code> → <code>$THEROCK_PIP_ROOT</code> → <code>~/.cache/lemonade/bin/therock</code>. <strong>Never</strong> point <code>CMAKE_PREFIX_PATH</code> at system ROCm (<code>/opt/rocm</code>). Always set the target architecture.</p>
         <pre class="code"><code>$ export CMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"</code></pre>

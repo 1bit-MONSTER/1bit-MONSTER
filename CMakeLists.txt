@@ -67,7 +67,7 @@ if(NOT _RC_LLVM_BIN)
     else()
         message(FATAL_ERROR
             "rocm-cpp needs an AMD clang: set THEROCK_PIP_ROOT env var, install the "
-            "arch-independent parts with 'pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \"rocm[libraries,devel]\"', "
+            "arch-independent parts with 'pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \"rocm[libraries,devel]==10.1.0a20260910\"', "
             "then add the device package for THIS machine's GPU — 'bash scripts/detect-gfx-targets.sh' "
             "prints the targets, install each as 'rocm-sdk-device-<target>' (never hardcode gfx1151), "
             "or install system ROCm at /opt/rocm.")
