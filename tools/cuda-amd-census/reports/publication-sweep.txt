@@ -1,0 +1,30 @@
+sweep-publication: repo=/home/bcloud/projects/1bit-MONSTER
+                   okf =/home/bcloud/okf
+------------------------------------------------------------------------------
+PATTERN                                                           STALE     OK
+superseded TheRock version (current matched set is 10.1.0a202609      0     90
+superseded HIP version (ryzen is now 7.16.26362)                      0     17
+superseded amdclang version (ryzen is now 24.0.0git)                  0     17
+superseded ROCm 7.15 label (runtime is now 7.16)                      0     10
+old TheRock index (serves only up to 10.1.0a20260822)                 0      8
+unpinned pip install of rocm[libraries,devel]                         0      1
+unpinned pip install of rocm[devel,libraries]                         0      0
+hardcoded gfx1151 HIP arch                                            0     13
+hardcoded gfx1151 offload arch                                        0     12
+silent arch fallback (fail-open)                                      0      0
+arch default that assumes gfx1151                                     0      0
+load-bearing HSA override (forces a reported arch)                    0      0
+exported HSA override                                                 0      4
+superseded census count (now PASS 14)                                 0      0
+superseded strixhalo count (now 17/4/18)                              0      0
+withdrawn 'gfx1151 workload not run' cell                             0      1
+superseded 'sudot4 is an open discrepancy' claim                      0      0
+copied ryzen payoff value onto gfx1151                                0      0
+------------------------------------------------------------------------------
+VERSION-LIKE TOKENS discovered (each must be current or labelled):
+  unlabelled version tokens: 0 (must be 0)
+  unlabelled census tokens: 0 (must be 0)
+  unlabelled arch tokens: 0 (must be 0)
+  manifest: reports/publication-sweep.json (173 hits, each with its justifying rule)
+------------------------------------------------------------------------------
+sweep-publication: STALE hits = 0, unlabelled versions = 0 (both must be 0)
