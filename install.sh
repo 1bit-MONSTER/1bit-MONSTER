@@ -7,6 +7,7 @@ warn() { echo -e "${YELLOW}[1bit]${NC} $*"; }
 REPO_URL="https://github.com/1bit-MONSTER/1bit-MONSTER.git"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/1bit}"
 SKIP_ROCM=false; WITH_JARVIS=false
+GFX_TARGETS=""          # filled in by install_deps(); the detected GPU arch(es)
 for arg in "$@"; do
     case "$arg" in
         --skip-rocm) SKIP_ROCM=true ;;
@@ -78,17 +79,47 @@ install_deps() {
     fi
     command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
     
-    # TheRock 7.15.0a — pip-installed HIP SDK for gfx1151
+    # TheRock pip-installed HIP SDK. The device package and the HIP arch are
+    # DERIVED FROM THE GPU ACTUALLY PRESENT. Hardcoding them is what left a
+    # gfx1201 box running the gfx1151 device build, where rocBLAS aborts with an
+    # empty Tensile list. Detection lives in scripts/detect-gfx-targets.sh and
+    # fails loudly rather than guessing.
+    THEROCK_INDEX="${THEROCK_INDEX:-https://rocm.nightlies.amd.com/whl-multi-arch/}"
     if ! command -v amdclang++ &>/dev/null; then
-        log "Installing TheRock 7.15.0a SDK..."
-        python3 -m pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-            "rocm[libraries,devel,device-gfx1151]" 2>/dev/null || {
+        # Phase 1: the arch-independent parts (they provide rocminfo, which is
+        # what phase 2 detects with — so this order is required, not cosmetic).
+        log "Installing TheRock SDK (arch-independent parts)..."
+        python3 -m pip install --index-url "$THEROCK_INDEX" "rocm[libraries,devel]" 2>/dev/null || {
             warn "TheRock pip install failed. Set THEROCK_PIP_ROOT manually."
             warn "See: https://github.com/ROCm/TheRock"
         }
         export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
     else
         log "amdclang++ found — TheRock SDK already installed"
+    fi
+
+    # Phase 2: detect this machine's GPU(s) and install the matching device
+    # wheel(s). Deliberately fail closed — a wrong device build installs cleanly
+    # and only fails later at runtime, which is strictly worse than stopping here.
+    if [ -n "${GFX_TARGETS_OVERRIDE:-}" ]; then
+        GFX_TARGETS="$GFX_TARGETS_OVERRIDE"
+        warn "Using GFX_TARGETS_OVERRIDE=$GFX_TARGETS (detection skipped)"
+    elif ! GFX_TARGETS="$(bash "$DIR/scripts/detect-gfx-targets.sh")"; then
+        warn "Could not determine this machine's GPU gfx target. Refusing to guess:"
+        warn "a wrong device build installs without complaint and then fails at"
+        warn "runtime. Fix the cause above, or set GFX_TARGETS_OVERRIDE='gfxNNNN'"
+        warn "to override deliberately."
+        exit 1
+    fi
+    log "Detected GPU target(s): $(echo "$GFX_TARGETS" | tr '\n' ' ')"
+    for t in $GFX_TARGETS; do
+        python3 -m pip install --index-url "$THEROCK_INDEX" "rocm-sdk-device-$t" 2>/dev/null \
+            || warn "device package rocm-sdk-device-$t not available — continuing"
+    done
+    # Link the installed device wheels into the devel tree (rocm-sdk init only
+    # links what is already installed; it does not choose the arch for you).
+    if [ -x "$THEROCK_PIP_ROOT/bin/rocm-sdk" ]; then
+        "$THEROCK_PIP_ROOT/bin/rocm-sdk" init --quiet || warn "rocm-sdk init failed (device kernels may be unlinked)"
     fi
 	command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
 }
@@ -100,7 +131,11 @@ mkdir -p "$MODELS_DIR"
 if [ "$SKIP_ROCM" = false ]; then
     log "Building C++ inference stack (server + CLI + daemon)..."
     cd "$DIR"
-    cmake -B build ${CMAKE_GENERATOR:+-G Ninja} -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
+    # Build for the GPU(s) this machine actually has (set by install_deps).
+    # Fall back to re-detecting only if something bypassed install_deps.
+    HIP_ARCH="$(printf '%s' "$GFX_TARGETS" | paste -sd';' -)"
+    [ -n "$HIP_ARCH" ] || HIP_ARCH="$(bash "$DIR/scripts/detect-gfx-targets.sh" --cmake)"
+    cmake -B build ${CMAKE_GENERATOR:+-G Ninja} -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCH" || { warn "cmake configure failed"; exit 1; }
     cmake --build build --target zaya_server onebitd onebit onebin unified_router ${WITH_JARVIS:+jarvis_app} -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
     log "Build complete:"
     log "  $DIR/build/zaya_server ($(stat -c%s "$DIR/build/zaya_server" 2>/dev/null || echo '?') bytes)"

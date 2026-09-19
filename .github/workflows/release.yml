@@ -36,15 +36,19 @@ jobs:
             python3 python3-venv libcurl4-openssl-dev libzstd-dev libwebsockets-dev \
             libvulkan-dev glslc uuid-dev libdrm-dev spirv-headers
 
-          # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo).
-          # TheRock 7.15.0a (with the built-in FastFlowLM flm binary) is the ONLY
-          # ROCm in this build — the runner has no system ROCm, so CMake's
-          # /opt/rocm fallback can never be reached. CMakeLists.txt auto-detects
-          # /opt/rocm-therock.
+          # Install TheRock nightly ROCm SDK. The device package is chosen from
+          # the GPU actually present on the runner — hardcoding "device-gfx1151"
+          # built gfx1151-targeted artifacts on any machine that was not Strix
+          # Halo, with rocBLAS then aborting on an empty Tensile list.
           sudo python3 -m venv /opt/rocm-therock
           sudo /opt/rocm-therock/bin/pip install \
-            "rocm[libraries,devel,device-gfx1151]" \
+            "rocm[libraries,devel]" \
             --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
+          for t in $(bash scripts/detect-gfx-targets.sh); do
+            echo "++ device package for $t"
+            sudo /opt/rocm-therock/bin/pip install "rocm-sdk-device-$t" \
+              --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
+          done
           sudo /opt/rocm-therock/bin/rocm-sdk init
 
       - name: Build all C++ targets (TheRock 7.15.0a HIP kernels + servers + CLI)
@@ -74,9 +78,12 @@ jobs:
           echo "hipcc: $(which hipcc)"
           echo "HIP version: $($ROCM_PATH/bin/hipconfig --version 2>/dev/null || echo 'N/A')"
 
+          # Build for the runner's actual GPU, not a hardcoded arch.
+          HIP_ARCH="$(bash scripts/detect-gfx-targets.sh --cmake)"
+          echo "HIP arch: $HIP_ARCH"
           cmake -B build -G Ninja \
             -DEMBED_LEMONADE=ON \
-            -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
+            -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCH" \
             -DCMAKE_PREFIX_PATH="$ROCM_PATH" \
             -DCMAKE_CXX_FLAGS="-I$ROCM_PATH/include" \
             -DCMAKE_HIP_FLAGS="--rocm-path=$ROCM_PATH"

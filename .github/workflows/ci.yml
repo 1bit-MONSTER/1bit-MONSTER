@@ -45,15 +45,25 @@ jobs:
         with:
           path: /opt/rocm-therock
           key: rocm-therock-${{ runner.os }}-${{ steps.rocm-week.outputs.week }}
-      - name: Install TheRock ROCm (nightly, native gfx1151)
+      - name: Install TheRock ROCm (nightly, arch detected from the runner's GPU)
         if: steps.cache-rocm.outputs.cache-hit != 'true'
         run: |
-          # TheRock nightly ROCm only (native gfx1151). This repo never falls
-          # back to apt ROCm 7.2.4 — if TheRock can't install, CI fails.
+          # TheRock nightly ROCm only. This repo never falls back to apt ROCm
+          # 7.2.4 — if TheRock can't install, CI fails.
+          #
+          # The device package is deliberately NOT hardcoded: this step used to
+          # install "rocm[devel,libraries]" with no device wheel at all (so no
+          # device kernels were linked), and release.yml hardcoded gfx1151. Both
+          # silently produce a build whose arch is not the runner's arch.
           sudo python3 -m venv /opt/rocm-therock
           sudo /opt/rocm-therock/bin/pip install \
             "rocm[devel,libraries]" \
             --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
+          for t in $(bash scripts/detect-gfx-targets.sh); do
+            echo "++ device package for $t"
+            sudo /opt/rocm-therock/bin/pip install "rocm-sdk-device-$t" \
+              --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
+          done
           sudo /opt/rocm-therock/bin/rocm-sdk init
       - name: Build llama.cpp ggml-vulkan libs
         run: |
@@ -95,7 +105,10 @@ jobs:
         run: |
           if [ -x /opt/rocm-therock/bin/amdclang++ ]; then
             echo "TheRock detected — full cmake configure + build."
-            cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
+            # Build for the runner's actual GPU, not a hardcoded arch.
+            HIP_ARCH="$(bash scripts/detect-gfx-targets.sh --cmake)"
+            echo "HIP arch: $HIP_ARCH"
+            cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCH"
             # Build the server AND every test_* target so a dropped source or a
             # compile break fails CI (issue #236).
             # Also build all new C++ tools to catch compile errors.

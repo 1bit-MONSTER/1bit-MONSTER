@@ -6,29 +6,40 @@ set -euo pipefail
 
 ROCK_ROOT="/opt/rocm-therock"
 NIGHTLY_INDEX="https://rocm.nightlies.amd.com/whl-multi-arch/"
-GPU_TARGET="gfx1151"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DETECT="$SCRIPT_DIR/detect-gfx-targets.sh"
+
+# The GPU target is DETECTED, never assumed. This script used to hardcode gfx1151,
+# which installed the wrong device build on any non-Strix-Halo machine (rocBLAS
+# then aborts with an empty Tensile list). Fail closed: no guessing.
+[ -x "$DETECT" ] || { echo "!! missing $DETECT (run from a repo checkout)"; exit 1; }
+GPU_TARGETS="$(bash "$DETECT")" || { echo "!! could not detect the GPU target; refusing to guess"; exit 1; }
+echo "++ Detected GPU target(s): $(echo "$GPU_TARGETS" | tr '\n' ' ')"
 
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║  1bit.MONSTER — ROCm TheRock C++ SDK Setup              ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 
 # ── Install packages ──
+# Arch-independent parts first (they provide rocminfo), then one device wheel per
+# detected target, then link them into the devel tree.
+PIP_FLAGS=()
 if [ ! -f "$ROCK_ROOT/bin/hipcc" ]; then
     echo "++ Installing ROCm TheRock SDK to $ROCK_ROOT"
-    if [ ! -d "$ROCK_ROOT" ]; then
-        python3 -m venv "$ROCK_ROOT"
-    fi
-    "$ROCK_ROOT/bin/pip" install \
-        "rocm[libraries,devel,device-${GPU_TARGET}]" \
-        --index-url "$NIGHTLY_INDEX"
-    "$ROCK_ROOT/bin/rocm-sdk" init
+    [ -d "$ROCK_ROOT" ] || python3 -m venv "$ROCK_ROOT"
 else
     echo "!! TheRock already installed, updating..."
-    "$ROCK_ROOT/bin/pip" install --upgrade \
-        "rocm[libraries,devel,device-${GPU_TARGET}]" \
-        --index-url "$NIGHTLY_INDEX"
-    "$ROCK_ROOT/bin/rocm-sdk" init
+    PIP_FLAGS+=(--upgrade)
 fi
+"$ROCK_ROOT/bin/pip" install ${PIP_FLAGS[@]+"${PIP_FLAGS[@]}"} \
+    "rocm[libraries,devel]" \
+    --index-url "$NIGHTLY_INDEX"
+for t in $GPU_TARGETS; do
+    echo "++   device package for $t"
+    "$ROCK_ROOT/bin/pip" install ${PIP_FLAGS[@]+"${PIP_FLAGS[@]}"} \
+        "rocm-sdk-device-$t" --index-url "$NIGHTLY_INDEX"
+done
+"$ROCK_ROOT/bin/rocm-sdk" init
 
 # ── Ollama integration ──
 if command -v ollama &>/dev/null; then
@@ -36,7 +47,7 @@ if command -v ollama &>/dev/null; then
     mkdir -p /etc/systemd/system/ollama.service.d/
     cat > /etc/systemd/system/ollama.service.d/override.conf << 'OVERRIDE'
 [Service]
-# TheRock 7.15.0a has native gfx1151 — no HSA override needed
+# TheRock runtime is self-contained for the detected arch — no HSA override needed
 Environment=HSA_OVERRIDE_GFX_VERSION=
 Environment=HSA_ENABLE_SDMA=0
 Environment=HIP_VISIBLE_DEVICES=0
@@ -54,14 +65,16 @@ fi
 
 # ── systemd daily update timer ──
 echo "++ Installing daily update timer..."
-cat > /etc/systemd/system/rocm-therock-update.service << 'SVC'
+cat > /etc/systemd/system/rocm-therock-update.service << SVC
 [Unit]
 Description=ROCm TheRock daily update
 After=network-online.target
 Wants=network-online.target
 [Service]
 Type=oneshot
-ExecStart=/opt/rocm-therock/bin/pip install --upgrade "rocm[libraries,devel,device-gfx1151]" --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
+# Device package(s) are re-detected each run — never hardcoded (a hardcoded arch
+# here silently re-installed the wrong device build on every daily tick).
+ExecStart=/bin/bash -c '/opt/rocm-therock/bin/pip install --upgrade "rocm[libraries,devel]" --index-url $NIGHTLY_INDEX && for t in $(bash "$DETECT"); do /opt/rocm-therock/bin/pip install --upgrade "rocm-sdk-device-$t" --index-url $NIGHTLY_INDEX; done'
 ExecStartPost=/opt/rocm-therock/bin/rocm-sdk init
 StandardOutput=journal
 User=root
