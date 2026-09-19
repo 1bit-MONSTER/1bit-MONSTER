@@ -37,6 +37,7 @@ Usage: sweep-publication.py [--repo DIR] [--okf DIR] [--verbose] [--context N]
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -92,7 +93,7 @@ MARKERS = re.compile(
     r"|strixhalo remains|strixhalo on|strixhalo at|since moved|now explained|measured against"
     r"|restore point|\.bak-|Reversible|the record of the defect|Defect|defect table"
     r"|\(record\)|at the time of this experiment|distinct from the live|historical note"
-    r"|never exercised|pack-experiment|pack experiment|env at report time"
+    r"|never exercised|pack-experiment|pack experiment|env at report time|before\b"
 )
 
 # A section whose heading names the machine these values are correct FOR.
@@ -123,6 +124,25 @@ CURRENT_VERSIONS = {
     "22.0.0git",         # Xilinx/llvm-aie (Peano) clang — the NPU-side
                          # toolchain, a different component entirely
 }
+
+
+# Census-like and arch-like tokens, discovered rather than listed, so the
+# completeness claim is dimensional (index / version / arch / census) and not
+# merely "the versions I thought of are clean".
+CENSUS_TOKEN = re.compile(r"PASS \d+ / ERROR \d+(?: / INCORRECT \d+)?|\b\d+ detected · \d+ UNSUPPORTED(?: · \d+ PASS)?")
+CURRENT_CENSUS = {
+    "PASS 14 / ERROR 0 / INCORRECT 0",          # ryzen live
+    "PASS 18 / ERROR 0 / INCORRECT 0",          # strixhalo live
+    "17 detected · 4 UNSUPPORTED · 18 PASS",    # strixhalo live
+    # short forms are the same current value, not a different one
+    "PASS 14 / ERROR 0",
+    "PASS 18 / ERROR 0",
+}
+ARCH_TOKEN = re.compile(r"(?:--offload-arch[= ]|CMAKE_HIP_ARCHITECTURES[= ]+[\"']?)(gfx\d{3,})")
+CURRENT_ARCH = {"gfx1201", "gfx1036", "gfx1151"}   # both boxes, context decides
+# gfx942 (MI300X) appears only under tools/lora's opt-in USE_TRG option — a
+# deliberate other-target, not a claim about either machine.
+CURRENT_ARCH_ALLOW = {"gfx942"}
 
 SKIP_DIRS = {".git", "build", "third_party", ".gitnexus", "node_modules", ".venv", "__pycache__"}
 SKIP_NAMES = {"sweep-publication.py", "sweep-publication.sh"}
@@ -157,12 +177,15 @@ def main() -> int:
     ap.add_argument("--repo", default=str(Path.home() / "projects/1bit-MONSTER"))
     ap.add_argument("--okf", default=str(Path.home() / "okf"))
     ap.add_argument("--verbose", "-v", action="store_true")
+    ap.add_argument("--manifest", default=None,
+                    help="write a JSON manifest naming the rule that justified every hit")
     ap.add_argument("--context", type=int, default=300, help="char window used ONLY for single-line blobs")
     args = ap.parse_args()
 
     compiled = [(re.compile(pat), desc) for pat, desc in PATTERNS]
     per_pattern = {d: [0, 0] for _, d in PATTERNS}
     stale_total = 0
+    manifest: list[dict] = []
 
     print(f"sweep-publication: repo={args.repo}")
     print(f"                   okf ={args.okf}")
@@ -232,6 +255,19 @@ def main() -> int:
                     else:
                         verdict = "STALE"
 
+                    # Record WHY, so the classification is auditable rather than a count.
+                    reason = ""
+                    if verdict == "OK-SCOPED":
+                        ms = SCOPED_SECTION.search(title_txt)
+                        reason = f"section/title scoped: {ms.group(0)!r}" if ms else "scoped section"
+                    elif verdict == "OK-HISTORICAL":
+                        reason = "dated-record path"
+                    elif verdict == "OK-QUOTED":
+                        mq = MARKERS.search(window if monoline else para)
+                        reason = f"marker: {mq.group(0)!r}" if mq else "marker"
+                    manifest.append({"file": str(path), "line": line_no, "value": m.group(0),
+                                     "pattern": desc, "verdict": verdict, "reason": reason})
+
                     if verdict == "STALE":
                         per_pattern[desc][0] += 1
                         stale_total += 1
@@ -240,7 +276,7 @@ def main() -> int:
                     else:
                         per_pattern[desc][1] += 1
                         if args.verbose:
-                            print(f"  {verdict} {path}:{line_no}")
+                            print(f"  {verdict} {path}:{line_no}  [{reason}]")
 
     print("-" * 78)
     print(f"{'PATTERN':<64}{'STALE':>7}{'OK':>7}")
@@ -279,11 +315,47 @@ def main() -> int:
                 if historical_file or MARKERS.search(para):
                     continue
                 unknown[tok] = unknown.get(tok, 0) + 1
+                manifest.append({"file": str(path), "line": line_no, "value": tok,
+                                 "pattern": "discovery", "verdict": "UNKNOWN-VERSION", "reason": ""})
                 print(f"  UNKNOWN-VERSION {path}:{line_no}  {tok}")
     for tok, n in sorted(unknown.items(), key=lambda kv: -kv[1]):
         print(f"  ... {tok} x{n}")
     print(f"  unlabelled version tokens: {sum(unknown.values())} (must be 0)")
 
+    for label, rx, current in (("CENSUS", CENSUS_TOKEN, CURRENT_CENSUS),
+                               ("ARCH", ARCH_TOKEN, CURRENT_ARCH)):
+        found: dict[str, int] = {}
+        for root in (Path(args.repo), Path(args.okf)):
+            for path in iter_files(root):
+                try:
+                    text = path.read_text(errors="replace")
+                except OSError:
+                    continue
+                if HISTORICAL_PATH.search(str(path)):
+                    continue
+                lines = text.splitlines()
+                for m in rx.finditer(text):
+                    val = m.group(0) if label == "CENSUS" else m.group(1)
+                    if val in current or val in CURRENT_ARCH_ALLOW:
+                        continue
+                    line_no = text.count("\n", 0, m.start()) + 1
+                    idx = line_no - 1
+                    ctx = "\n".join(lines[max(0, idx - 3):idx + 4])
+                    if MARKERS.search(ctx):
+                        continue
+                    found[val] = found.get(val, 0) + 1
+                    manifest.append({"file": str(path), "line": line_no, "value": val,
+                                     "pattern": f"discovery-{label.lower()}",
+                                     "verdict": "UNKNOWN-" + label, "reason": ""})
+                    print(f"  UNKNOWN-{label} {path}:{line_no}  {val}")
+        for v, n in sorted(found.items(), key=lambda kv: -kv[1]):
+            print(f"  ... {v} x{n}")
+        unknown[f"__{label}__"] = sum(found.values())
+        print(f"  unlabelled {label.lower()} tokens: {sum(found.values())} (must be 0)")
+
+    if args.manifest:
+        Path(args.manifest).write_text(json.dumps(manifest, indent=2))
+        print(f"  manifest: {args.manifest} ({len(manifest)} hits, each with its justifying rule)")
     print("-" * 78)
     total = stale_total + sum(unknown.values())
     print(f"sweep-publication: STALE hits = {stale_total}, unlabelled versions = {sum(unknown.values())} (both must be 0)")
