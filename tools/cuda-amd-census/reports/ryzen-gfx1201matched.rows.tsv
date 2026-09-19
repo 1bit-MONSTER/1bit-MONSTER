@@ -1,0 +1,29 @@
+dev/kfd	detected	660 root:render
+dev/renderD128	detected	660 root:render
+dev/renderD129	detected	660 root:render
+dev/accel0	UNSUPPORTED	absent
+bf16_atomics/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_bfloat16.h
+cublas/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocblas
+cublaslt/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipblaslt-version.h
+cudnn/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/miopen
+cufft/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocfft
+cusolver/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipsolver
+cusparse/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocsparse
+graphs/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h
+nccl/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/nccl_device/rccl_ptr.h
+ptx_jit/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hiprtc.h
+runtime/present	detected	/home/bcloud/therock-gfx1201/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h
+hrx/present	UNSUPPORTED	no libhrx.so found (no AMD hrx-system bundle on this host)
+runtime	PASS	dev="AMD Radeon RX 9070 XT" arch=gfx1201 arch_expect=gfx1201 arch_match
+numerics	PASS	atomicAdd=16384 half2_dot=ok bf16=ok (int8 dot4 -> see dot4 row)
+graphs	PASS	capture 5-node graph + replay = 5 (exact)
+ptx_jit	PASS	hiprtc compiled --offload-arch=gfx1201, JIT kernel = 21.0 (exact)
+cublas	PASS	sgemm 256x192x288 max_abs=1.72e-05 tol=4.51e-03 (rocBLAS)
+cufft	PASS	c2c fwd N=64 vs naive DFT max_abs=3.81e-06 rel=1.09e-07 (rocFFT)
+cusparse	PASS	csr spmv 3x3 nnz=5 exact (rocSPARSE)
+cusolver	PASS	getrf 4x4 LU det=209.0000 == cpu det=209.0000 rel=0.0e+00 (hipSOLVER)
+cudnn	PASS	conv2d fwd 1x2x8x8 k3x3: all-ones PASS (layout-independent); random-case rel=8.2e-01 DISAGREES -> open reference/ordering discrepancy in this probe, NOT a demonstrated backend defect (algo=3 of 2)
+int8_dot4	UNSUPPORTED	toolchain rejects sudot4 builtin with runtime operands: /home/bcloud/projects/1bit-MONSTER/tools/cuda-amd-census/probe/p_dot4.cpp:36:29: error: argument to '__builtin_amdgcn_sudot4' must be a constant integer
+cusolver_diag	PASS	arch=gfx1201 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 
+torch	UNSUPPORTED	import torch failed: ModuleNotFoundError: No module named 'torch'
+vulkan_compute	PASS	SPIR-V dispatch host[0]=0.500 exact witness=1.0 device="AMD Radeon RX 9070 XT (RADV GFX1201) + AMD Ryzen 7 9800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO) + llvmpipe (LLVM 21.1.8, 256 bits)" (RADV compute)

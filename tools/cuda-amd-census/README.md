@@ -124,5 +124,10 @@ $L/clang++ -x hip --offload-arch=amdgcnspirv --rocm-path=$D -O3 \
 $L/llvm-objdump --offloading /tmp/gate   # must show hip-spirv64-...--amdgcnspirv, NO gfxXXXX
 ```
 
-⚠️ **Use raw `clang++`, never `hipcc`, for `amdgcnspirv`.** `hipcc --offload-arch=amdgcnspirv`
-exits 0 and **silently substitutes native detection**, embedding concrete `gfxXXXX` targets.
+⚠️ **CORRECTION (2026-09-19).** An earlier version of this section warned that `hipcc`
+"silently substitutes native detection". **That was wrong.** The command behind the claim omitted
+`--offload-arch` entirely while its label claimed the flag was passed; hipcc then correctly fell
+back to native detection. Verified four ways (`.cpp`/`.cu` × with/without `-x hip`) on clang 23 and
+24: `hipcc --offload-arch=amdgcnspirv` **honours the flag** and emits
+`hip-spirv64-amd-amdhsa--amdgcnspirv`. Raw `clang++` and `hipcc` both work; there is no defect.
+Keep using `clang++` if you already are — it is not required as a workaround.
