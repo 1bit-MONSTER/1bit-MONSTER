@@ -1,0 +1,50 @@
+runner pid=1324153 start=2026-09-19T18:00:00Z head=c76daa9e9
+prompt=first 32 ids of tests/prism/ppl/slice200.ids.txt  ngen=128 reps=5
+cmd: /tmp/pfhip <pack.1bp> <32 ids> --predict 128   [PRISM_LEGACY_FOLD_GROUP=1 for the pre-fix grouping]
+--- TRIAD start ---
+device: AMD Radeon 8060S Graphics  gcnArchName=gfx1151  memClockRate=1000000 kHz  busWidth=256 bit
+totalGlobalMem = 112.00 GiB
+
+ 128 MB/array: triad   219.7 GB/s   copy   225.7 GB/s
+ 256 MB/array: triad   212.0 GB/s   copy   215.0 GB/s
+ 512 MB/array: triad   207.3 GB/s   copy   204.5 GB/s
+1024 MB/array: triad   203.3 GB/s   copy   197.4 GB/s
+Ternary-Bonsai-2-27B-PTQ1_0  default  rep1 : generated 128 tokens in 5636.81 ms = 22.71 tok/s (greedy decode)
+Ternary-Bonsai-2-27B-PTQ1_0  default  rep2 : generated 128 tokens in 5631.14 ms = 22.73 tok/s (greedy decode)
+Ternary-Bonsai-2-27B-PTQ1_0  default  rep3 : generated 128 tokens in 5638.51 ms = 22.70 tok/s (greedy decode)
+Ternary-Bonsai-2-27B-PTQ1_0  default  rep4 : generated 128 tokens in 5647.36 ms = 22.67 tok/s (greedy decode)
+Ternary-Bonsai-2-27B-PTQ1_0  default  rep5 : generated 128 tokens in 5637.34 ms = 22.71 tok/s (greedy decode)
+Ternary-Bonsai-2-27B-PTQ1_0  legacy  rep1 : generated 128 tokens in 5621.74 ms = 22.77 tok/s (greedy decode)
+Ternary-Bonsai-2-27B-PTQ1_0  legacy  rep2 : generated 128 tokens in 5942.75 ms = 21.54 tok/s (greedy decode)
+Ternary-Bonsai-2-27B-PTQ1_0  legacy  rep3 : generated 128 tokens in 5631.44 ms = 22.73 tok/s (greedy decode)
+Ternary-Bonsai-2-27B-PTQ1_0  legacy  rep4 : generated 128 tokens in 5666.02 ms = 22.59 tok/s (greedy decode)
+Ternary-Bonsai-2-27B-PTQ1_0  legacy  rep5 : generated 128 tokens in 5680.30 ms = 22.53 tok/s (greedy decode)
+Bonsai-27B-Q1_0  default  rep1 : generated 128 tokens in 4081.73 ms = 31.36 tok/s (greedy decode)
+Bonsai-27B-Q1_0  default  rep2 : generated 128 tokens in 4075.99 ms = 31.40 tok/s (greedy decode)
+Bonsai-27B-Q1_0  default  rep3 : generated 128 tokens in 4077.73 ms = 31.39 tok/s (greedy decode)
+Bonsai-27B-Q1_0  default  rep4 : generated 128 tokens in 4075.14 ms = 31.41 tok/s (greedy decode)
+Bonsai-27B-Q1_0  default  rep5 : generated 128 tokens in 4073.46 ms = 31.42 tok/s (greedy decode)
+Bonsai-27B-Q1_0  legacy  rep1 : generated 128 tokens in 4078.01 ms = 31.39 tok/s (greedy decode)
+Bonsai-27B-Q1_0  legacy  rep2 : generated 128 tokens in 4080.46 ms = 31.37 tok/s (greedy decode)
+Bonsai-27B-Q1_0  legacy  rep3 : generated 128 tokens in 4083.05 ms = 31.35 tok/s (greedy decode)
+Bonsai-27B-Q1_0  legacy  rep4 : generated 128 tokens in 4076.40 ms = 31.40 tok/s (greedy decode)
+Bonsai-27B-Q1_0  legacy  rep5 : generated 128 tokens in 4078.00 ms = 31.39 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  default  rep1 : generated 128 tokens in 6208.09 ms = 20.62 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  default  rep2 : generated 128 tokens in 6228.65 ms = 20.55 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  default  rep3 : generated 128 tokens in 6215.67 ms = 20.59 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  default  rep4 : generated 128 tokens in 6223.43 ms = 20.57 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  default  rep5 : generated 128 tokens in 6254.77 ms = 20.46 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  legacy  rep1 : generated 128 tokens in 6246.44 ms = 20.49 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  legacy  rep2 : generated 128 tokens in 6241.59 ms = 20.51 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  legacy  rep3 : generated 128 tokens in 6277.24 ms = 20.39 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  legacy  rep4 : generated 128 tokens in 6300.62 ms = 20.32 tok/s (greedy decode)
+Ternary-Bonsai-27B-PQ2_0  legacy  rep5 : generated 128 tokens in 6305.77 ms = 20.30 tok/s (greedy decode)
+--- TRIAD end ---
+device: AMD Radeon 8060S Graphics  gcnArchName=gfx1151  memClockRate=1000000 kHz  busWidth=256 bit
+totalGlobalMem = 112.00 GiB
+
+ 128 MB/array: triad   209.8 GB/s   copy   214.9 GB/s
+ 256 MB/array: triad   205.3 GB/s   copy   209.8 GB/s
+ 512 MB/array: triad   201.2 GB/s   copy   199.1 GB/s
+1024 MB/array: triad   197.7 GB/s   copy   193.9 GB/s
+=== bench done 2026-09-19T18:03:39Z ===
