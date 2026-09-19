@@ -26,6 +26,7 @@ cusparse	PASS	csr spmv 3x3 nnz=5 exact (rocSPARSE)
 cusolver	PASS	getrf 4x4 LU det=209.0000 == cpu det=209.0000 rel=0.0e+00 (hipSOLVER)
 cudnn	PASS	conv2d fwd 1x2x8x8 k3x3: all-ones PASS (layout-independent); random-case rel=8.2e-01 DISAGREES -> open reference/ordering discrepancy in this probe, NOT a demonstrated backend defect (algo=3 of 1)
 int8_dot4	UNSUPPORTED	toolchain rejects sudot4 builtin with runtime operands: /tmp/cuda-amd-census/probe/p_dot4.cpp:36:29: error: argument to '__builtin_amdgcn_sudot4' must be a constant integer
+cusolver_diag	PASS	arch=gfx1151 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 
 runtime/hrx	PASS	dev="AMD Radeon 8060S Graphics" arch=gfx1151 arch_expect=gfx1151 arch_match
 graphs/hrx	PASS	capture 5-node graph + replay = 5 (exact)
 numerics/hrx	PASS	atomicAdd=16384 half2_dot=ok bf16=ok (int8 dot4 -> see dot4 row)

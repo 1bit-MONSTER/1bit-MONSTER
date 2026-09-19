@@ -18,7 +18,7 @@
   "counts": {
     "detected": 17,
     "UNSUPPORTED": 3,
-    "PASS": 14
+    "PASS": 15
   },
   "rows": [
     {
@@ -160,6 +160,11 @@
       "surface": "int8_dot4",
       "result": "UNSUPPORTED",
       "detail": "toolchain rejects sudot4 builtin with runtime operands: /tmp/cuda-amd-census/probe/p_dot4.cpp:36:29: error: argument to '__builtin_amdgcn_sudot4' must be a constant integer"
+    },
+    {
+      "surface": "cusolver_diag",
+      "result": "PASS",
+      "detail": "arch=gfx1151 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 "
     },
     {
       "surface": "runtime/hrx",
