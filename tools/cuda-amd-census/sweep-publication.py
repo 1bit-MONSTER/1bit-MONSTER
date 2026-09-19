@@ -44,6 +44,8 @@ from pathlib import Path
 PATTERNS: list[tuple[str, str]] = [
     (r"10\.1\.0a20260822",
      "superseded TheRock version (current matched set is 10.1.0a20260910)"),
+    (r"7\.16\.26332", "superseded HIP version (ryzen is now 7.16.26362)"),
+    (r"23\.0\.0git", "superseded amdclang version (ryzen is now 24.0.0git)"),
     (r"rocm\.nightlies\.amd\.com/whl-multi-arch",
      "old TheRock index (serves only up to 10.1.0a20260822)"),
     (r"(?:pip|python3?\s+-m\s+pip)[^\n]*rocm\[libraries,devel\](?!==)",
