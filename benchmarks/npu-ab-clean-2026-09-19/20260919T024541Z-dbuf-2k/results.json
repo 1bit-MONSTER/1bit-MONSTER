@@ -1,0 +1,87 @@
+{
+  "env": {
+    "model": "qwen3_0_6b",
+    "flm_tag": "qwen3:0.6b",
+    "engine": "/home/bcloud/mt-runlist-measure/engine/npu/build/npu_engine_qwen3_0_6b",
+    "engine_sha256_16": "ee4bbc2305457b15",
+    "engine_mtime": "2026-09-19T02:41:52Z",
+    "q4nx": "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx",
+    "q4nx_sha256_16": "db8dec4dff653817",
+    "flm_version": "FLM v1.0.4",
+    "npu_fw": "1.1.2.65",
+    "kernel": "7.2.0-next-20260821-unstable-ogc-g2a559b27-1",
+    "ctx_k": 2,
+    "flm_max_length": 2048,
+    "decode_tokens": 32,
+    "reps": 3,
+    "native_path": "runlist",
+    "prompt": "/home/bcloud/mt-runlist-measure/benchmarks/prompts/reclaimer.txt",
+    "prompt_sha256_16": "725d8ff38eb5f1e0",
+    "strays_before": 0,
+    "npuxclbin_dir": "/home/bcloud/mt-runlist-measure/engine/npu/xclbins",
+    "run_utc": "20260919T024541Z"
+  },
+  "flm": {
+    "decode_tps": 64.0,
+    "prefill_tps": 1927.09,
+    "ttft_s": 1.01,
+    "verdict": "FLM-TEXT-OK",
+    "text": "The capital of France is **Paris**.",
+    "rows": [
+      [
+        "1.013601",
+        "1927.09",
+        "64.00"
+      ],
+      [
+        "1.022803",
+        "1909.51",
+        "63.98"
+      ],
+      [
+        "1.009204",
+        "1935.00",
+        "64.00"
+      ]
+    ]
+  },
+  "native": [
+    {
+      "path": "runlist",
+      "gate": "NATIVE-TOKENS-PLAUSIBLE",
+      "n_tokens": "32",
+      "n_unique": "9",
+      "last_tokens": "88173,1835,88173,5191,2113,50338,96309,98341",
+      "ttft_s": "26.386",
+      "prefill_tps": "76.9",
+      "decode_tps": "74",
+      "prefill_tokens": "",
+      "rc": "0"
+    },
+    {
+      "path": "runlist",
+      "gate": "NATIVE-TOKENS-PLAUSIBLE",
+      "n_tokens": "32",
+      "n_unique": "9",
+      "last_tokens": "88173,1835,88173,5191,2113,50338,96309,98341",
+      "ttft_s": "26.393",
+      "prefill_tps": "76.9",
+      "decode_tps": "73",
+      "prefill_tokens": "",
+      "rc": "0"
+    },
+    {
+      "path": "runlist",
+      "gate": "NATIVE-TOKENS-PLAUSIBLE",
+      "n_tokens": "32",
+      "n_unique": "9",
+      "last_tokens": "88173,1835,88173,5191,2113,50338,96309,98341",
+      "ttft_s": "28.43",
+      "prefill_tps": "71.4",
+      "decode_tps": "73",
+      "prefill_tokens": "",
+      "rc": "0"
+    }
+  ],
+  "parity_claim": "allowed"
+}
