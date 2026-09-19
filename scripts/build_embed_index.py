@@ -27,9 +27,11 @@ TAG = re.compile(r"<[^>]+>")
 WHITESPACE = re.compile(r"\s+")
 HEADING = re.compile(r"<h([12])[^>]*>(.*?)</h\1>", re.S)
 PARA = re.compile(r"<p[^>]*>(.*?)</p>", re.S)
-CHUNK_SIZE = 200   # words — keeps each /v1/embeddings request under the
-                   # backend's 512-token physical batch (real prose ≈ 1.5-2
-                   # tok/word; 300-word chunks exceeded it and 500'd)
+CHUNK_SIZE = 110   # words. 200 words produced ~514-token chunks and the
+                   # lemonade embed backend 500s above 512
+                   #   "input (514 tokens) is too large to process"
+                   # which broke regeneration silently. 110 keeps every
+                   # chunk under the limit.
 CHUNK_OVERLAP = 40
 BATCH = 8
 
