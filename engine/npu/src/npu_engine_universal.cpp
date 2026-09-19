@@ -329,6 +329,22 @@ static inline void rn_c(float*x,const float*w,int n){cn(x,n);float ss=0;
 static inline void rn_bf16(uint16_t*out,float*x,const float*w,int n){cn(x,n);float ss=0;
     for(int i=0;i<n;i++)ss+=x[i]*x[i];
     float ir=1.0f/sqrtf(ss/n+EPS);for(int i=0;i<n;i++)out[i]=f32_to_bf16(x[i]*ir*w[i]);}
+// RMSNorm + f32->bf16 + residual-save fused: ONE pass saves the pre-clamp residual,
+// clamps NaN/Inf in place, and reduces the sum of squares; a second pass scales and
+// writes bf16. Bit-identical to the old "save=copy(x); rn_bf16(out,x,w)" sequence (same
+// per-element float ops, same order) minus the separate full-width copy pass.
+static inline void rn_bf16_save(uint16_t*out,float*save,float*x,const float*w,int n){
+    float ss=0;
+    for(int i=0;i<n;i++){
+        float v=x[i];
+        save[i]=v;
+        if(!std::isfinite(v)) v=0.0f;
+        x[i]=v;
+        ss+=v*v;
+    }
+    float ir=1.0f/sqrtf(ss/n+EPS);
+    for(int i=0;i<n;i++) out[i]=f32_to_bf16(x[i]*ir*w[i]);
+}
 
 // ── Cross-layer pipeline (roadmap step 3): fused D-output → next-QKV-input ──
 // Consumes the D GEMM output of layer l (Cm, int32 legacy / int16 FLM) and
@@ -4850,15 +4866,16 @@ struct Bf16Ctx {
             memset(bKv.data(), 0, (size_t)kv_region * 4 * 2);
             for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = emb_f32[pt_vec[pi] * H + i];
             for (int pi = npt; pi < NP; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = 0;
-            double tg = 0, ta = 0, tc = 0;
+            double tg = 0, ta = 0, tc = 0, tn = 0, ts = 0, tr = 0, tqk = 0, tba = 0;
             for (int l = 0; l < NC; l++) {
                 fprintf(stderr, "  L%d", l); fflush(stderr);
                 auto tc0 = std::chrono::steady_clock::now();
+                auto tn0 = std::chrono::steady_clock::now();
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) {
-                    for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
-                    rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
+                    rn_bf16_save(&bA[pi * H], &bsb[pi * H], &bh[pi * H], in_n[l].data(), H);
                 }
+                tn += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tn0).count();
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fb = fopen("/tmp/bf16_l0_bA.bin", "wb"); if (fb) { fwrite(bA.data(), 2, 4 * H, fb); fclose(fb); } }
                 auto tg0 = std::chrono::steady_clock::now();
                 // QKV in ONE GEMM (N=qkvn) — 128-row blocks, batch 0 each time
@@ -4910,8 +4927,10 @@ struct Bf16Ctx {
                         bf16mm_gemm_wait(i & 1, bC.data() + (size_t)b * qkvn);
                         if (i + 2 < nblk)
                             bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, i & 1, bA.data() + (size_t)((i + 2) * 256) * H);
+                        auto tqk0 = std::chrono::steady_clock::now();
                         #pragma omp parallel for schedule(static) num_threads(host_threads())
                         for (int pi = b; pi < b + rows; pi++) qk_norm_pi(pi, pi);   // readback lands at bC[pi*qkvn]
+                        tqk += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tqk0).count();
                     }
                 }
                 auto ta0 = std::chrono::steady_clock::now();
@@ -4924,9 +4943,11 @@ struct Bf16Ctx {
                 // Build attention inputs from the host-norm'd + RoPE'd Q/K/V.
                 // attn.xclbin expects PRE-RoPE'd Q and K + raw V — the host
                 // applies q_norm/k_norm + RoPE, the kernel does NOT.
+                auto tba0 = std::chrono::steady_clock::now();
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qout; i++)
                     bActQ[pi * qout + i] = f32_to_bf16(bqo[pi * qkvn + i]);
+                tba += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tba0).count();
                 if (unified && npu_runlist_write_kv(l, sp, npt, bKv.data(), (int)kv_region) != 0) {
                     fprintf(stderr, "\nbf16 prefill: runlist KV write L%d failed\n", l);
                     return 1;
@@ -5082,22 +5103,23 @@ struct Bf16Ctx {
                         bf16mm_gemm_wait(i & 1, bC.data() + (size_t)b * H);
                         if (i + 2 < nblk)
                             bf16mm_gemm_launch(Wo[l], qout, H, 0, i & 1, bA.data() + (size_t)((i + 2) * 256) * qout);
+                        auto tr0 = std::chrono::steady_clock::now();
                         #pragma omp parallel for schedule(static) num_threads(host_threads())
                         for (int pi = b; pi < b + rows; pi++) {
                             #pragma omp simd
-                            for (int i2 = 0; i2 < H; i2++) boo[pi * H + i2] = bf16g(bC[pi * H + i2]);
-                            #pragma omp simd
-                            for (int i2 = 0; i2 < H; i2++) bh[pi * H + i2] = bsb[pi * H + i2] + boo[pi * H + i2];
+                            for (int i2 = 0; i2 < H; i2++) bh[pi * H + i2] = bsb[pi * H + i2] + bf16g(bC[pi * H + i2]);
                         }
+                        tr += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tr0).count();
                     }
                 }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { for (int i2 = 0; i2 < H; i2++) boo[i2] = bf16g(bC[i2]); FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
                 // FFN: RMSNorm + GU + SiLU×up + D (bsb copy fused into the norm region)
+                auto tn1 = std::chrono::steady_clock::now();
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) {
-                    for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
-                    rn_bf16(&bA[pi * H], &bh[pi * H], pa_n[l].data(), H);
+                    rn_bf16_save(&bA[pi * H], &bsb[pi * H], &bh[pi * H], pa_n[l].data(), H);
                 }
+                tn += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tn1).count();
                 // GU FFN: [gate | up] = A×Wgu in ONE GEMM (N=2·IM); SiLU on host.
                 // 128-row blocks; SiLU lands in bGu so bA stays intact for the
                 // next block's A readback.
@@ -5111,6 +5133,7 @@ struct Bf16Ctx {
                         bf16mm_gemm_wait(i & 1, bC.data() + (size_t)b * 2 * IM);
                         if (i + 2 < nblk)
                             bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, i & 1, bA.data() + (size_t)((i + 2) * 256) * H);
+                        auto ts0 = std::chrono::steady_clock::now();
                         #pragma omp parallel for schedule(static) num_threads(host_threads())
                         for (int pi = b; pi < b + rows; pi++) {
                             // Branchless finite test: (g0-g0==0) is false for NaN and
@@ -5123,6 +5146,7 @@ struct Bf16Ctx {
                                 bGu[(size_t)pi * IM + i2] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[pi * 2 * IM + IM + i2]));
                             }
                         }
+                        ts += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts0).count();
                     }
                 }
                 // D GEMM — 128-row blocks, A = the SiLU'd GU output.
@@ -5136,16 +5160,16 @@ struct Bf16Ctx {
                         bf16mm_gemm_wait(i & 1, bC.data() + (size_t)b * H);
                         if (i + 2 < nblk)
                             bf16mm_gemm_launch(Wd[l], IM, H, 0, i & 1, bGu.data() + (size_t)((i + 2) * 256) * IM);
+                        auto tr1 = std::chrono::steady_clock::now();
                         #pragma omp parallel for schedule(static) num_threads(host_threads())
                         for (int pi = b; pi < b + rows; pi++) {
                             #pragma omp simd
-                            for (int i2 = 0; i2 < H; i2++) bdw[pi * H + i2] = bf16g(bC[pi * H + i2]);
-                            #pragma omp simd
-                            for (int i2 = 0; i2 < H; i2++) bh[pi * H + i2] = bsb[pi * H + i2] + bdw[pi * H + i2];
+                            for (int i2 = 0; i2 < H; i2++) bh[pi * H + i2] = bsb[pi * H + i2] + bf16g(bC[pi * H + i2]);
                         }
+                        tr += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tr1).count();
                     }
                 }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { for (int i2 = 0; i2 < H; i2++) bdw[i2] = bf16g(bC[i2]); FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
                 tc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();
                 // NPU_DUMP_HIDDEN: full [token][H] block for this layer (was H
                 // floats = token 0 only, which cannot see rows the fixed-width
@@ -5156,9 +5180,9 @@ struct Bf16Ctx {
             sp += npt;
             memcpy(h_data.data(), &bh[(npt - 1) * H], H * 4);
             if (getenv("NPU_DUMP_L0")) { FILE* fh = fopen("/tmp/bf16_l0_hidden.bin", "wb"); if (fh) { fwrite(h_data.data(), 4, H, fh); fclose(fh); } }
-            printf("Prefill: %.0fms (%.3f ms/tok) [GEMM %.0fms, attn %.0fms, conv+other %.0fms]\n\n",
+            printf("Prefill: %.0fms (%.3f ms/tok) [GEMM %.0fms, attn %.0fms, conv+other %.0fms] [host norm %.0fms silu %.0fms rd %.0fms qk %.0fms ba %.0fms]\n\n",
                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
-                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / npt, tg, ta, tc);
+                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / npt, tg, ta, tc, tn, ts, tr, tqk, tba);
 
             // ===== unified decode: bf16-prefill KV + final hidden -> runlist =====
             if (unified) {
