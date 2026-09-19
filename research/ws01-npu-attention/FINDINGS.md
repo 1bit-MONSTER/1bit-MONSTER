@@ -40,7 +40,7 @@ hipcc -O3 -mavx512f -mavx512bw -mavx512vl -mavx512dq \
   -D__HIP_PLATFORM_AMD__=1 -I engine/npu/src -I src -I include -I/opt/rocm/include \
   engine/npu/src/npu_engine_overlap.hip engine/npu/src/gpu_kernels_fused.hip \
   engine/npu/src/dequant_q4nx.cpp src/kv_cache_attn_fd.hip \   # ← was attn_stub.cpp
-  --offload-arch=gfx1151 \
+  --offload-arch=gfx1151 \   # gfx1151 / Strix Halo only — this experiment ran on that box; not general build guidance
   -lxrt_coreutil -lxrt_core -luuid -lpthread -laiebu -lm -ldl -fopenmp \
   -o build/npu_engine_overlap_fd
 ```

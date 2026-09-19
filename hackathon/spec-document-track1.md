@@ -147,7 +147,7 @@ pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
   "rocm[libraries,devel]==10.1.0a20260910"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T==10.1.0a20260910"; done
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 # Build
-cmake -B build -DCMAKE_HIP_ARCHITECTURES=gfx1151
+cmake -B build -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"   # detected, never hardcoded
 cmake --build build --target lora_train -j$(nproc)
 # Run
 ./build/lora_train --dataset data.jsonl --rank 16 --lr 3e-4

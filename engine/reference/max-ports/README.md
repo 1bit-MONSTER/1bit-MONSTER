@@ -52,7 +52,8 @@ the symmetric identity masks it).
 
 ```
 export LD_LIBRARY_PATH=/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib
-/opt/rocm-therock/bin/hipcc --offload-arch=gfx1151 gemm_wmma.cu -o gemm_wmma && ./gemm_wmma
+/opt/rocm-therock/bin/hipcc --offload-arch=gfx1151 gemm_wmma.cu -o gemm_wmma && ./gemm_wmma   # gfx1151 / Strix Halo reference only, not the build path
+
 ```
 
 ## Perf status

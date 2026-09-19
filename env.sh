@@ -21,10 +21,10 @@ if [ "$(bash "$DIR/scripts/detect-gfx-targets.sh" 2>/dev/null | head -1)" = "gfx
     if command -v hipconfig &>/dev/null; then
         ROCM_VER=$(hipconfig --version 2>/dev/null | cut -d. -f1)
         if [ -n "$ROCM_VER" ] && [ "$ROCM_VER" -lt 7 ] 2>/dev/null; then
-            export HSA_OVERRIDE_GFX_VERSION=11.5.1
+            export HSA_OVERRIDE_GFX_VERSION=11.5.1   # deliberate legacy workaround: gfx1151 + ROCm<7 only
         fi
     elif [ -d /opt/rocm-6.2 ] || [ -d /opt/rocm-6.1 ] || [ -d /opt/rocm-6.0 ]; then
-        export HSA_OVERRIDE_GFX_VERSION=11.5.1
+        export HSA_OVERRIDE_GFX_VERSION=11.5.1   # deliberate legacy workaround: gfx1151 + ROCm<7 only
     fi
 fi
 export HSA_ENABLE_SDMA=0

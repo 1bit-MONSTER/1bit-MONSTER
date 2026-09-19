@@ -164,7 +164,7 @@ cd 1bit-monster
 pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
   "rocm[libraries,devel]==10.1.0a20260910"   # then: for T in $(bash scripts/detect-gfx-targets.sh); do pip install "rocm-sdk-device-$T==10.1.0a20260910"; done
 # Build
-cmake -B build -DCMAKE_HIP_ARCHITECTURES=gfx1151
+cmake -B build -DCMAKE_HIP_ARCHITECTURES="$(bash scripts/detect-gfx-targets.sh --cmake)"   # detected, never hardcoded
 cmake --build build -j$(nproc)
 # Run Mamba1 GPU inference
 ./build/test_mamba1_backend models/blackmamba-1.5b.gguf 64
