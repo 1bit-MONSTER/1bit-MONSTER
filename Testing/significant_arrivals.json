@@ -13,6 +13,13 @@
   "family": "Deepseek",
   "model": "Chinook416/caracat-pro"
  },
+ "deepseekv3": {
+  "arch": "deepseekv3",
+  "covered": true,
+  "date": "2026-09-17",
+  "family": "Deepseek",
+  "model": "droopingstar/DeepSeek-R1"
+ },
  "deepseekv4": {
   "arch": "deepseekv4",
   "covered": true,
@@ -39,7 +46,7 @@
   "covered": true,
   "date": "2026-09-11",
   "family": "Gemma",
-  "model": "Elio2151/Gemma-2-9B-Instruct-TechnicalAgentFineTuned-Merged_5"
+  "model": "Irusha14/My_First_Math_AI"
  },
  "gemma2forcausallm_polysurgery": {
   "arch": "gemma2forcausallm_polysurgery",
@@ -53,7 +60,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "neutrypl/neutry-functiongemma-270m-v2"
+  "model": "halilatasoy/turkish-pii-detection-v01"
  },
  "gemma4": {
   "arch": "gemma4",
@@ -81,7 +88,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Glm",
-  "model": "HawkBearPig/GLM-5.3-Flash-NVFP4-FP8"
+  "model": "local-inference-lab/GLM-5.3-Flash-NVFP4-Spark"
  },
  "glm_moe_dsa": {
   "arch": "glm_moe_dsa",
@@ -102,7 +109,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Granite",
-  "model": "AnkitBirGurung/Granite-4.2-8b-BoardPolitics"
+  "model": "jdlovestofish/granite-4.2-8b"
  },
  "granitemoehybrid": {
   "arch": "granitemoehybrid",
@@ -123,7 +130,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Llama",
-  "model": "Raghav-Singhal/1pp-1.7b-ua-seed42-sft"
+  "model": "Jeesup/svd-safety-l2_remove40_swapgapiter_b010_r07"
  },
  "llama3forcausallm_polysurgery": {
   "arch": "llama3forcausallm_polysurgery",
@@ -151,7 +158,7 @@
   "covered": true,
   "date": "2026-09-10",
   "family": "Mistral",
-  "model": "Aurigene-AI/BioMistral-7B"
+  "model": "gdorane01/XORTRON.CriminalComputing.larger"
  },
  "mobilintllama": {
   "arch": "mobilintllama",
@@ -207,7 +214,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO"
+  "model": "z51722369/ZOZ-Function-Master-3B"
  },
  "qwen2_5_vl": {
   "arch": "qwen2_5_vl",
@@ -235,7 +242,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "thuyduongjoe123/checkpoints_en_my_logit"
+  "model": "marcelpadilla/Qwen3-4B-Instruct-2507_depressed"
  },
  "qwen3-vl": {
   "arch": "qwen3-vl",
@@ -249,14 +256,21 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "YueLinHu/GAC-Qwen3.5-4B"
+  "model": "rhymeas/Mavery-Lehrling-0.8B-MLX-8bit"
  },
  "qwen3_5moe": {
   "arch": "qwen3_5moe",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "mlx-community/BigBang-v1-MLX-oQ4e"
+  "model": "devon7y/Toronto-Mans-35B-A3B-FP8"
+ },
+ "qwen3moe": {
+  "arch": "qwen3moe",
+  "covered": true,
+  "date": "2026-09-17",
+  "family": "Qwen",
+  "model": "ibnsina-llm/ibnsina-30b-chat"
  },
  "qwen3next": {
   "arch": "qwen3next",
@@ -270,7 +284,7 @@
   "covered": true,
   "date": "2026-09-09",
   "family": "Qwen",
-  "model": "zhongweixie/claw-rl-v13-grpo-dr-rubric"
+  "model": "CewEhao/OPD-TV-Qwen3-VL-8B"
  },
  "qwen4exp": {
   "arch": "qwen4exp",
@@ -291,6 +305,6 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Smollm",
-  "model": "Healshsj/smollm3-3b-claude-fable5"
+  "model": "Huangsssz/SmolLM3-3B-MOPD-PG-SGD-lr2p5e-3-NoThinking-500"
  }
 }
