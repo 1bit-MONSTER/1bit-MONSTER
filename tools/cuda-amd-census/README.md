@@ -7,8 +7,15 @@ open stacks are already native HIP, so what matters here is which CUDA-shaped
 surface resolves to which AMD backend, on which arch, at what evidence level,
 **proven by probe rather than asserted**.
 
-Published results: [`okf` reference — CUDA-surface capability matrix](https://github.com/1bit-MONSTER/okf)
+Published results: [`okf` reference — gfx1201 ROCm gap status](https://github.com/1bit-MONSTER/okf)
+(`systems/1bit-monster/references/gfx1201-rocm-gap-status.md`) and the
+[CUDA-surface capability matrix](https://github.com/1bit-MONSTER/okf)
 (`systems/1bit-monster/references/cuda-on-amd-capability-matrix.md`).
+
+**Current state of ryzen's gfx1201 install: all four math-library gaps CLOSED.** The SDK was the
+wrong device build (`device-gfx1151` on a `gfx1201` card); a coherent matched `10.1.0a20260910`
+gfx1201 set is now deployed and the live census reports `PASS 11 / ERROR 0 / INCORRECT 0`
+(`reports/ryzen-gfx1201live.{json,tsv}`), against `PASS 6 / ERROR 4 / INCORRECT 4` before.
 
 ## Two backends, same binaries
 
@@ -110,8 +117,11 @@ ROCM_DEVEL=$HOME/sdk-gfx1201-devel EXPECT_GFX=gfx1201 \
 ```
 
 Result (committed in `reports/ryzen-gfx1201pack.*`): **cuBLAS `ERROR`→`PASS`** (`sgemm
-max_abs=1.72e-05`, identical to gfx1151) and **cuDNN `ERROR`→`PASS`**. rocSPARSE and hipSOLVER do
-**not** move — the device pack covers only rocblas/hipblaslt/miopen. Compare **per-surface
+max_abs=1.72e-05`, identical to gfx1151) and **cuDNN `ERROR`→`PASS`**. A device pack alone does
+**not** move rocSPARSE or hipSOLVER — it carries data for rocblas/hipblaslt/miopen only. Those two
+needed the **base libraries** to move: a **coherent matched upgrade** (all components at
+`10.1.0a20260910`, applied to the live install) closes **all four** rows
+(`reports/ryzen-gfx1201live.{json,tsv}` → `PASS 11 / ERROR 0 / INCORRECT 0`). Compare **per-surface
 verdicts**, not totals: the pack run stages no HRX bundle, so `detected` differs for an unrelated
 reason. See `okf` → `references/gfx1201-rocm-gap-status.md`.
 
