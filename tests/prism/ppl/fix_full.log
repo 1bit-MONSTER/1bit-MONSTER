@@ -1,0 +1,35 @@
+runner pid=2363569 start=2026-09-19T10:34:35Z bin=/tmp/ppl_ids_fix ids=/home/bcloud/1bit-MONSTER-dddf9e/tests/prism/ppl/slice200.ids.txt
+=== Ternary-Bonsai-2-27B-PTQ1_0  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-2-27B-PTQ1_0.1bp  2026-09-19T10:34:35Z ===
+  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-2-27B-PTQ1_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 6.7003  (scored 1023)
+  [2] PPL = 10.1245  (scored 1023)
+  [3] PPL = 9.5173  (scored 1023)
+  [4] PPL = 8.5707  (scored 1023)
+  [5] PPL = 9.5325  (scored 1023)
+  [6] PPL = 3.5762  (scored 1023)
+  FINAL PPL = 7.5731  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1349.05s maxrss=6089096kB
+
+=== Bonsai-27B-Q1_0  pack=/home/bcloud/models/prism/1bp/Bonsai-27B-Q1_0.1bp  2026-09-19T10:57:04Z ===
+  pack=/home/bcloud/models/prism/1bp/Bonsai-27B-Q1_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 10.7187  (scored 1023)
+  [2] PPL = 14.4295  (scored 1023)
+  [3] PPL = 12.9693  (scored 1023)
+  [4] PPL = 12.7842  (scored 1023)
+  [5] PPL = 13.6239  (scored 1023)
+  [6] PPL = 5.0020  (scored 1023)
+  FINAL PPL = 10.9750  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1222.42s maxrss=4018920kB
+
+=== Ternary-Bonsai-27B-PQ2_0  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-27B-PQ2_0.1bp  2026-09-19T11:17:26Z ===
+  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-27B-PQ2_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 9.9579  (scored 1023)
+  [2] PPL = 11.7697  (scored 1023)
+  [3] PPL = 10.9474  (scored 1023)
+  [4] PPL = 12.4391  (scored 1023)
+  [5] PPL = 12.5373  (scored 1023)
+  [6] PPL = 4.6539  (scored 1023)
+  FINAL PPL = 9.8819  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1409.82s maxrss=7152756kB
+
+=== fix run done 2026-09-19T11:40:56Z ===

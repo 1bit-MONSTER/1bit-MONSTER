@@ -24,6 +24,23 @@
 #include <unordered_map>
 #include <vector>
 
+// A/B switch for the PTQ1_0 quality investigation (goal mu86uog3): when
+// PRISM_FORCE_EXACT_DOT is set, the int8 activation-quantised dp4a dot is bypassed for the
+// Prism block types and the float tile path is used instead. Default (unset) is byte-for-byte
+// the previous behaviour, so no other build or run changes.
+inline bool prism_force_exact_dot() {
+    static const bool v = std::getenv("PRISM_FORCE_EXACT_DOT") != nullptr;
+    return v;
+}
+
+// A/B switch for the PTQ1_0 fold defect (goal mu86uog3): the pre-fix grouping rotated ONE
+// buffer and fed it to four projections, two of which are NOT folded in the oracle manifest.
+// Set PRISM_LEGACY_FOLD_GROUP=1 to reproduce the old (wrong) grouping; default is corrected.
+inline bool prism_legacy_fold_group() {
+    static const bool v = std::getenv("PRISM_LEGACY_FOLD_GROUP") != nullptr;
+    return v;
+}
+
 extern "C" {
 int prism_hadamard_fwht_f32(const void*, const int8_t*, void*, int, int, int, void*);
 int prism_gemv_f32(const void*, const float*, float*, int, int, int, void*);
@@ -138,7 +155,18 @@ public:
             rot(d_xn_, sgH_, d_xr_, H, 0);
 
             if (linear[l]) {
-                {   // four matrices share d_xr_: one quant + one launch
+                if (has_transform && !prism_legacy_fold_group()) {
+                    // The oracle manifest (prism.hadamard.weight_names) folds attn_qkv/attn_gate but
+                    // NOT ssm_alpha/ssm_beta: a folded weight is consumed with the rotated activation,
+                    // an unfolded one with the activation as-is. Rotating one buffer for all four was
+                    // the PTQ1_0 +14.9% PPL defect.
+                    { const std::string nm[2] = {L(l, "blk.%d.attn_qkv.weight"), L(l, "blk.%d.attn_gate.weight")};
+                      float* yp[2] = {d_qkv_, d_z_};
+                      matvec_multi(nm, yp, 2, d_xr_); }
+                    { const std::string nm[2] = {L(l, "blk.%d.ssm_alpha.weight"), L(l, "blk.%d.ssm_beta.weight")};
+                      float* yp[2] = {d_a_, d_b_};
+                      matvec_multi(nm, yp, 2, d_xn_); }
+                } else {
                     const std::string nm[4] = {L(l, "blk.%d.attn_qkv.weight"), L(l, "blk.%d.attn_gate.weight"),
                                                L(l, "blk.%d.ssm_alpha.weight"), L(l, "blk.%d.ssm_beta.weight")};
                     float* yp[4] = {d_qkv_, d_z_, d_a_, d_b_};
@@ -236,7 +264,7 @@ private:
     void matvec_multi(const std::string* names, float** ys, int n, const float* x) {
         PrismGpuTensor* G[4] = {nullptr, nullptr, nullptr, nullptr};
         for (int i = 0; i < n; i++) { up(names[i]); G[i] = &g_[names[i]]; }
-        bool dp4a_ok = true;
+        bool dp4a_ok = !prism_force_exact_dot();
         for (int i = 0; i < n; i++) dp4a_ok &= (G[i]->nb == 18 || G[i]->nb == 34 || G[i]->nb == 28);
         if (!dp4a_ok || G[0]->cols != G[n - 1]->cols) {   // not a shared-x dp4a group
             for (int i = 0; i < n; i++) matvec(names[i], x, ys[i]);
@@ -287,7 +315,7 @@ private:
         const PrismGpuTensor& G = g_[n];
         if (G.nb) {
             int rc;
-            if (G.nb == 18 || G.nb == 34 || G.nb == 28) {
+            if (!prism_force_exact_dot() && (G.nb == 18 || G.nb == 34 || G.nb == 28)) {
                 // Prism-extracted int8 dp4a path: quantize the activation row once, then dot.
                 rc = prism_quant_q8_f32(x, G.cols, d_q8_, d_ds_, d_x32_, nullptr);
                 if (!rc) rc = prism_gemv_dp4a_f32(G.p, d_q8_, d_ds_, y, G.rows, G.cols, G.nb, d_x32_, nullptr);

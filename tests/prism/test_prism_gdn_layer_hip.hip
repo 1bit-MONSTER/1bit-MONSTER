@@ -141,10 +141,12 @@ int main(int argc, char** argv) {
     if (prism_gemv_f32(Wz, dxr, d_z, VD, H, nb, nullptr) != 0) { std::fprintf(stderr, "FAIL z r=%d c=%d nb=%d\n", VD, H, nb); return 2; }
     float* Wa = up_f16tile(m, "blk.0.ssm_alpha.weight", NV, H);   // F16 tile in the folded pack
     float* d_a = nullptr; HC(hipMalloc(&d_a, (size_t)NV * 4));
-    if (prism_gemv_dense_f32(Wa, dxr, d_a, NV, H, nullptr) != 0) { std::fprintf(stderr, "FAIL a\n"); return 2; }
+    // ssm_alpha/ssm_beta are NOT in prism.hadamard.weight_names (unfolded), so they take the
+    // un-rotated normalised activation d_xn; qkv/gate are folded and take dxr.
+    if (prism_gemv_dense_f32(Wa, d_xn, d_a, NV, H, nullptr) != 0) { std::fprintf(stderr, "FAIL a\n"); return 2; }
     float* Wb = up_f16tile(m, "blk.0.ssm_beta.weight", NV, H);
     float* d_b = nullptr; HC(hipMalloc(&d_b, (size_t)NV * 4));
-    if (prism_gemv_dense_f32(Wb, dxr, d_b, NV, H, nullptr) != 0) { std::fprintf(stderr, "FAIL b\n"); return 2; }
+    if (prism_gemv_dense_f32(Wb, d_xn, d_b, NV, H, nullptr) != 0) { std::fprintf(stderr, "FAIL b\n"); return 2; }
 
     float* d_conv_w = up_f16tile(m, "blk.0.ssm_conv1d.weight", CD, 4);
     float* d_conv_state = nullptr; HC(hipMalloc(&d_conv_state, (size_t)CD * 3 * 4));

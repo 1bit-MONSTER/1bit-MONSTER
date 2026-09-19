@@ -176,8 +176,9 @@ def main() -> int:
     qkv = bp.w("blk.0.attn_qkv.weight") @ xr
     print(f"qkv_l2 {l2(qkv):.9e}")
     z = bp.w("blk.0.attn_gate.weight") @ xr
-    a = bp.w("blk.0.ssm_alpha.weight") @ xr
-    b = bp.w("blk.0.ssm_beta.weight") @ xr
+    # ssm_alpha/ssm_beta are NOT in the oracle folded set, so they take unrotated x.
+    a = bp.w("blk.0.ssm_alpha.weight") @ x
+    b = bp.w("blk.0.ssm_beta.weight") @ x
 
     cv = bp.f16_tile("blk.0.ssm_conv1d.weight")
     conv = silu(cv[:, 3] * qkv)            # single-token: only the newest tap

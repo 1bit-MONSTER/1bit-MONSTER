@@ -77,16 +77,82 @@ own.
 
 * **Q1_0 and PQ2_0 reproduce the oracle's real-text quality to within 0.22% and 0.08%.** Fidelity
   and quality agree for these two packs.
-* **PTQ1_0 does not: our PPL is 14.9% higher than the oracle's** (8.7168 vs 7.5887). The protocol
-  is identical across all three packs, so this is pack-specific engine behavior, not a harness
-  difference. PTQ1_0 is the pack whose GEMV dot is the approximate dp4a path (its float-tile
-  predecessor was exact per the P3 record); an approximate dot showing up as real-text quality loss
-  is the leading candidate, but the mechanism is **not isolated here** and is recorded as an open
-  question, not a finding. That one pack can drift this far while the other two agree is exactly the
-  thing this goal was built to surface.
+* **PTQ1_0 was +14.9% pre-fix (8.7168 vs 7.5887); the cause is now found and fixed — see
+  "Resolution of the PTQ1_0 gap" below.** It was neither the dp4a dot nor the trit decode: a
+  controlled same-stream A/B moved PTQ1_0 by 0.047% when the exact dot replaced dp4a, and the real
+  cause was a fold-group defect in our Prism forward. Post-fix PTQ1_0 is 7.5731, within 0.21% of the
+  oracle.
 * The duplicate-runner incident of 01:21 is kept visible: `our_engine_ppl.CONTAMINATED.txt` holds the
   aborted first attempt, and `run_ppl_ids.sh` now holds an flock so a second runner exits instead of
   contending. The reported numbers are from the single clean run at 01:22:26Z.
+
+## Resolution of the PTQ1_0 gap (goal mu86uog3)
+
+The +14.9% gap was investigated as two named hypotheses — the approximate int8-dp4a dot, or the
+base-3 trit decode. A controlled same-stream A/B refutes both; the real cause was a fold-group defect
+in our forward, now fixed while keeping dp4a.
+
+### A/B: dp4a vs exact, same stream, same window
+
+The runs consume `tests/prism/ppl/slice200.ids.txt` (12599 ids, md5
+`62cd3e0de33b83123e1b9ece75e57580`, fnv1a64 `867c8618e1944fda`) under the frozen protocol
+(n_ctx=2048, first=1024, 6 chunks, 6138 scored). Exact path = `PRISM_FORCE_EXACT_DOT=1` (float tile
+dot instead of the int8-quantised dp4a dot; default off, so default dispatch is unchanged).
+
+| chunk | dp4a (int8 activation) | exact (float tile) | dp4a − exact |
+|---:|---:|---:|---:|
+| 1 | 7.8589 | 7.8512 | +0.0077 |
+| 2 | 11.6144 | 11.6138 | +0.0006 |
+| 3 | 11.5747 | 11.5632 | +0.0115 |
+| 4 | 9.6348 | 9.6331 | +0.0017 |
+| 5 | 10.4305 | 10.4254 | +0.0051 |
+| 6 | 4.1317 | 4.1311 | +0.0006 |
+| **FINAL** | **8.7168** | **8.7127** | **+0.0041** |
+
+Tags, in row order: `[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | HIP PrismEngine (dp4a) | strixhalo-unknown | 6138 | wiki.test.raw slice200 | 2026-09-19]`,
+`[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | HIP PrismEngine (exact) | strixhalo-unknown | 6138 | wiki.test.raw slice200 | 2026-09-19]`,
+`[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | derived | strixhalo-unknown | 6138 | wiki.test.raw slice200 | 2026-09-19]`.
+
+**Verdict: the int8-dp4a hypothesis is REFUTED.** Replacing the dp4a dot with the exact float dot
+moves PTQ1_0 by 0.047% (8.7168 → 8.7127) — nowhere near the 14.9% gap. The trit decode is not
+implicated either: both A/B paths share the same `dot_ptq1_128` trit decode, so if the decode were
+at fault the exact path would not have helped. **Neither named hypothesis is the cause.** Evidence:
+`tests/prism/ppl/ab_exact_vs_dp4a.log` (both legs), `tests/prism/ppl/run_ab.sh`.
+
+### The actual cause: a fold-group defect in the Prism forward
+
+Prism folded packs rotate the activation with a Hadamard transform before the folded projections.
+The oracle manifest (`prism.hadamard.weight_names`) folds `attn_qkv`/`attn_gate` but **not**
+`ssm_alpha`/`ssm_beta`. Our forward rotated ONE buffer (`d_xr_`) and fed all four projections with
+it, so the two *unfolded* GDN projections were consumed with a rotated activation. PTQ1_0 is the only
+folded pack here (`has_transform=true`), which is why Q1_0 and PQ2_0 were unaffected.
+
+### The fix and post-fix numbers
+
+`include/prism_engine.h` now feeds `attn_qkv`/`attn_gate` with the rotated activation (`d_xr_`) and
+`ssm_alpha`/`ssm_beta` with the un-rotated one (`d_xn_`); `PRISM_LEGACY_FOLD_GROUP=1` reproduces the
+old grouping for the record. The dp4a dot is **kept**. Post-fix PPL over the same stream
+(`tests/prism/ppl/fix_full.log`):
+
+| pack | pre-fix (dp4a) | post-fix | oracle | post-fix vs oracle |
+|---|---:|---:|---:|---:|
+| Ternary-Bonsai-2-27B-PTQ1_0 | 8.7168 | **7.5731** | 7.5887 | −0.21% |
+| Bonsai-27B-Q1_0 | 10.9750 | 10.9750 | 10.9992 | −0.22% |
+| Ternary-Bonsai-27B-PQ2_0 | 9.8819 | 9.8819 | 9.8897 | −0.08% |
+
+Tag: `[<pack> | <format> | HIP PrismEngine (fold fix, dp4a kept) | strixhalo-unknown | 6138 | wiki.test.raw slice200 | 2026-09-19]`.
+Q1_0 and PQ2_0 are byte-for-byte unchanged (same per-chunk values), so the fix is a no-op for the
+unfolded packs. PTQ1_0 post-fix per-chunk: 6.7003 / 10.1245 / 9.5173 / 8.5707 / 9.5325 / 3.5762
+`[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | HIP PrismEngine (fold fix) | strixhalo-unknown | 6138 | wiki.test.raw slice200 | 2026-09-19]`.
+
+### Speed bar
+
+The fix keeps the dp4a dot (it changes which activation feeds two GDN projections, not the dot).
+Same-protocol same-stream wall time: 1399.29 s pre-fix dp4a vs 1349.05 s post-fix
+`[Ternary-Bonsai-2-27B-PTQ1_0 | PTQ1_0 | HIP PrismEngine fold fix | strixhalo-unknown | 6138 | wiki.test.raw slice200 | 2026-09-19]`.
+This is an indicative wall-time comparison, **not** a throughput claim: no same-window triad ≥ 200 GB/s
+was measured, so nothing at the throughput level is asserted. No material decode-speed regression is
+indicated.
 
 ## Provenance
 

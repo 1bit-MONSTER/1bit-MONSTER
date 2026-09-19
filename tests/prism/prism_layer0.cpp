@@ -175,13 +175,14 @@ int main(int argc, char** argv) {
     rmsnorm_1pw(x, M.vec("blk.0.attn_norm.weight"), 1e-6f);  // GGUF: plain weights
     std::printf("xnorm_l2 %.9e\n", l2(x));
     std::vector<float> xr = x;
-    M.rotate(xr);                                   // one slab rotation serves qkv, z, a, b
+    M.rotate(xr);                                   // qkv/gate are folded, so they take the rotated slab
 
     std::vector<float> qkv = M.matvec("blk.0.attn_qkv.weight", xr);
     std::printf("qkv_l2 %.9e\n", l2(qkv));
     std::vector<float> z = M.matvec("blk.0.attn_gate.weight", xr);
-    std::vector<float> a = M.matvec("blk.0.ssm_alpha.weight", xr);
-    std::vector<float> b = M.matvec("blk.0.ssm_beta.weight", xr);
+    // ssm_alpha/ssm_beta are NOT in prism.hadamard.weight_names, so they take un-rotated x.
+    std::vector<float> a = M.matvec("blk.0.ssm_alpha.weight", x);
+    std::vector<float> b = M.matvec("blk.0.ssm_beta.weight", x);
 
     // causal conv1d, kernel 4, silu  (weights stored [conv_dim, kernel])
     const OnebpTensor* cv = M.t("blk.0.ssm_conv1d.weight");

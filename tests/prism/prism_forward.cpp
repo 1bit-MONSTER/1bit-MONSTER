@@ -327,8 +327,11 @@ int main(int argc, char** argv) {
             if (mm.layer_linear[l]) {
                 std::vector<float> qkv = mm.matvec(L[l].qkv, xr);
                 std::vector<float> z = mm.matvec(L[l].z, xr);
-                std::vector<float> a = mm.matvec(L[l].a, xr);
-                std::vector<float> b = mm.matvec(L[l].b, xr);
+                // ssm_alpha/ssm_beta are NOT in prism.hadamard.weight_names (the folded set,
+                // verified in the PTQ1_0 GGUF), so they consume the un-rotated activation xn;
+                // qkv/gate ARE folded and take xr.
+                std::vector<float> a = mm.matvec(L[l].a, xn);
+                std::vector<float> b = mm.matvec(L[l].b, xn);
                 const OnebpTensor* cv = mm.info(L[l].conv);
                 float* st = mm.conv_state[l].data();
                 std::vector<float> conv((size_t)mm.CD);

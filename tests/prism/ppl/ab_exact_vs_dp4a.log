@@ -1,0 +1,23 @@
+runner pid=1955902 start=2026-09-19T09:41:52Z
+=== EXACT (PRISM_FORCE_EXACT_DOT=1) 6 chunks ===
+  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-2-27B-PTQ1_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 7.8512  (scored 1023)
+  [2] PPL = 11.6138  (scored 1023)
+  [3] PPL = 11.5632  (scored 1023)
+  [4] PPL = 9.6331  (scored 1023)
+  [5] PPL = 10.4254  (scored 1023)
+  [6] PPL = 4.1311  (scored 1023)
+  FINAL PPL = 8.7127  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1490.68s
+
+=== DP4A (default) 6 chunks ===
+  pack=/home/bcloud/models/prism/1bp/Ternary-Bonsai-2-27B-PTQ1_0.1bp n_ids=12599 n_ctx=2048 first=1024 chunks=6/6 scored_per_chunk=1023
+  [1] PPL = 7.8589  (scored 1023)
+  [2] PPL = 11.6144  (scored 1023)
+  [3] PPL = 11.5747  (scored 1023)
+  [4] PPL = 9.6348  (scored 1023)
+  [5] PPL = 10.4305  (scored 1023)
+  [6] PPL = 4.1317  (scored 1023)
+  FINAL PPL = 8.7168  (tokens=6138, protocol=llama-perplexity-default)
+  wall=1399.29s
+=== A/B done 2026-09-19T10:30:02Z ===

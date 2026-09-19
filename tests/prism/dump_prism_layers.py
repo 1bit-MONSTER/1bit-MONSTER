@@ -177,8 +177,9 @@ def main() -> int:
         if gdn[l]:
             qkv = bp.w(p % l + "attn_qkv.weight") @ xr
             z = bp.w(p % l + "attn_gate.weight") @ xr
-            a = bp.w(p % l + "ssm_alpha.weight") @ xr
-            b = bp.w(p % l + "ssm_beta.weight") @ xr
+            # ssm_alpha/ssm_beta are NOT in the oracle folded set, so they take unrotated xn.
+            a = bp.w(p % l + "ssm_alpha.weight") @ xn
+            b = bp.w(p % l + "ssm_beta.weight") @ xn
             cv = bp._f16_tile(p % l + "ssm_conv1d.weight")
             conv = silu(cv[:, 3] * qkv)                  # single token: newest tap only
             q = conv[:KD].reshape(NK, HK).copy()
