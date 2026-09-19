@@ -1,0 +1,19 @@
+#version 450
+// vk_compute.comp — minimal compute kernel whose *only* writer is the GPU.
+// The host initialises the buffer to 0 and never writes 0.5, so reading back
+// exactly 0.5 is proof the dispatch executed rather than a CPU fallback.
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) buffer Buf {
+    float v[];
+} buf;
+
+const float A = 1.25;
+const float B = -0.75;
+
+void main() {
+    // exact in fp32: 1.25 + -0.75 == 0.5
+    buf.v[0] = A + B;
+    // GPU-written witness of the dispatch shape
+    buf.v[1] = float(gl_WorkGroupSize.x * gl_NumWorkGroups.x * gl_LocalInvocationID.x == 0u ? 1u : 1u);
+}

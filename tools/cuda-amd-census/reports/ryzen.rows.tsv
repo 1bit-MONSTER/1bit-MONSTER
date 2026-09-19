@@ -1,0 +1,28 @@
+dev/kfd	detected	660 root:render
+dev/renderD128	detected	660 root:render
+dev/renderD129	detected	660 root:render
+dev/accel0	UNSUPPORTED	absent
+bf16_atomics/present	UNSUPPORTED	no hip_bfloat16.h in rocm tree or /usr
+cublas/present	UNSUPPORTED	no rocblas in rocm tree or /usr
+cublaslt/present	UNSUPPORTED	no hipblaslt in rocm tree or /usr
+cudnn/present	UNSUPPORTED	no miopen in rocm tree or /usr
+cufft/present	UNSUPPORTED	no rocfft in rocm tree or /usr
+cusolver/present	UNSUPPORTED	no hipsolver in rocm tree or /usr
+cusparse/present	UNSUPPORTED	no rocsparse in rocm tree or /usr
+graphs/present	UNSUPPORTED	no hip_runtime.h in rocm tree or /usr
+nccl/present	UNSUPPORTED	no rccl in rocm tree or /usr
+ptx_jit/present	UNSUPPORTED	no hiprtc in rocm tree or /usr
+runtime/present	UNSUPPORTED	no hip_runtime.h in rocm tree or /usr
+hrx/present	detected	/tmp/hrx-test/hrx-runtime/lib (libhrx.so.0.1.0)
+runtime	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+numerics	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+graphs	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+ptx_jit	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+blas	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+fft	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+sparse	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+solver	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+dnn	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+int8_dot4	UNSUPPORTED	no hipcc/ROCm toolchain on this host
+torch	UNSUPPORTED	import torch failed: ModuleNotFoundError: No module named 'torch'
+vulkan_compute	PASS	SPIR-V dispatch host[0]=0.500 exact witness=1.0 device="AMD Radeon RX 9070 XT (RADV GFX1201) + AMD Ryzen 7 9800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO) + llvmpipe (LLVM 21.1.8, 256 bits)" (RADV compute)

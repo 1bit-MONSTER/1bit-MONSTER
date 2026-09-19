@@ -1,0 +1,195 @@
+{
+  "machine": "strixhalo",
+  "os": "Ubuntu 26.04.1 LTS",
+  "kernel": "7.2.0-next-20260821-unstable-ogc-g2a559b27-1",
+  "gpu": "Display controller: Advanced Micro Devices, Inc. [AMD/ATI] Strix Halo [Radeon Graphics / Radeon 8050S Graphics / Radeon 8060S Graphics] (rev c1)",
+  "rocm_root": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel",
+  "hrx_libdir": "/opt/hrx/lib",
+  "generated_by": "projects/cuda-amd-census/run-census.sh",
+  "evidence_classes": [
+    "detected",
+    "loadable",
+    "UNSUPPORTED",
+    "PASS",
+    "INCORRECT",
+    "TIMEOUT",
+    "ERROR"
+  ],
+  "counts": {
+    "detected": 17,
+    "UNSUPPORTED": 3,
+    "PASS": 14
+  },
+  "rows": [
+    {
+      "surface": "dev/kfd",
+      "result": "detected",
+      "detail": "660 root:render"
+    },
+    {
+      "surface": "dev/renderD128",
+      "result": "detected",
+      "detail": "660 root:render"
+    },
+    {
+      "surface": "dev/renderD129",
+      "result": "UNSUPPORTED",
+      "detail": "absent"
+    },
+    {
+      "surface": "dev/accel0",
+      "result": "detected",
+      "detail": "660 root:render"
+    },
+    {
+      "surface": "bf16_atomics/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_bfloat16.h"
+    },
+    {
+      "surface": "cublas/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocblas"
+    },
+    {
+      "surface": "cublaslt/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipblaslt"
+    },
+    {
+      "surface": "cudnn/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/miopen"
+    },
+    {
+      "surface": "cufft/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocfft"
+    },
+    {
+      "surface": "cusolver/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipsolver"
+    },
+    {
+      "surface": "cusparse/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocsparse"
+    },
+    {
+      "surface": "graphs/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h"
+    },
+    {
+      "surface": "nccl/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocprofiler-sdk/rccl"
+    },
+    {
+      "surface": "ptx_jit/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hiprtc.h"
+    },
+    {
+      "surface": "runtime/present",
+      "result": "detected",
+      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h"
+    },
+    {
+      "surface": "hrx/present",
+      "result": "detected",
+      "detail": "/opt/hrx/lib (libhrx.so.0.1.0)"
+    },
+    {
+      "surface": "loom/present",
+      "result": "detected",
+      "detail": "libloomc.so.0.1.0 (JIT compiler; kernels are specialized at launch)"
+    },
+    {
+      "surface": "hrx/device_enum",
+      "result": "detected",
+      "detail": "hrx-info rc=0; GPU accelerator: 1 device"
+    },
+    {
+      "surface": "runtime",
+      "result": "PASS",
+      "detail": "dev=\"AMD Radeon 8060S Graphics\" arch=gfx1151 arch_expect=gfx1151 arch_match"
+    },
+    {
+      "surface": "numerics",
+      "result": "PASS",
+      "detail": "atomicAdd=16384 half2_dot=ok bf16=ok (int8 dot4 -> see dot4 row)"
+    },
+    {
+      "surface": "graphs",
+      "result": "PASS",
+      "detail": "capture 5-node graph + replay = 5 (exact)"
+    },
+    {
+      "surface": "ptx_jit",
+      "result": "PASS",
+      "detail": "hiprtc compiled --offload-arch=gfx1151, JIT kernel = 21.0 (exact)"
+    },
+    {
+      "surface": "cublas",
+      "result": "PASS",
+      "detail": "sgemm 256x192x288 max_abs=1.72e-05 tol=4.51e-03 (rocBLAS)"
+    },
+    {
+      "surface": "cufft",
+      "result": "PASS",
+      "detail": "c2c fwd N=64 vs naive DFT max_abs=3.81e-06 rel=1.09e-07 (rocFFT)"
+    },
+    {
+      "surface": "cusparse",
+      "result": "PASS",
+      "detail": "csr spmv 3x3 nnz=5 exact (rocSPARSE)"
+    },
+    {
+      "surface": "cusolver",
+      "result": "PASS",
+      "detail": "getrf 4x4 LU det=209.0000 == cpu det=209.0000 rel=0.0e+00 (hipSOLVER)"
+    },
+    {
+      "surface": "cudnn",
+      "result": "PASS",
+      "detail": "conv2d fwd 1x2x8x8 k3x3: all-ones PASS (layout-independent); random-case rel=8.2e-01 DISAGREES -> open reference/ordering discrepancy in this probe, NOT a demonstrated backend defect (algo=3 of 1)"
+    },
+    {
+      "surface": "int8_dot4",
+      "result": "UNSUPPORTED",
+      "detail": "toolchain rejects sudot4 builtin with runtime operands: /tmp/cuda-amd-census/probe/p_dot4.cpp:36:29: error: argument to '__builtin_amdgcn_sudot4' must be a constant integer"
+    },
+    {
+      "surface": "runtime/hrx",
+      "result": "PASS",
+      "detail": "dev=\"AMD Radeon 8060S Graphics\" arch=gfx1151 arch_expect=gfx1151 arch_match"
+    },
+    {
+      "surface": "graphs/hrx",
+      "result": "PASS",
+      "detail": "capture 5-node graph + replay = 5 (exact)"
+    },
+    {
+      "surface": "numerics/hrx",
+      "result": "PASS",
+      "detail": "atomicAdd=16384 half2_dot=ok bf16=ok (int8 dot4 -> see dot4 row)"
+    },
+    {
+      "surface": "cublas/hrx",
+      "result": "PASS",
+      "detail": "sgemm 256x192x288 max_abs=1.72e-05 tol=4.51e-03 (rocBLAS)"
+    },
+    {
+      "surface": "torch",
+      "result": "UNSUPPORTED",
+      "detail": "torch 2.13.0+cpu is not a GPU build (hip=None cuda=None is_available=False)"
+    },
+    {
+      "surface": "vulkan_compute",
+      "result": "PASS",
+      "detail": "SPIR-V dispatch host[0]=0.500 exact witness=1.0 device=\"AMD Radeon 8060S Graphics (RADV STRIX_HALO) + llvmpipe (LLVM 21.1.8, 256 bits)\" (RADV compute)"
+    }
+  ]
+}

@@ -1,0 +1,165 @@
+{
+  "machine": "ryzen",
+  "os": "Ubuntu 26.04.1 LTS",
+  "kernel": "7.0.0-31-generic",
+  "gpu": "VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Navi 48 [Radeon RX 9070/9070 XT/9070 GRE] (rev c0);VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Granite Ridge [Radeon Graphics] (rev cb)",
+  "rocm_root": null,
+  "hrx_libdir": "/tmp/hrx-test/hrx-runtime/lib",
+  "generated_by": "projects/cuda-amd-census/run-census.sh",
+  "evidence_classes": [
+    "detected",
+    "loadable",
+    "UNSUPPORTED",
+    "PASS",
+    "INCORRECT",
+    "TIMEOUT",
+    "ERROR"
+  ],
+  "counts": {
+    "detected": 4,
+    "UNSUPPORTED": 23,
+    "PASS": 1
+  },
+  "rows": [
+    {
+      "surface": "dev/kfd",
+      "result": "detected",
+      "detail": "660 root:render"
+    },
+    {
+      "surface": "dev/renderD128",
+      "result": "detected",
+      "detail": "660 root:render"
+    },
+    {
+      "surface": "dev/renderD129",
+      "result": "detected",
+      "detail": "660 root:render"
+    },
+    {
+      "surface": "dev/accel0",
+      "result": "UNSUPPORTED",
+      "detail": "absent"
+    },
+    {
+      "surface": "bf16_atomics/present",
+      "result": "UNSUPPORTED",
+      "detail": "no hip_bfloat16.h in rocm tree or /usr"
+    },
+    {
+      "surface": "cublas/present",
+      "result": "UNSUPPORTED",
+      "detail": "no rocblas in rocm tree or /usr"
+    },
+    {
+      "surface": "cublaslt/present",
+      "result": "UNSUPPORTED",
+      "detail": "no hipblaslt in rocm tree or /usr"
+    },
+    {
+      "surface": "cudnn/present",
+      "result": "UNSUPPORTED",
+      "detail": "no miopen in rocm tree or /usr"
+    },
+    {
+      "surface": "cufft/present",
+      "result": "UNSUPPORTED",
+      "detail": "no rocfft in rocm tree or /usr"
+    },
+    {
+      "surface": "cusolver/present",
+      "result": "UNSUPPORTED",
+      "detail": "no hipsolver in rocm tree or /usr"
+    },
+    {
+      "surface": "cusparse/present",
+      "result": "UNSUPPORTED",
+      "detail": "no rocsparse in rocm tree or /usr"
+    },
+    {
+      "surface": "graphs/present",
+      "result": "UNSUPPORTED",
+      "detail": "no hip_runtime.h in rocm tree or /usr"
+    },
+    {
+      "surface": "nccl/present",
+      "result": "UNSUPPORTED",
+      "detail": "no rccl in rocm tree or /usr"
+    },
+    {
+      "surface": "ptx_jit/present",
+      "result": "UNSUPPORTED",
+      "detail": "no hiprtc in rocm tree or /usr"
+    },
+    {
+      "surface": "runtime/present",
+      "result": "UNSUPPORTED",
+      "detail": "no hip_runtime.h in rocm tree or /usr"
+    },
+    {
+      "surface": "hrx/present",
+      "result": "detected",
+      "detail": "/tmp/hrx-test/hrx-runtime/lib (libhrx.so.0.1.0)"
+    },
+    {
+      "surface": "runtime",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "numerics",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "graphs",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "ptx_jit",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "blas",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "fft",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "sparse",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "solver",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "dnn",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "int8_dot4",
+      "result": "UNSUPPORTED",
+      "detail": "no hipcc/ROCm toolchain on this host"
+    },
+    {
+      "surface": "torch",
+      "result": "UNSUPPORTED",
+      "detail": "import torch failed: ModuleNotFoundError: No module named 'torch'"
+    },
+    {
+      "surface": "vulkan_compute",
+      "result": "PASS",
+      "detail": "SPIR-V dispatch host[0]=0.500 exact witness=1.0 device=\"AMD Radeon RX 9070 XT (RADV GFX1201) + AMD Ryzen 7 9800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO) + llvmpipe (LLVM 21.1.8, 256 bits)\" (RADV compute)"
+    }
+  ]
+}
