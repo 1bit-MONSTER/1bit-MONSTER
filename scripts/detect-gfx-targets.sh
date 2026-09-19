@@ -74,7 +74,10 @@ find_rocminfo() {
 
 ROCMINFO="$(find_rocminfo)" || {
     echo "detect-gfx-targets: no rocminfo found." >&2
-    echo "  Install the arch-independent SDK first:  pip install 'rocm[libraries,devel]'" >&2
+    echo "  Install the arch-independent SDK first:" >&2
+    echo "    pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \\" >&2
+    echo "      'rocm[libraries,devel]==10.1.0a20260910'" >&2
+    echo "  (pin kept deliberately: a floating nightly is a combination never verified here)" >&2
     echo "  (or set THEROCK_PIP_ROOT to an existing venv SDK), then re-run." >&2
     echo "  Refusing to guess an architecture." >&2
     exit 1
