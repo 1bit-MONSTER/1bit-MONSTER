@@ -145,7 +145,11 @@ CURRENT_ARCH = {"gfx1201", "gfx1036", "gfx1151"}   # both boxes, context decides
 CURRENT_ARCH_ALLOW = {"gfx942"}
 
 SKIP_DIRS = {".git", "build", "third_party", ".gitnexus", "node_modules", ".venv", "__pycache__"}
-SKIP_NAMES = {"sweep-publication.py", "sweep-publication.sh"}
+# Never scan the sweep's OWN output: the manifest lists every superseded value as
+# data (value/reason fields), so scanning it made the sweep count itself — 199
+# self-hits in one run — and grew with every invocation.
+SKIP_NAMES = {"sweep-publication.py", "sweep-publication.sh",
+              "publication-sweep.json", "publication-sweep.txt"}
 TEXT_SUFFIXES = {
     ".md", ".html", ".htm", ".txt", ".json", ".sh", ".bash", ".yml", ".yaml", ".py",
     ".cmake", ".toml", ".tsv", ".xml", ".js", ".css", ".in", ".cfg", ".conf",
