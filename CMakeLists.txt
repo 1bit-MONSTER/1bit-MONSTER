@@ -1354,7 +1354,7 @@ endif()
 if(NOT EXISTS "${FLM_BINARY}")
     message(STATUS "flm: no TheRock FLM found — building FastFlowLM from submodule...")
     execute_process(COMMAND ${CMAKE_COMMAND} -B build -G Ninja
-        -DFLM_VERSION=0.9.46 -DNPU_VERSION=1.1.2
+        -DFLM_VERSION=1.0.6 -DNPU_VERSION=1.1.2
         WORKING_DIRECTORY ${FLM_SOURCE_DIR}
         OUTPUT_QUIET ERROR_QUIET)
     execute_process(COMMAND ${CMAKE_COMMAND} --build build -j8
@@ -1385,7 +1385,7 @@ if(EXISTS "${FLM_BUILD_DIR}/flm")
     add_custom_target(update_flm
         COMMAND git submodule update --remote third_party/FastFlowLM
         COMMAND cd ${FLM_SOURCE_DIR} && cmake -B build -G Ninja
-            -DFLM_VERSION=0.9.46 -DNPU_VERSION=1.1.2
+            -DFLM_VERSION=1.0.6 -DNPU_VERSION=1.1.2
         COMMAND cd ${FLM_SOURCE_DIR} && cmake --build build -j8
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Updating FLM submodule to latest + rebuilding"
