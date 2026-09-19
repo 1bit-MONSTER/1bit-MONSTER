@@ -339,7 +339,7 @@ expert data fits in VRAM (16 experts × 2 layers = heavy memory pressure).
 | Symptom | Likely Fix |
 |---------|-----------|
 | `amdclang++: command not found` | Add ROCm to `PATH`: `export PATH=/opt/rocm/bin:/opt/rocm/lib/llvm/bin:$PATH` |
-| `hipErrorNoBinaryForGpu` | Set `HSA_OVERRIDE_GFX_VERSION=11.5.1` (done by `source env.sh`) |
+| `hipErrorNoBinaryForGpu` | Install the device package for YOUR GPU: `bash scripts/detect-gfx-targets.sh`, then `pip install rocm-sdk-device-<target>`. **Do not** set `HSA_OVERRIDE_GFX_VERSION` — forcing another arch makes the GPU undetectable |
 | `Missing: /tmp/zaya_weights/...` | Download and extract weights to `/tmp/zaya_weights/` |
 | `hipMalloc failed` | Not enough GPU memory. Zaya1‑8B needs ~6 GB free. Check `rocm-smi` |
 | `bind: Address already in use` | Port taken. Use a different port: `./build/1bit zaya --port 8080` |

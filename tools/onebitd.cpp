@@ -140,7 +140,11 @@ static pid_t spawn_backend(const std::string &bitnet_decode_path,
         argv.push_back(nullptr);
 
         // Set ROCm environment for the child
-        setenv("HSA_OVERRIDE_GFX_VERSION", "11.5.1", 1);
+        // NOTE: HSA_OVERRIDE_GFX_VERSION=11.5.1 used to be set here. It forces the
+        // runtime to REPORT gfx1151; on a gfx1201 card that makes the GPU
+        // undetectable (measured: hipGetDeviceCount -> 'no ROCm-capable device
+        // is detected'). Do not reintroduce it — install/build for the machine's
+        // real arch via scripts/detect-gfx-targets.sh instead.
         setenv("HSA_ENABLE_SDMA", "0", 1);
 
         execvp(argv[0], argv.data());

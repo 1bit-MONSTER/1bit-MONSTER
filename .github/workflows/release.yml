@@ -192,14 +192,14 @@ jobs:
             - install script, docs, license
 
             ### Requires
-            - AMD Strix Halo (gfx1151)
+            - An AMD GPU with the matching device package installed
+              (`bash scripts/detect-gfx-targets.sh` prints the target)
             - ROCm 7.15.0a runtime (libhsa-runtime64) — TheRock nightly C++ SDK
             - A model file (.h1b, .q4nx, .gguf)
 
             ### Quick Start
             ```bash
             tar xzf 1bit-linux-x86_64.tar.gz
-            export HSA_OVERRIDE_GFX_VERSION=11.5.1
             export HSA_ENABLE_SDMA=0
             ./run.sh chat
             ```

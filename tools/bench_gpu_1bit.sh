@@ -7,7 +7,6 @@ PROMPT="${GPU_1BIT_PROMPT:-The capital of France is}"
 N="${GPU_1BIT_N:-128}"
 
 export LD_LIBRARY_PATH="${LLAMACPP_BIN}:/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
-export HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}"
 
 BIN="${LLAMACPP_BIN}/llama-completion"
 [ -x "$BIN" ]  || { echo "MISSING: $BIN" >&2; exit 2; }

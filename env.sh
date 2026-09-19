@@ -12,15 +12,20 @@ fi
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LINK_DIR="${1:-$DIR}"
 
-# HSA_OVERRIDE_GFX_VERSION: only needed for ROCm <7.x where the kernel driver
-# doesn't report the correct GPU target for Strix Halo (gfx1151).
-if command -v hipconfig &>/dev/null; then
-    ROCM_VER=$(hipconfig --version 2>/dev/null | cut -d. -f1)
-    if [ -n "$ROCM_VER" ] && [ "$ROCM_VER" -lt 7 ] 2>/dev/null; then
+# HSA_OVERRIDE_GFX_VERSION: this forces the runtime to REPORT another arch, so it is
+# only ever safe when the GPU really IS gfx1151 AND the ROCm in use is too old to
+# report it. On any other GPU it makes the device undetectable — measured on gfx1201
+# (hipGetDeviceCount -> 'no ROCm-capable device is detected'). Hence the arch gate
+# BELOW as well as the ROCm-version gate. Never set it unconditionally.
+if [ "$(bash "$DIR/scripts/detect-gfx-targets.sh" 2>/dev/null | head -1)" = "gfx1151" ]; then
+    if command -v hipconfig &>/dev/null; then
+        ROCM_VER=$(hipconfig --version 2>/dev/null | cut -d. -f1)
+        if [ -n "$ROCM_VER" ] && [ "$ROCM_VER" -lt 7 ] 2>/dev/null; then
+            export HSA_OVERRIDE_GFX_VERSION=11.5.1
+        fi
+    elif [ -d /opt/rocm-6.2 ] || [ -d /opt/rocm-6.1 ] || [ -d /opt/rocm-6.0 ]; then
         export HSA_OVERRIDE_GFX_VERSION=11.5.1
     fi
-elif [ -d /opt/rocm-6.2 ] || [ -d /opt/rocm-6.1 ] || [ -d /opt/rocm-6.0 ]; then
-    export HSA_OVERRIDE_GFX_VERSION=11.5.1
 fi
 export HSA_ENABLE_SDMA=0
 export LD_LIBRARY_PATH="$LINK_DIR/build:${LD_LIBRARY_PATH:-}"

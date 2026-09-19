@@ -14,12 +14,11 @@ set -euo pipefail
 MODEL="${ROCM_HIP_MODEL:-$HOME/work/1bit-monster/models/bonsai.h1b}"
 BINDIR="${ROCM_HIP_BINDIR:-$HOME/work/1bit-monster/build}"
 N="${ROCM_HIP_N:-128}"
-HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}"
 
 [ -x "${BINDIR}/bitnet_decode" ] || { echo "MISSING: ${BINDIR}/bitnet_decode" >&2; exit 2; }
 [ -f "$MODEL" ] || { echo "MISSING: $MODEL" >&2; exit 2; }
 
-export HSA_OVERRIDE_GFX_VERSION HSA_ENABLE_SDMA=0
+export HSA_ENABLE_SDMA=0
 export LD_LIBRARY_PATH="${BINDIR}:/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
 
 out=$("${BINDIR}/bitnet_decode" --model "$MODEL" --ctx "$N" --iters "$N" 2>&1 || true)

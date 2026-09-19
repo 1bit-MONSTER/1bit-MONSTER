@@ -28,8 +28,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BENCH = REPO / "benchmarks/latest.json"
 
+# NOTE: HSA_OVERRIDE_GFX_VERSION=11.5.1 was here. It forces the runtime to report
+# gfx1151, which makes the GPU undetectable on gfx1201. Build/run for the real arch.
 GPU_ENV = {
-    "HSA_OVERRIDE_GFX_VERSION": "11.5.1",
     "HSA_ENABLE_SDMA": "0",
 }
 

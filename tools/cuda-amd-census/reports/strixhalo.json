@@ -3,7 +3,7 @@
   "os": "Ubuntu 26.04.1 LTS",
   "kernel": "7.2.0-next-20260821-unstable-ogc-g2a559b27-1",
   "gpu": "Display controller: Advanced Micro Devices, Inc. [AMD/ATI] Strix Halo [Radeon Graphics / Radeon 8050S Graphics / Radeon 8060S Graphics] (rev c1)",
-  "rocm_root": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel",
+  "rocm_root": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel",
   "hrx_libdir": "/opt/hrx/lib",
   "generated_by": "projects/cuda-amd-census/run-census.sh",
   "evidence_classes": [
@@ -17,8 +17,8 @@
   ],
   "counts": {
     "detected": 17,
-    "UNSUPPORTED": 3,
-    "PASS": 15
+    "UNSUPPORTED": 4,
+    "PASS": 18
   },
   "rows": [
     {
@@ -44,57 +44,57 @@
     {
       "surface": "bf16_atomics/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_bfloat16.h"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_bfloat16.h"
     },
     {
       "surface": "cublas/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocblas"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocblas"
     },
     {
       "surface": "cublaslt/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipblaslt"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipblaslt"
     },
     {
       "surface": "cudnn/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/miopen"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/miopen"
     },
     {
       "surface": "cufft/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocfft"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocfft"
     },
     {
       "surface": "cusolver/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipsolver"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/hipsolver"
     },
     {
       "surface": "cusparse/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocsparse"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocsparse"
     },
     {
       "surface": "graphs/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h"
     },
     {
       "surface": "nccl/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocprofiler-sdk/rccl"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocprofiler-sdk/rccl"
     },
     {
       "surface": "ptx_jit/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hiprtc.h"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hiprtc.h"
     },
     {
       "surface": "runtime/present",
       "result": "detected",
-      "detail": "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h"
+      "detail": "/home/bcloud/therock100/lib/python3.14/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h"
     },
     {
       "surface": "hrx/present",
@@ -114,7 +114,7 @@
     {
       "surface": "runtime",
       "result": "PASS",
-      "detail": "dev=\"AMD Radeon 8060S Graphics\" arch=gfx1151 arch_expect=gfx1151 arch_match"
+      "detail": "dev=\"AMD Radeon 8060S Graphics\" arch=gfx1151 arch_expect=gfx1151 arch_match|ndev=1 | add4M max_abs=0.0e+00 kernel=1.346ms | sentinel=devclock_ok(monotonic)"
     },
     {
       "surface": "numerics",
@@ -154,22 +154,37 @@
     {
       "surface": "cudnn",
       "result": "PASS",
-      "detail": "conv2d fwd 1x2x8x8 k3x3: all-ones PASS (layout-independent); random-case rel=8.2e-01 DISAGREES -> open reference/ordering discrepancy in this probe, NOT a demonstrated backend defect (algo=3 of 1)"
+      "detail": "conv2d fwd 1x2x8x8 k3x3 vs direct CPU conv rel=9.4e-08 + all-ones PASS (MIOpen algo=3, 2 algos)"
     },
     {
       "surface": "int8_dot4",
-      "result": "UNSUPPORTED",
-      "detail": "toolchain rejects sudot4 builtin with runtime operands: /tmp/cuda-amd-census/probe/p_dot4.cpp:36:29: error: argument to '__builtin_amdgcn_sudot4' must be a constant integer"
+      "result": "PASS",
+      "detail": "engine-form sudot4(true,a,true,b,acc,false): 256/256 lanes = 70 (matches okf silicon record + CPU ref)"
     },
     {
       "surface": "cusolver_diag",
       "result": "PASS",
-      "detail": "arch=gfx1151 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 "
+      "detail": "arch=gfx1151 status=OK info=0 ipiv=[1,2,3,4] lu_diag=[4,3.75,3.733,3.732] LU_byte_equal_to_A=no LUpow_recon_err=5.96e-08 det_lu=209.0000 || getrs=OK residual=1.192e-07 x=[0.488,0.9522,1.321,1.33] -> LU is valid (L*U == P*A), so any det mismatch is a harness convention"
+    },
+    {
+      "surface": "cudnn_ref",
+      "result": "PASS",
+      "detail": "algo=3 | gpu_vs_numpy max_abs=8.892e-07 rel=2.333e-07 (MATCH) | hand_vs_numpy max_abs=5.987e-07 rel=1.571e-07 (MATCH) | hand_vs_gpu rel=2.624e-07 -> all three agree; the earlier discrepancy does not reproduce"
+    },
+    {
+      "surface": "workload",
+      "result": "PASS",
+      "detail": "trained a 2-layer MLP (8->32->1) end-to-end on AMD Radeon 8060S Graphics (gfx1151): 200 SGD steps | device witness ok | gradients match an independent CPU reference (loss_rel=1.2e-09 grad_max_abs=3.6e-07) | loss 1.122802 -> 0.085816"
+    },
+    {
+      "surface": "torch_train",
+      "result": "UNSUPPORTED",
+      "detail": "torch 2.13.0+cpu is not a GPU build (hip=None, is_available=False)"
     },
     {
       "surface": "runtime/hrx",
       "result": "PASS",
-      "detail": "dev=\"AMD Radeon 8060S Graphics\" arch=gfx1151 arch_expect=gfx1151 arch_match"
+      "detail": "dev=\"AMD Radeon 8060S Graphics\" arch=gfx1151 arch_expect=gfx1151 arch_match|ndev=1 | add4M max_abs=0.0e+00 kernel=1.845ms | sentinel=devclock_ok(monotonic)"
     },
     {
       "surface": "graphs/hrx",
@@ -183,8 +198,13 @@
     },
     {
       "surface": "cublas/hrx",
+      "result": "UNSUPPORTED",
+      "detail": "not runnable: /home/bcloud/census-tmp/tmp.fzG5earJQX/p_libs: error while loading shared libraries: librocfft.so.0: cannot open shared object file: No such file or directory "
+    },
+    {
+      "surface": "int8_dot4/hrx",
       "result": "PASS",
-      "detail": "sgemm 256x192x288 max_abs=1.72e-05 tol=4.51e-03 (rocBLAS)"
+      "detail": "engine-form sudot4(true,a,true,b,acc,false): 256/256 lanes = 70 (matches okf silicon record + CPU ref)"
     },
     {
       "surface": "torch",

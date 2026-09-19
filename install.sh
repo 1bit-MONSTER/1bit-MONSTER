@@ -193,7 +193,6 @@ fi
 # ── Done ──────────────────────────────────────────────────────────────────────
 log ""
 log "Done. Run:"
-log "  export HSA_OVERRIDE_GFX_VERSION=11.5.1"
 log "  export HSA_ENABLE_SDMA=0"
 log "  export LD_LIBRARY_PATH=$DIR/build:\$LD_LIBRARY_PATH"
 log "  $DIR/build/zaya_server"
