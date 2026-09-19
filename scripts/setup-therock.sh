@@ -6,6 +6,9 @@ set -euo pipefail
 
 ROCK_ROOT="/opt/rocm-therock"
 NIGHTLY_INDEX="https://nightly.repo.amd.com/rocm/whl-next/"
+# Pinned to the set that was actually TESTED on gfx1201, not floated to the newest
+# nightly (which would be a combination never verified on any machine here).
+THEROCK_VERSION="${THEROCK_VERSION-10.1.0a20260910}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DETECT="$SCRIPT_DIR/detect-gfx-targets.sh"
 
@@ -32,12 +35,12 @@ else
     PIP_FLAGS+=(--upgrade)
 fi
 "$ROCK_ROOT/bin/pip" install ${PIP_FLAGS[@]+"${PIP_FLAGS[@]}"} \
-    "rocm[libraries,devel]" \
+    "rocm[libraries,devel]${THEROCK_VERSION:+==$THEROCK_VERSION}" \
     --index-url "$NIGHTLY_INDEX"
 for t in $GPU_TARGETS; do
     echo "++   device package for $t"
     "$ROCK_ROOT/bin/pip" install ${PIP_FLAGS[@]+"${PIP_FLAGS[@]}"} \
-        "rocm-sdk-device-$t" --index-url "$NIGHTLY_INDEX"
+        "rocm-sdk-device-$t${THEROCK_VERSION:+==$THEROCK_VERSION}" --index-url "$NIGHTLY_INDEX"
 done
 "$ROCK_ROOT/bin/rocm-sdk" init
 
@@ -74,7 +77,7 @@ Wants=network-online.target
 Type=oneshot
 # Device package(s) are re-detected each run — never hardcoded (a hardcoded arch
 # here silently re-installed the wrong device build on every daily tick).
-ExecStart=/bin/bash -c '/opt/rocm-therock/bin/pip install --upgrade "rocm[libraries,devel]" --index-url $NIGHTLY_INDEX && for t in $(bash "$DETECT"); do /opt/rocm-therock/bin/pip install --upgrade "rocm-sdk-device-$t" --index-url $NIGHTLY_INDEX; done'
+ExecStart=/bin/bash -c '/opt/rocm-therock/bin/pip install --upgrade "rocm[libraries,devel]${THEROCK_VERSION:+==$THEROCK_VERSION}" --index-url $NIGHTLY_INDEX && for t in $(bash "$DETECT"); do /opt/rocm-therock/bin/pip install --upgrade "rocm-sdk-device-$t" --index-url $NIGHTLY_INDEX; done'
 ExecStartPost=/opt/rocm-therock/bin/rocm-sdk init
 StandardOutput=journal
 User=root

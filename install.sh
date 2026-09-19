@@ -94,11 +94,20 @@ install_deps() {
     # stack with 2 of the 4 original defects still live. Override with THEROCK_INDEX
     # for a pinned internal mirror.
     THEROCK_INDEX="${THEROCK_INDEX:-https://nightly.repo.amd.com/rocm/whl-next/}"
+    # WHICH VERSION. Pinned to the version-matched set that was actually TESTED on
+    # gfx1201 (`PASS 14 / ERROR 0 / INCORRECT 0`), NOT floated to whatever nightly is
+    # newest: a floating install would produce a combination never exercised on any
+    # machine here, which is precisely what "version-matched and verified" forbids.
+    # whl-next serves this version for core/devel/libraries AND for the gfx1201,
+    # gfx1151 and gfx1036 device wheels, so one pin covers every arch the detector
+    # can return. Set THEROCK_VERSION= (empty) to float deliberately.
+    THEROCK_VERSION="${THEROCK_VERSION-10.1.0a20260910}"
+    THEROCK_SPEC="rocm[libraries,devel]${THEROCK_VERSION:+==$THEROCK_VERSION}"
     if ! command -v amdclang++ &>/dev/null; then
         # Phase 1: the arch-independent parts (they provide rocminfo, which is
         # what phase 2 detects with — so this order is required, not cosmetic).
         log "Installing TheRock SDK (arch-independent parts)..."
-        python3 -m pip install --index-url "$THEROCK_INDEX" "rocm[libraries,devel]" 2>/dev/null || {
+        python3 -m pip install --index-url "$THEROCK_INDEX" "$THEROCK_SPEC" 2>/dev/null || {
             warn "TheRock pip install failed. Set THEROCK_PIP_ROOT manually."
             warn "See: https://github.com/ROCm/TheRock"
         }
@@ -122,7 +131,7 @@ install_deps() {
     fi
     log "Detected GPU target(s): $(echo "$GFX_TARGETS" | tr '\n' ' ')"
     for t in $GFX_TARGETS; do
-        python3 -m pip install --index-url "$THEROCK_INDEX" "rocm-sdk-device-$t" 2>/dev/null \
+        python3 -m pip install --index-url "$THEROCK_INDEX" "rocm-sdk-device-$t${THEROCK_VERSION:+==$THEROCK_VERSION}" 2>/dev/null \
             || warn "device package rocm-sdk-device-$t not available — continuing"
     done
     # Link the installed device wheels into the devel tree (rocm-sdk init only

@@ -57,11 +57,11 @@ jobs:
           # silently produce a build whose arch is not the runner's arch.
           sudo python3 -m venv /opt/rocm-therock
           sudo /opt/rocm-therock/bin/pip install \
-            "rocm[devel,libraries]" \
+            "rocm[devel,libraries]==10.1.0a20260910" \
             --index-url https://nightly.repo.amd.com/rocm/whl-next/
           for t in $(GFX_TARGETS="gfx1151;gfx1201" bash scripts/detect-gfx-targets.sh); do
             echo "++ device package for $t"
-            sudo /opt/rocm-therock/bin/pip install "rocm-sdk-device-$t" \
+            sudo /opt/rocm-therock/bin/pip install "rocm-sdk-device-$t==10.1.0a20260910" \
               --index-url https://nightly.repo.amd.com/rocm/whl-next/
           done
           sudo /opt/rocm-therock/bin/rocm-sdk init
