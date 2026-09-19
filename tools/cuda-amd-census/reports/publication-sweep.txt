@@ -25,6 +25,7 @@ VERSION-LIKE TOKENS discovered (each must be current or labelled):
   unlabelled version tokens: 0 (must be 0)
   unlabelled census tokens: 0 (must be 0)
   unlabelled arch tokens: 0 (must be 0)
+  unlabelled index tokens: 0 (must be 0)
   manifest: reports/publication-sweep.json (173 hits, each with its justifying rule)
 ------------------------------------------------------------------------------
 STRUCTURAL: generated surfaces must be deterministic functions of their sources

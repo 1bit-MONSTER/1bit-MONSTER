@@ -144,6 +144,17 @@ CURRENT_ARCH = {"gfx1201", "gfx1036", "gfx1151"}   # both boxes, context decides
 # deliberate other-target, not a claim about either machine.
 CURRENT_ARCH_ALLOW = {"gfx942"}
 
+
+# INDEX dimension, discovered: every wheel-index URL, not only the one pattern.
+INDEX_TOKEN = re.compile(r"https?://[A-Za-z0-9._/-]*(?:whl-next|whl-multi-arch|whl)[A-Za-z0-9._/-]*")
+# Prefix-matched: a URL UNDER the pinned index (e.g. .../whl-next/rocm-sdk-device-gfx1201/)
+# is the same index. download.pytorch.org is PyTorch's own wheel index — a
+# different component that we never superseded.
+CURRENT_INDEX_PREFIXES = (
+    "https://nightly.repo.amd.com/rocm/whl-next/",
+    "https://download.pytorch.org/whl/",
+)
+
 SKIP_DIRS = {".git", "build", "third_party", ".gitnexus", "node_modules", ".venv", "__pycache__"}
 # Never scan the sweep's OWN output: the manifest lists every superseded value as
 # data (value/reason fields), so scanning it made the sweep count itself — 199
@@ -368,7 +379,8 @@ def main() -> int:
     print(f"  unlabelled version tokens: {sum(unknown.values())} (must be 0)")
 
     for label, rx, current in (("CENSUS", CENSUS_TOKEN, CURRENT_CENSUS),
-                               ("ARCH", ARCH_TOKEN, CURRENT_ARCH)):
+                               ("ARCH", ARCH_TOKEN, CURRENT_ARCH),
+                               ("INDEX", INDEX_TOKEN, None)):
         found: dict[str, int] = {}
         for root in (Path(args.repo), Path(args.okf)):
             for path in iter_files(root):
@@ -380,8 +392,11 @@ def main() -> int:
                     continue
                 lines = text.splitlines()
                 for m in rx.finditer(text):
-                    val = m.group(0) if label == "CENSUS" else m.group(1)
-                    if val in current or val in CURRENT_ARCH_ALLOW:
+                    val = m.group(1) if label == "ARCH" else m.group(0)
+                    if label == "INDEX":
+                        if val.startswith(CURRENT_INDEX_PREFIXES):
+                            continue
+                    elif val in current or val in CURRENT_ARCH_ALLOW:
                         continue
                     line_no = text.count("\n", 0, m.start()) + 1
                     idx = line_no - 1
