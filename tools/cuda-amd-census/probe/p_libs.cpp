@@ -132,10 +132,22 @@ static int do_sparse() {
     rocsparse_handle h;
     // Report the ACTUAL status code, not just "failed": step 4 required the specific
     // ROCSPARSE_STATUS_* value (a bare "failed" is not evidence of which failure).
+    // NOTE: rocSPARSE ships NO status_to_string() -- only rocBLAS does -- so an earlier
+    // revision of this probe called rocsparse_status_to_string() and FAILED TO COMPILE,
+    // which silently broke the whole p_libs binary and made the committed evidence
+    // unreproducible. The names are therefore mapped locally, from the installed header:
+    //   success=0 invalid_handle=1 not_implemented=2 invalid_pointer=3
+    //   invalid_size=4 memory_error=5 internal_error=6 invalid_value=7
     rocsparse_status hst = rocsparse_create_handle(&h);
-    if (hst != rocsparse_status_success)
-        return r_unsupported(fmt("rocsparse_create_handle -> status %d (%s)",
-                                 (int)hst, rocsparse_status_to_string(hst)));
+    if (hst != rocsparse_status_success) {
+        static const char *const names[] = {"success", "invalid_handle", "not_implemented",
+                                            "invalid_pointer", "invalid_size", "memory_error",
+                                            "internal_error", "invalid_value"};
+        const int code = (int)hst;
+        const char *nm = (code >= 0 && code < 8) ? names[code] : "unknown";
+        return r_unsupported(fmt("rocsparse_create_handle -> status %d (rocsparse_status_%s)",
+                                 code, nm));
+    }
     rocsparse_mat_descr descr;
     rocsparse_create_mat_descr(&descr);
     // ROCm 10's rocsparse_scsrmv takes a rocsparse_mat_info between csr_col_ind
