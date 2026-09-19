@@ -68,8 +68,8 @@
     "line": 17,
     "value": "7.15.0a",
     "pattern": "superseded ROCm 7.15 label (runtime is now 7.16)",
-    "verdict": "OK-HISTORICAL",
-    "reason": "dated-record path"
+    "verdict": "OK-QUOTED",
+    "reason": "marker: 'historical'"
   },
   {
     "file": "/home/bcloud/projects/1bit-MONSTER/benchmarks/RESULTS-2026-07-15-sweep.md",

@@ -70,7 +70,11 @@ PATTERNS: list[tuple[str, str]] = [
 
 # Dated records: a record of what was true then is not a current claim.
 HISTORICAL_PATH = re.compile(
-    r"(?:^|/)(?:docs/archive|docs/superpowers/plans|docs/superpowers/specs|benchmarks|research)/"
+    r"(?:^|/)(?:docs/archive|docs/superpowers/plans|docs/superpowers/specs|research)/"
+    # benchmarks/ holds BOTH dated records and LIVE claims files (latest.json is the
+    # "source of truth for every number shown on 1bit.MONSTER"). Exempting the whole
+    # directory hid a live 7.15.0a label; only the dated ones are history.
+    r"|(?:^|/)benchmarks/(?:RESULTS-|run-|data/|bonsai/|engine_comparison/)"
     r"|(?:^|/)log\.md$"
     r"|(?:^|/)CHANGELOG\.md$"      # a dated log of what shipped when
     r"|archived"
