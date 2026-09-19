@@ -43,11 +43,11 @@ jobs:
           sudo python3 -m venv /opt/rocm-therock
           sudo /opt/rocm-therock/bin/pip install \
             "rocm[libraries,devel]" \
-            --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
+            --index-url https://nightly.repo.amd.com/rocm/whl-next/
           for t in $(GFX_TARGETS="gfx1151;gfx1201" bash scripts/detect-gfx-targets.sh); do
             echo "++ device package for $t"
             sudo /opt/rocm-therock/bin/pip install "rocm-sdk-device-$t" \
-              --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
+              --index-url https://nightly.repo.amd.com/rocm/whl-next/
           done
           sudo /opt/rocm-therock/bin/rocm-sdk init
 

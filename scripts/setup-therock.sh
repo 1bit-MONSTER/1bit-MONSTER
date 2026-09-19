@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # 1bit.MONSTER — ROCm TheRock C++ SDK Setup
-# Installs + configures the TheRock nightly ROCm for Strix Halo (gfx1151)
+# Installs + configures the TheRock nightly ROCm (arch DETECTED, not assumed)
 # Run: sudo bash scripts/setup-therock.sh
 set -euo pipefail
 
 ROCK_ROOT="/opt/rocm-therock"
-NIGHTLY_INDEX="https://rocm.nightlies.amd.com/whl-multi-arch/"
+NIGHTLY_INDEX="https://nightly.repo.amd.com/rocm/whl-next/"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DETECT="$SCRIPT_DIR/detect-gfx-targets.sh"
 

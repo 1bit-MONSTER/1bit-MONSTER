@@ -40,7 +40,8 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     echo "If a SHA256 checksum file is available, verify before running:"
     echo "       sha256sum -c install.sh.sha256"
     echo ""
-    echo "Installs 1bit inference engine for AMD Strix Halo (gfx1151)."
+    echo "Installs the 1bit inference engine for an AMD GPU (the device package and"
+    echo "HIP arch are DETECTED from the GPU present, via scripts/detect-gfx-targets.sh)."
     echo "Builds pure C++ end-to-end: zaya_server, onebit (CLI), onebitd (daemon),"
     echo "unified_router (proxy), bitnet_tui (TUI) + librocm_cpp.so — no Rust, no Python."
     exit 0
@@ -84,7 +85,15 @@ install_deps() {
     # gfx1201 box running the gfx1151 device build, where rocBLAS aborts with an
     # empty Tensile list. Detection lives in scripts/detect-gfx-targets.sh and
     # fails loudly rather than guessing.
-    THEROCK_INDEX="${THEROCK_INDEX:-https://rocm.nightlies.amd.com/whl-multi-arch/}"
+    # WHICH INDEX. `whl-multi-arch` is NOT stale — it does serve device wheels for
+    # gfx1201/gfx1151/gfx1036 — but its newest set is 10.1.0a20260822, and that base
+    # leaves two gfx1201 rows broken (cuSPARSE UNSUPPORTED, cuSOLVER INCORRECT;
+    # measured, reports/ryzen-gfx1201pack.*). The first set that closes all four
+    # original defects is 10.1.0a20260910, which is served ONLY by `whl-next`.
+    # Installing from whl-multi-arch would therefore hand a new gfx1201 machine a
+    # stack with 2 of the 4 original defects still live. Override with THEROCK_INDEX
+    # for a pinned internal mirror.
+    THEROCK_INDEX="${THEROCK_INDEX:-https://nightly.repo.amd.com/rocm/whl-next/}"
     if ! command -v amdclang++ &>/dev/null; then
         # Phase 1: the arch-independent parts (they provide rocminfo, which is
         # what phase 2 detects with — so this order is required, not cosmetic).
